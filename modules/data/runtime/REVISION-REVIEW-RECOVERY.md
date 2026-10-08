@@ -1,0 +1,29 @@
+# 修订复核恢复接口（产品适配契约）
+
+`retryRevisionReview(sourceId, revisionId, { expectedAnalysisVersion }) -> Promise<RevisionAttempt>`：异步排队全新attempt，返回kind:'review_only'、derivedFromRevisionId、parentAnalysisVersion、textVersion、inputCandidateFingerprint及status:'queued'。expectedAnalysisVersion是当前活动父analysis版本，不是失败candidate版本。复用候选且只调用library-review，绝不调用library-analysis-revision。使用严格六项rubric，包括注入复核器；不具备可用review配置时返回REVIEW_UNAVAILABLE，不消耗attempt。
+
+资格：旧attempt已终止且有字面通过、重新核对仍有效的candidate；失败发生于复核调用或格式校验，或needs_review，或复核阶段取消/中断。旧source/text/hash/父版必须仍匹配当前源。有效批准/拒绝（含已保存的有效原复核响应）不可恢复。缺candidate、字面失败、分析阶段取消、发布阶段失败不可走此入口。旧历史没有phase时只依据足够的已保存candidate和复核状态保守推断，不修改旧记录。
+
+错误：INVALID_INPUT参数无效；REVISION_NOT_FOUND记录不存在；VERSION_CONFLICT父版/源版本冲突；TASK_BUSY源忙；REVIEW_RETRY_NOT_ALLOWED不符合复核恢复资格；REVIEW_UNAVAILABLE未配置可用复核器；CAPACITY_EXCEEDED与内容修订共用100尝试上限。所有条件由服务端重新检查，不能靠UI布尔值放行。
+
+getRevision/listRevisions增加kind、derivedFromRevisionId、canRetryReview。老记录kind按analysis_revision展示但不回写；canRetryReview是此刻可提交提示（包括父版、忙碌和review配置），不是历史上的成功保证。完整attempt保留phase/failurePhase、输入指纹与新review原响应，不显示为重新拆解。review_only可再生成新的review_only重试链。
+
+取消仍用cancel(sourceId)，关闭/重启保留尝试并停止，不自动调用模型。已有活动分析/index在排队/复核期间继续可用；新六项复核有效批准后才原子发布独立analysis版本。新版本的overview/coverage/units/limitations和引用逐字保持复用候选不变，只更新版本、谱系和复核元数据。旧attempt/raw/candidate及旧packet引用不被覆盖。HTTP/UI不在本数据交付范围。
+
+## 存储与指纹
+
+每个review_only记录保留inputCandidate完整快照、inputCandidateVersion及inputCandidateFingerprint。指纹为SHA-256(JSON.stringify({textVersion,overview,coverage,units,limitations}))，字段顺序如上；包含各unit全部实质分析、locator、evidence、relatedUnitIds。新candidate从输入克隆，只赋新version/revisionId与复核状态/历史，保留coverage、limitations、引文等逐字一致。analysisResponse不冒造新响应；原响应可沿derivedFromRevisionId追溯。新review原响应独立保存在新attempt.reviewResponse。
+
+入队与执行均重新核对字面及输入指纹；有效批准后沿用现有transact内版本/索引切换、不可覆盖的快照归档及旧引用回读。入队参数不接受任意candidate或review对象。source与text/hash、父version及candidate谱系须一致。getRevision/listRevisions增加的展示字段不写回旧attempt。
+
+## 阶段与兼容
+
+新内容修订记录kind:'analysis_revision'，阶段依次analysis_pending、analysis_call、literal_validation、review_pending、review_call、review_validation、publication。review_only从review_pending开始，执行前candidate_validation；无复核器时review_unconfigured。失败或取消记录failurePhase；重启把活动尝试标interrupted并保留其phase。analysis/candidate_validation/publication失败不能绕到仅复核入口。
+
+有效批准或拒绝不仅检查candidate内记录，还检查已保存的原reviewResponse，防止收到有效意见后因取消/保存失败伪装成格式失败重跑。历史没有reviewRequiresRubric时，保存的REVIEW_RUBRIC/REVIEW_CHECKS诊断证明旧严格协议失败；不能用宽松legacy规则把notes-only格式失败误当有效意见。历史合法注入notes-only意见仍视为有效而拒绝重试。没有phase的历史记录只在已保存字面通过的待复核candidate且没有有效意见时保守允许，不回填历史。
+
+新review_only对供应商与注入复核器均要求analysis-review-v2六项rubric；已有内容修订/首次拆解的注入复核兼容协议不变。缺配置时canRetryReview=false，需配置后重新读取；真正提交仍再次校验。已有效拒绝请用reviseAnalysis重新修订内容。
+
+## 别名与限制
+
+别名get/list保留自身sourceId/title/fileName/completeness，并从canonical投影activeRevisionId和revisionIds；完成时只清除活动ID，保留修订历史。所有恢复/取消/查询统一规范源。listRevisions每次最多读取一次同源文本；仍共用每源100尝试上限。HTTP/UI由产品方适配，核心不自动安排调用、不重试供应商请求，也不改变真人或文学质量的验证边界。

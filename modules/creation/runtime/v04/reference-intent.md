@@ -1,0 +1,19 @@
+# referenceIntent：单次查询定义的可选增量
+
+在已有可选referenceQuestion旁增加可选referenceIntent，只含purpose、evidenceNeeds、contextNeeds、basis。purpose为facts/expression/performance之一；evidenceNeeds为1–3条共同必要证据，contextNeeds为0–3条必要上下文，每条已trim非空、精确不重复、≤240个JS字符。basis为1–3个不重复路径，限本次存在且非空的/idea、/instruction、/context/instruction。intent存在必须同时提供合法referenceQuestion。
+
+basis只证明提炼依据所在输入字段存在，不认证提炼与原需求语义一致。不能引用旧草案、来源窗口或模型答案作为用户要求。字符串校验不能识别“有变化”等空泛内容，也不能证明事实与表达分类正确。
+
+纯表达定义可迁移的组织关系和判断所需前因/反应/后果；纯事实保留所问对象、命题及条件，不用文学类比。performance复用现有query.evidenceType=performance，无独立指标数据时不得用叙事材料替代。混合需求在同一次需求整理中选择当前最需要的一个用途；不接受mixed枚举，不新建自动多查询。其他原要求继续完整保留，未声明本次都已解决。
+
+查询仍为原v04-contract-1：query等于referenceQuestion；context.referenceNeed承载用途、证据要求及必要前后文；context.targetUse保留全部规范化目标要求，排除三个检索元数据字段。targetUse不被删除，作者仍收到原request/context和完整requirements。recall仍只作同一问题的召回线索，程序不偷改它。
+
+未提供intent：referenceQuestion-only的n18构造逐值不变。两个字段都没有：原主线构造逐值不变。这些兼容分支不表示旧混合语义已修复。已有knowledge/query保存点原样恢复，不回写、不重查、不迁移。新增结构损坏走原有一次requirements修复，未增新模型阶段或独立提炼调用。
+
+保持查询/材料预算。完整context超8000字符仍显式拒绝，不能截断目标约束。未改变候选排名、索引、数据模型的v1响应协议或相关性system，不采用evidence-v2整行引用方案。字段存在与测试通过只证明定义能流经程序，不证明真实语义效果；仍须独立审阅真实query、候选、上下文及判断。
+
+## r02 独审收窄
+
+除所选需要明确要求外，不以跨题材/职业/物件差异排除来源；同一主体前后关系、明确身份和专业因果条件仍必须保留。提炼漏掉这些条件时程序不能自动追回。未选混合需求尚未验证，没有已解决需求账本，不能因完整requirements还在就宣称它们不会被遗忘。
+
+顶层instruction保留是另一个基于main的独立补丁，本实验不捎带合入该修复；当前r02继承的business-tools仍只有idea/context，须结合独立补丁后另行验证才可声称覆盖顶层instruction的规划传递。

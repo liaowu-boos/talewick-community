@@ -1,0 +1,21 @@
+# Local secrets and private writing data
+.env
+.env.*
+!.env.example
+.local-runs/
+.local-releases/
+.local-build-backups/
+# Dependencies and generated output
+node_modules/
+dist/
+*.tsbuildinfo
+__pycache__/
+*.py[cod]
+.pytest_cache/
+coverage/
+*.log
+.DS_Store
+# Local test and browser output
+agent-evidence/
+runtime-evidence/
+.impeccable/

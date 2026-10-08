@@ -1,0 +1,47 @@
+{
+  "name": "talewick-gui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.mjs",
+    "test:runtime": "node --test server/*.test.mjs ../../creation/runtime/*.test.mjs scripts/paper-runtime-state.test.mjs",
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -b && vite build && node scripts/write-design-preview.mjs",
+    "preview": "vite preview --host 127.0.0.1",
+    "ui": "boardui",
+    "ui:add": "boardui add --dir src",
+    "build:single": "npm run build && node scripts/pack-single.mjs",
+    "test:ui": "node --experimental-transform-types --test scripts/*.test.mjs"
+  },
+  "dependencies": {
+    "@ai-sdk/deepseek": "3.0.39",
+    "@ai-sdk/openai-compatible": "3.0.44",
+    "@fontsource/inter": "5.3.0",
+    "@fontsource/ma-shan-zheng": "5.3.1",
+    "@remixicon/react": "4.6.0",
+    "ai": "7.0.93",
+    "motion": "12.43.0",
+    "react": "19.2.8",
+    "react-aria-components": "1.21.0",
+    "react-dom": "19.2.8",
+    "tailwind-merge": "3.6.0",
+    "ws": "8.21.3",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@types/node": "22.20.1",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.7",
+    "@vitejs/plugin-react": "5.2.0",
+    "boardui": "0.5.1",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3",
+    "vite": "7.3.6"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "license": "AGPL-3.0-only"
+}

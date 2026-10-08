@@ -1,0 +1,21 @@
+# 有界补查结果与保存点契约 v1
+
+新requestSpec保存followupPolicyVersion=bounded-followup-1与followupPolicy={mode:dynamic|disabled,reason:new_task|not_connected|ab_fixed_materials}。缺政策的旧任务完整沿用旧流程，不补字段。AB prepare显式fixed_materials，资料包与受信规则不变，新运行依赖均纳入runtimeDigest。
+
+fixed和ai-sdk共用workflow状态机。规划槽在最终agentPlan选定/normalize后、第一章前；审稿槽只在business.reviseChapter已经通过原来的正文/范围/issue校验后执行。初审need还须对应实际选择的must_fix及当前逐字quote。无消费者不查、选段不扩写、控制器decision和工具循环不改变。controller复审不能提出新槽。核心合法但附加referenceNeeds非法仅记录rejected，不新增修复调用；纯正文与指定修订JSON合同不变。
+
+result.knowledge始终为K0原包。政策dynamic时新增activeKnowledge及followupRetrieval；旧任务/关闭政策不加这两个结果字段。activeKnowledge拥有active-{snapshotHash}身份、按active材料派生coverage；retrieval.status=versioned_active_view并指向initialPacketId/initialSnapshotHash/snapshotHash。它不是单个查询响应，查询状态必须读slots。
+
+followupRetrieval字段：policyVersion,initialSnapshotHash,activeSnapshotHash,retainedChars,activeChars,slots,snapshots,consumerBindings,suppliedNotAdopted:true。
+
+slots按planning/review排列，每项slot,status,reason,question?,focus?,retrievalStatus?,limits,delta,queryHash?,snapshotHash?,acceptedCount,droppedCount。status枚举：not_requested、rejected、deferred_no_consumer、duplicate_need、skipped_budget、not_connected、interrupted_no_requery、unavailable、uncovered、no_additions、prepared。prepared只表示helper接受材料并提交快照，不意味着模型已收到。no_additions表示检索matched但全部被helper丢弃。retrievalStatus保留真实matched/uncovered/unavailable，不与准备状态混用。delta直接保留数据helper的accepted/dropped/superseded，包括覆盖缺口和原因。
+
+snapshots包含hash,parentHash,activeMaterialIds,materials（id/title/use/sha256/references逐来源版本/行号/复核ID）,retainedChars。原文content不重复塞入概要，实际activeKnowledge及commit可回查。累计retained包含被大窗替代的旧项，不退还30000字符预算。原query/result不改写，active去重策略归数据helper所有。
+
+consumerBindings为{id,stage,snapshotHash|null,inputHash,neutralReview,outcome}。id即knowledge-use:*保存点键；outcome为prepared_or_unknown或response_returned。前者只有调用前输入保存证据，不能断言请求已发出或被模型收到；后者表示已有业务适配器响应返回，但不证明采用。neutralReview的snapshotHash=null，无知识材料。可用snapshotHash关联materials的可读来源。SDK决策循环沿用自己的agent journal；此处记录业务模型调用，不冒充SDK决策请求日志。
+
+保存点：followup:<planning|review>:started先写，含policy/inputFingerprint/slot/decisionHash/parentSnapshotHash/need/needHash/query/queryHash；commit含相同任务/槽/decision/parent绑定、startedHash、value/valueHash。value在成功时保存validated result、delta及完整新snapshot；失败时仅有界状态/原因，未校验response不持久化。无started的commit只能是无查询决定。仅started恢复时interrupted_no_requery并沿用父材料，不重查。
+
+恢复从K0按两槽顺序使用原validated result及data helper重算active/retained/计费/delta，与保存值完整一致才恢复；started和commit还绑定实际阶段产物/当前need及query范围预算。knowledge-use:<stage>:N保存完整本次input及inputHash、snapshotHash；恢复核对其快照存在、材料视图与input一致。knowledge-returned:<useKey>保存useHash，证明该输入的适配器响应已返回。result只投影概要，原记录供独立核查。校验不是密码签名，不证明恶意整体重造全部产物的真实性。
+
+本轮没有正文中即时提出need的通道，不解析正文命令，不逐章增模型调用。新材料供应不回改过去规划的采用声明或已写正文。新依赖：reference-needs.mjs、followup.mjs与数据所有followup-materials.mjs；AB旧runtime会如实变化，禁止重封旧清单。

@@ -1,0 +1,78 @@
+/* Talewick paper canvas: BoardUI semantic roles with a warm paper palette. */
+@theme inline {
+  --color-tw-glass: var(--tw-glass);
+  --color-tw-warm: var(--tw-warm);
+  --color-tw-selection: var(--tw-selection);
+  --color-tw-backdrop: var(--tw-backdrop);
+  --color-button-primary-foreground: var(--tw-button-primary-foreground);
+  --font-story: "Songti SC", "Noto Serif CJK SC", "STSong", serif;
+  --font-hand: "Ma Shan Zheng", "Songti SC", serif;
+}
+:root {
+  --font-story: "Songti SC", "Noto Serif CJK SC", "STSong", serif;
+  --font-hand: "Ma Shan Zheng", "Songti SC", serif;
+  --font-inter: "Inter";
+  --font-sans: "Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --color-accent-50: var(--color-red-50);
+  --color-accent-100: var(--color-red-100);
+  --color-accent-200: var(--color-red-200);
+  --color-accent-300: var(--color-red-300);
+  --color-accent-400: var(--color-red-400);
+  --color-accent-500: var(--color-red-800);
+  --color-accent-600: var(--color-red-900);
+  --color-accent-700: var(--color-red-900);
+  --color-accent-800: var(--color-red-950);
+  --color-accent-900: var(--color-red-950);
+  --color-accent-950: var(--color-red-950);
+  --tw-ink: var(--color-stone-900);
+  --tw-paper: var(--color-white);
+  --tw-warm: var(--color-red-900);
+  --tw-note-rose: color-mix(in srgb, var(--color-rose-100) 72%, var(--color-stone-50));
+  --tw-note-blue: color-mix(in srgb, var(--color-blue-100) 74%, var(--color-stone-50));
+  --tw-note-cream: color-mix(in srgb, var(--color-amber-100) 38%, var(--color-stone-50));
+  --tw-note-sage: color-mix(in srgb, var(--color-green-100) 55%, var(--color-stone-100));
+  --tw-grid-dot: color-mix(in srgb, var(--color-stone-500) 23%, transparent);
+  --color-background-full: color-mix(in srgb, var(--color-stone-100) 55%, var(--color-white));
+  --color-background-primary-default: var(--tw-paper);
+  --color-background-primary-hover: var(--color-stone-100);
+  --color-background-primary-active: var(--color-stone-200);
+  --color-background-primary-disabled: var(--color-stone-100);
+  --color-background-secondary-default: var(--color-stone-100);
+  --color-background-secondary-hover: var(--color-stone-200);
+  --color-background-tertiary-default: color-mix(in srgb, var(--color-stone-100) 65%, var(--tw-paper));
+  --color-background-tertiary-hover: var(--color-stone-100);
+  --color-text-primary: var(--tw-ink);
+  --color-text-secondary: var(--color-stone-600);
+  --color-text-tertiary: var(--color-stone-500);
+  --color-text-placeholder: var(--color-stone-500);
+  --color-text-disabled: var(--color-stone-400);
+  --color-foreground-icon-primary: var(--tw-ink);
+  --color-foreground-icon-secondary: var(--color-stone-600);
+  --color-foreground-icon-tertiary: var(--color-stone-500);
+  --color-border-button-default: var(--color-stone-200);
+  --color-border-button-hover: var(--color-stone-300);
+  --color-border-button-active: var(--color-stone-600);
+  --color-border-focus-ring: var(--color-stone-600);
+  --color-separator-border: var(--color-stone-200);
+  --color-button-ghost-background: transparent;
+  --color-button-ghost-foreground: var(--color-text-secondary);
+  --color-button-ghost-hover: color-mix(in srgb, var(--tw-ink) 5%, transparent);
+  --color-button-ghost-active: color-mix(in srgb, var(--tw-ink) 9%, transparent);
+  --color-button-ghost-disabled: transparent;
+  --color-button-ghost-disabled-foreground: var(--color-text-disabled);
+  --tw-button-primary-foreground: var(--tw-paper);
+  --gradient-button-primary-default: linear-gradient(var(--tw-ink), var(--tw-ink));
+  --gradient-button-primary-hover: linear-gradient(var(--color-stone-700), var(--color-stone-700));
+  --gradient-button-primary-active: linear-gradient(var(--color-stone-950), var(--color-stone-950));
+  --tw-glass: var(--tw-paper);
+  --tw-selection: color-mix(in srgb, var(--color-red-100) 55%, var(--tw-paper));
+  --tw-backdrop: color-mix(in srgb, var(--tw-ink) 28%, transparent);
+  --shadow-tw-panel: 0 16px 48px color-mix(in srgb, var(--tw-ink) 10%, transparent);
+}
+@utility text-canvas-heading {
+  font-family: var(--font-hand);
+  font-size: clamp(26px, 2.75vw, 44px);
+  font-weight: 400;
+  line-height: 1.55;
+  letter-spacing: .015em;
+}

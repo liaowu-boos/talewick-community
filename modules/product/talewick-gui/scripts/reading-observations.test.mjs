@@ -1,0 +1,24 @@
+import test,{after} from 'node:test';import assert from 'node:assert/strict';import {mkdtemp,readFile,writeFile,rm} from 'node:fs/promises';import {tmpdir} from 'node:os';import path from 'node:path';import {stripTypeScriptTypes} from 'node:module';import {fileURLToPath,pathToFileURL} from 'node:url';
+const root=fileURLToPath(new URL('../src/model/',import.meta.url)),temp=await mkdtemp(path.join(tmpdir(),'reading-normalization-test-'));after(()=>rm(temp,{recursive:true,force:true}));
+for(const name of ['seed','runtime','revision-anchor','store','conversation','project-link']){const js=stripTypeScriptTypes(await readFile(path.join(root,name+'.ts'),'utf8'),{mode:'transform'}).replace(/(from\s+['"])(\.\/[^'"]+)(['"])/g,'$1$2.mjs$3');await writeFile(path.join(temp,name+'.mjs'),js);}
+const {readRuntimeTask}=await import(pathToFileURL(path.join(temp,'runtime.mjs')));const {parseState}=await import(pathToFileURL(path.join(temp,'store.mjs')));const {createInitialState,createProject}=await import(pathToFileURL(path.join(temp,'seed.mjs')));
+const observation={id:'reading-1',observation:'人物在交还钥匙时停顿。',category:'动作',suspectedCause:'可能仍有犹豫。',evidence:[{chapterId:'ch-1',quote:'她停了一下。',evidenceVerified:false}],evidenceVerified:false,crossScene:false,revisionScope:{chapterIds:['ch-1'],action:'核对动作。',reason:'仍需证据。',preserve:['停顿'],scopeVerified:false},status:'needs_evidence',interpretationStatus:'model_hypothesis',automaticRevisionAuthorized:false,unresolved:true,limitations:['模型观察。']};
+const result={title:'测试',chapters:[{id:'ch-1',title:'第一章',body:'她停了一下。'}],review:{summary:'模型复读',readingObservations:[observation],strengths:['动作具体。'],readerType:'independent_context_model_call',readScope:'全文',phase:'after_controller_revision',manuscriptSha256:'a'.repeat(64)},checks:{full15:{status:'NOT_EVALUATED'}},knowledge:{},warnings:[]};const task={id:'task',projectId:'project',requestId:'request',baseRevision:'base',kind:'create',status:'completed',result};
+test('observation contract and review metadata survive repeated task and storage normalization',()=>{
+ const first=readRuntimeTask(task);assert.deepEqual(first.result.review.readingObservations,[observation]);assert.deepEqual(readRuntimeTask(JSON.parse(JSON.stringify(first))),first);
+ const state=createInitialState(),project=createProject('test','auto');project.id='project';project.chapters=[{id:'sentinel',title:'用户稿',body:'用户编辑'}];project.runtimeHistory=[first];state.projects=[project];state.activeProjectId=project.id;
+ const saved=parseState(JSON.parse(JSON.stringify(state))),again=parseState(JSON.parse(JSON.stringify(saved)));assert.deepEqual(again.projects[0].runtimeHistory[0].result.review,first.result.review);assert.deepEqual(again.projects[0].chapters,project.chapters);
+});
+test('invalid observations remain explicitly invalid after reload, without authorization or completion inference',()=>{
+ for(const change of [{automaticRevisionAuthorized:true},{unresolved:false},{status:'approved'},{status:['proposed']},{status:['needs_evidence']},{status:[['needs_evidence']]},{evidence:[{chapterId:'ch-1',quote:'x',evidenceVerified:'true'}]},{revisionScope:null}]){
+  const parsed=readRuntimeTask({...task,result:{...result,review:{...result.review,readingObservations:[{...observation,...change}]}}});assert.equal(parsed.result.review.readingObservations,undefined);assert.equal(parsed.result.review.readingObservationsInvalid,true);assert.equal(readRuntimeTask(JSON.parse(JSON.stringify(parsed))).result.review.readingObservationsInvalid,true);assert.deepEqual(parsed.result.chapters,result.chapters);
+ }
+ const duplicated=readRuntimeTask({...task,result:{...result,review:{summary:'x',readingObservations:[observation,observation]}}});assert.equal(duplicated.result.review.readingObservationsInvalid,true);
+});
+test('legacy absent and valid empty observations remain distinct',()=>{
+ const legacy=readRuntimeTask({...task,result:{...result,review:{summary:'旧记录'}}});assert.equal(legacy.result.review.readingObservations,undefined);assert.equal(legacy.result.review.readingObservationsInvalid,undefined);
+ const empty=readRuntimeTask({...task,result:{...result,review:{summary:'本次未记录观察',readingObservations:[]}}});assert.deepEqual(empty.result.review.readingObservations,[]);
+});
+if(process.env.TALEWICK_REVIEW_FIXTURE)test('real completed review retains all thirteen observations and original metadata across serialization',async()=>{
+ const original=JSON.parse(await readFile(process.env.TALEWICK_REVIEW_FIXTURE,'utf8'));const parsed=readRuntimeTask({...task,result:original});for(const key of ['readingObservations','strengths','phase','readerType','readScope','manuscriptSha256'])assert.deepEqual(parsed.result.review[key],original.review[key]);assert.deepEqual(readRuntimeTask(JSON.parse(JSON.stringify(parsed))),parsed);assert.deepEqual(parsed.result.chapters,original.chapters);
+});
