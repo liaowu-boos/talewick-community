@@ -8,6 +8,7 @@ import { projectCodexAttempt } from './model.mjs';
 
 const active = new Set(['queued', 'running']);
 const recoverable = new Set(['failed', 'interrupted', 'cancelled']);
+export const CREATE_STATE_REVIEW_MODE = 'create-state-review-v1';
 const now = () => new Date().toISOString();
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
@@ -129,7 +130,7 @@ export class TaskService {
     try { await pending; } finally { if (this.writes.get(key) === pending) this.writes.delete(key); }
   }
   async save(task) { await this.write(task.id, 'task.json', task); }
-  get(id) { const task = this.tasks.get(id); if (!task) throw fail('找不到这次任务，原有浏览器稿件仍可编辑和导出。', 404); const projected = structuredClone(task); delete projected.partialDraft; const partialDraft = projectPartialDraft(task, this.artifacts.get(id)); if (partialDraft) projected.partialDraft = partialDraft; if (projected.result?.chapters && projected.result?.review) projected.result.reviewAdjudicationBinding = projectReviewAdjudication(projected.result); return projected; }
+  get(id) { const task = this.tasks.get(id); if (!task) throw fail('找不到这次任务，原有浏览器稿件仍可编辑和导出。', 404); const projected = structuredClone(task); delete projected.partialDraft; delete projected.createStateReviewMode; const partialDraft = projectPartialDraft(task, this.artifacts.get(id)); if (partialDraft) projected.partialDraft = partialDraft; if (projected.result?.chapters && projected.result?.review) projected.result.reviewAdjudicationBinding = projectReviewAdjudication(projected.result); return projected; }
   list(projectId) { return [...this.tasks.values()].filter(t => !projectId || t.projectId === projectId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(t => this.get(t.id)); }
   ensureIdleProject(projectId, except) { if ([...this.tasks.values()].some(t => t.id !== except && t.projectId === projectId && active.has(t.status))) throw fail('这个项目已有任务正在运行，请等待或取消后再提交。', 409); }
   mutate(fn) { const next = this.mutations.then(fn); this.mutations = next.catch(() => {}); return next; }
@@ -143,7 +144,8 @@ export class TaskService {
       return this.get(previous.id);
     }
     this.ensureIdleProject(request.projectId);
-    const task = { id: randomUUID(), projectId: request.projectId, requestId: request.requestId, kind: request.kind, ...this.defaultEngine, status: 'queued', stage: '等待开始', createdAt: now(), updatedAt: now(), baseRevision: request.baseRevision };
+    const task = { id: randomUUID(), projectId: request.projectId, requestId: request.requestId, kind: request.kind, ...this.defaultEngine, status: 'queued', stage: '等待开始', createdAt: now(), updatedAt: now(), baseRevision: request.baseRevision,
+      ...(request.kind === 'create' && this.defaultEngine.engine === 'ai-sdk' ? { createStateReviewMode: CREATE_STATE_REVIEW_MODE } : {}) };
     await mkdir(path.join(this.runsDir, task.id), { mode: 0o700 });
     await this.write(task.id, 'request.json', request); await this.write(task.id, 'artifacts.json', {}); await this.save(task);
     this.requests.set(task.id, request); this.artifacts.set(task.id, {}); this.tasks.set(task.id, task);
@@ -164,6 +166,10 @@ export class TaskService {
         const artifacts = { ...this.artifacts.get(task.id), [key]: structuredClone(value) };
         await this.write(task.id, 'artifacts.json', artifacts);
         this.artifacts.set(task.id, artifacts);
+        if (key === 'requestSpec' && task.createStateReviewMode !== undefined) {
+          if (value?.createStateReviewMode !== task.createStateReviewMode) throw new Error('新建任务的全文状态审阅模式未写入请求规格，已停止本次任务。');
+          delete task.createStateReviewMode;
+        }
         signal.throwIfAborted();
         if (!key.startsWith('agent:')) task.stage = key;
         task.updatedAt = now(); await this.save(task);
@@ -186,7 +192,12 @@ export class TaskService {
       } };
       const binding = engineBinding(task.engine, task.engineVersion);
       const progress = async stage => { signal.throwIfAborted(); task.stage = stage; task.updatedAt = now(); await this.save(task); };
-      const result = await this.workflow({ request: structuredClone(this.requests.get(task.id)), model, artifacts: structuredClone(this.artifacts.get(task.id)), checkpoint, signal, progress, ...binding });
+      const saved = this.artifacts.get(task.id), hasRequestSpec = Object.hasOwn(saved, 'requestSpec');
+      const persistedMode = saved.requestSpec?.createStateReviewMode;
+      if (task.kind === 'create' && hasRequestSpec && persistedMode !== undefined && persistedMode !== CREATE_STATE_REVIEW_MODE) throw new Error('任务保存的全文状态审阅模式未知，未继续执行。');
+      const createStateReviewMode = task.kind === 'create' && (hasRequestSpec ? persistedMode : task.createStateReviewMode);
+      const result = await this.workflow({ request: structuredClone(this.requests.get(task.id)), model, artifacts: structuredClone(saved), checkpoint, signal, progress,
+        ...(createStateReviewMode ? { createStateReviewMode } : {}), ...binding });
       signal.throwIfAborted();
       if (!Array.isArray(result?.chapters) || !result.chapters.length || result.chapters.some(c => !c.id || !c.title || !c.body?.trim())) throw new Error('创作没有产出完整可读取的章节，本次未标记完成。');
       try { assertWorkflowResultReady(result, this.artifacts.get(task.id)?.requestSpec); }

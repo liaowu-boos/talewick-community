@@ -1,0 +1,29 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {inspectRelevance as inspectProtocol,RELEVANCE_PARSER_VERSION,LEGACY_RELEVANCE_PARSER_VERSION} from '../runtime/relevance.mjs';
+// Original envelope cases exercise the retained historical parser-4. Live service below uses parser-6.
+const inspectRelevance=(response,prepared,options={})=>inspectProtocol(response,prepared,{parserVersion:'library-relevance-parser-4',...options});
+const p={inputHash:'fixture-hash',input:{candidates:[{candidateId:'one'},{candidateId:'two'}]}};
+const valid={type:'json_object',inputHash:p.inputHash,decisions:p.input.candidates.map(c=>({candidateId:c.candidateId,relevance:'irrelevant',reason:'synthetic protocol fixture'}))};
+const raw=JSON.stringify(valid);const parse=o=>inspectRelevance(JSON.stringify(o),p);
+test('known type accepted by new parser, rejected by legacy parser',()=>{assert.deepEqual(inspectRelevance(raw,p),valid.decisions);assert.throws(()=>inspectRelevance(raw,p,{parserVersion:LEGACY_RELEVANCE_PARSER_VERSION}));});
+test('absence of type remains accepted, output decisions unchanged',()=>{const o=structuredClone(valid);delete o.type;assert.deepEqual(parse(o),valid.decisions);assert.deepEqual(inspectRelevance(JSON.stringify(o),p,{parserVersion:LEGACY_RELEVANCE_PARSER_VERSION}),valid.decisions);});
+for(const [name,fn] of [
+ ['unknown root key',o=>o.extra=true],['wrong type',o=>o.type='json'],['null type',o=>o.type=null],['object type',o=>o.type={value:'json_object'}],['missing hash',o=>delete o.inputHash],['wrong hash',o=>o.inputHash='0'.repeat(64)],['missing decisions',o=>delete o.decisions],['missing candidate',o=>o.decisions.pop()],['duplicate candidate',o=>o.decisions[1]=o.decisions[0]],['unknown candidate',o=>o.decisions[0].candidateId='other'],['decision extra type',o=>o.decisions[0].type='json_object'],['bad enum',o=>o.decisions[0].relevance='yes'],['blank reason',o=>o.decisions[0].reason=' '],['long reason',o=>o.decisions[0].reason='x'.repeat(201)],['missing decision field',o=>delete o.decisions[0].reason]
+])test(name,()=>{const o=structuredClone(valid);fn(o);assert.throws(()=>parse(o));});
+test('invalid JSON and unknown parser rejected',()=>{assert.throws(()=>inspectRelevance('{',p));assert.throws(()=>inspectRelevance(raw,p,{parserVersion:'future'}));});
+test('type never substitutes for missing inputHash',()=>{const o=structuredClone(valid);delete o.inputHash;assert.throws(()=>parse(o));});
+
+import {mkdtemp,readFile,writeFile,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';import {join} from 'node:path';import {randomUUID} from 'node:crypto';
+import {createLibraryService} from '../runtime/library.mjs';
+test('real library saves parser version and exact raw, plain path unchanged, legacy read/restart does not reinterpret',async()=>{
+ const rootDir=await mkdtemp(join(tmpdir(),'envelope-library-test-'));let lib,assessorCalls=0,analysisCalls=0;const responses=[];
+ const options={rootDir,reviewAnalysis:async()=>({approved:true,notes:['合成复核夹具，不是真实批准']}),model:{complete:async()=>{analysisCalls++;return JSON.stringify({overview:'合成单行',coverage:{scope:'full',notes:[]},limitations:[],units:[{id:'u1',title:'转轴',event:'检查转轴',psychology:'未知',emotion:'未知',expression:'操作',readerEffectHypothesis:'可能说明动作',locator:{lineStart:1,lineEnd:1},evidence:[{lineStart:1,lineEnd:1,quote:'转轴维护。'}],relatedUnitIds:[]}]});}},assessRelevance:async({user})=>{const input=JSON.parse(user);assessorCalls++;const answer={...(assessorCalls===1?{type:'json_object'}:{}),inputHash:input.inputHash,decisions:input.candidates.map(c=>({candidateId:c.candidateId,relevance:'irrelevant',reason:'合成协议夹具'}))};const raw='\n'+JSON.stringify(answer,null,2)+'\n';responses.push(raw);return raw;}};
+ try{lib=await createLibraryService(options);const source=await lib.importSource({requestId:'synthetic',fileName:'synthetic.txt',bytes:Buffer.from('转轴维护。')});let state;for(let i=0;i<300;i++){state=await lib.get(source.sourceId);if(!['running','queued'].includes(state.status))break;await new Promise(r=>setTimeout(r,5));}assert(!['running','queued'].includes(state.status));
+ const query={contractVersion:'v04-contract-1',query:'转轴',context:'检查动作',stage:'planning',sourceIds:[source.sourceId],budget:{maxCandidates:20,maxUnits:6,maxChars:12000}};
+ const received=[];for(let i=0;i<2;i++){const result=await lib.retrieve(query);assert.equal(result.status,'uncovered');const receipt=await lib.getRelevanceReview(result.relevanceReview.receiptId);assert.equal(receipt.parserVersion,RELEVANCE_PARSER_VERSION);assert.equal(receipt.rawResponse,responses[i]);assert.equal(receipt.status,'completed');assert(!Object.hasOwn(result.relevanceReview,'parserVersion'));received.push(receipt);}
+ const historical=structuredClone(received[0]);historical.receiptId=randomUUID();delete historical.parserVersion;historical.status='failed';historical.decisions=[];historical.errorCode='RELEVANCE_UNAVAILABLE';const historicalPath=join(rootDir,'relevance-reviews',historical.receiptId+'.json'),bytes=JSON.stringify(historical,null,2)+'\n';await writeFile(historicalPath,bytes);
+ assert.deepEqual(await lib.getRelevanceReview(historical.receiptId),historical);const prepared={inputHash:historical.inputHash,input:JSON.parse(historical.user)};assert.throws(()=>inspectRelevance(historical.rawResponse,prepared,{parserVersion:historical.parserVersion??LEGACY_RELEVANCE_PARSER_VERSION}));
+ await lib.close();lib=await createLibraryService({...options,model:{complete:async()=>assert.fail('unexpected analysis restart')}});assert.deepEqual(await lib.getRelevanceReview(historical.receiptId),historical);assert.equal(await readFile(historicalPath,'utf8'),bytes);assert.equal(assessorCalls,2);assert.equal(analysisCalls,1);
+ }finally{if(lib)await lib.close();await rm(rootDir,{recursive:true,force:true});}
+});

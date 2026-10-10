@@ -771,6 +771,7 @@ async function createLibraryServiceImpl({ rootDir, model, reviewCandidates, revi
               if (event.kind === 'initial') {
                 if (event.phase === 'response') receipt.rawResponse = event.rawResponse;
                 if (event.phase === 'incomplete') receipt.recovery = { version: 'relevance-coverage-partition-1', reason: 'incomplete_coverage', missingCandidateIds: event.missingCandidateIds, groups: [] };
+                if (event.phase === 'recoverable') receipt.recovery = { version: 'relevance-coverage-partition-1', reason: event.recoveryReason, missingCandidateIds: event.missingCandidateIds, groups: [] };
               } else if (event.kind === 'normal' || event.kind === 'normal-recovery') {
                 const parent = event.kind === 'normal-recovery' ? receipt.normalReview.groups[event.parentIndex] : null;
                 const groups = parent ? parent.recovery.groups : receipt.normalReview.groups;
@@ -780,6 +781,7 @@ async function createLibraryServiceImpl({ rootDir, model, reviewCandidates, revi
                   if (event.phase === 'response') attempt.rawResponse = event.rawResponse;
                   if (event.phase === 'validated') { attempt.status = 'validated'; attempt.completedAt = now(); }
                   if (event.phase === 'incomplete') { attempt.status = 'incomplete'; attempt.recovery = { version: 'relevance-coverage-partition-1', missingCandidateIds: event.missingCandidateIds, groups: [] }; }
+                  if (event.phase === 'recoverable') { attempt.status = 'recoverable'; attempt.recovery = { version: 'relevance-coverage-partition-1', reason: event.recoveryReason, missingCandidateIds: event.missingCandidateIds, groups: [] }; }
                   if (event.phase === 'failed') { attempt.status = 'failed'; attempt.errorCode = event.errorCode; if (event.candidateId) attempt.validationError = { code: event.errorCode, candidateId: event.candidateId }; }
                 }
               } else {

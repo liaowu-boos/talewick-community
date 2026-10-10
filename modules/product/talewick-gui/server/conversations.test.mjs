@@ -326,6 +326,28 @@ test('a revision tool cannot replace the server snapshot, baseline or UTF-16 sel
   assert.equal(request.kind, 'revise');
 });
 
+test('a current explicit revision forces the revision tool despite a historical unavailable-tools reply', async t => {
+  const input = '开始修改当前稿件，按六处精确替换生成待审建议。额外剧情、材料和说明段落均保持为零。';
+  const revised = { ...structuredClone(snapshot), kind: 'revise', instruction: input, baseRevision: 'current-v3',
+    chapters: [{ id: 'chapter-1', title: '第一章', body: '旧句。' }] };
+  const history = [
+    { role: 'user', text: '请按上一份清单改稿。' },
+    { role: 'assistant', text: '当前写作工具不可用，无法提交修改。' },
+  ];
+  const model = mockModel([
+    [toolCall('revise_manuscript', { brief: input }), finish('tool-calls')],
+    [...textParts('修改任务已提交。'), finish()],
+  ]);
+  const { service, tasks } = await setup(t, model);
+  await service.start(snapshot.projectId, turnBody('revision-current-permission', input, { snapshot: revised, history }));
+  assert.equal((await completed(service, 'revision-current-permission')).status, 'completed');
+  assert.deepEqual(model.doStreamCalls[0].toolChoice, { type: 'tool', toolName: 'revise_manuscript' });
+  assert.ok(model.doStreamCalls[0].tools.some(item => item.name === 'revise_manuscript'));
+  assert.equal(tasks.requests.length, 1);
+  assert.equal(tasks.requests[0].kind, 'revise');
+  assert.equal(tasks.requests[0].instruction, input);
+});
+
 test('truncated responses and stream errors retain partial content without claiming completion', async t => {
   for (const failure of ['length', 'error']) await t.test(failure, async t => {
     const errors = [];
@@ -371,6 +393,14 @@ test('writing permission distinguishes a direct instruction from a question or a
   assert.equal(permitsWriting('不是要你写一篇小说。'), false);
   assert.equal(permitsWriting('好的', '现在开始写作吗？'), true);
   assert.equal(permitsWriting('好的', '我们继续讨论人物。'), false);
+  assert.equal(permitsWriting('开始修改当前稿件，按六处精确替换生成待审建议。不新增剧情、材料或整段解释；如果原文不匹配就报告，不猜位置。'), true);
+  assert.equal(permitsWriting('直接修改当前稿件，不要新增解释。'), true);
+  assert.equal(permitsWriting('暂时不要修改当前稿件，先解释六处问题。'), false);
+  assert.equal(permitsWriting('开始修改之前，先讨论方案。'), false);
+  assert.equal(permitsWriting('写一篇小说只是举例，我还没有决定。'), false);
+  assert.equal(permitsWriting('请先别执行修改，只解释方案。'), false);
+  assert.equal(permitsWriting('是否开始修改当前稿件？'), false);
+  assert.equal(permitsWriting('如果开始修改当前稿件，会怎样处理？'), false);
 });
 
 test('auto starts a generic writing request without requiring a topic or another confirmation', async t => {

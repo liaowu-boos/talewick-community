@@ -110,6 +110,26 @@ export function incompleteRelevanceCoverage(response,prepared){
   return expected.filter(id=>!seen.has(id));
  }catch{return null;}
 }
+/** A complete group with only omitted usable evidenceIds may be rebound and reassessed. */
+export function missingRelevanceEvidenceIds(response,prepared){
+ try{
+  const out=JSON.parse(response),expected=prepared.input.candidates.map(c=>c.candidateId);
+  const envelope=exact(out,['inputHash','decisions'])||(exact(out,['inputHash','decisions','type'])&&out.type==='json_object');
+  if(!envelope||out.inputHash!==prepared.inputHash||!Array.isArray(out.decisions)||out.decisions.length!==expected.length)return null;
+  const ids=new Set(expected),seen=new Set();let missing=false;
+  for(const d of out.decisions){
+   if(typeof d?.candidateId!=='string'||!ids.has(d.candidateId)||seen.has(d.candidateId)||!['usable','irrelevant','insufficient_context'].includes(d.relevance)||typeof d.reason!=='string'||!d.reason.trim()||d.reason.length>200)return null;
+   seen.add(d.candidateId);
+   const candidate=prepared.input.candidates.find(item=>item.candidateId===d.candidateId),subset=relevanceSubset(prepared,[candidate]);
+   try{inspectRelevance(JSON.stringify({inputHash:subset.inputHash,decisions:[d]}),subset);}
+   catch(error){
+    if(d.relevance!=='usable'||!exact(d,['candidateId','relevance','reason'])||error?.code!=='RELEVANCE_EVIDENCE_INVALID'||error?.candidateId!==d.candidateId)return null;
+    missing=true;
+   }
+  }
+  return missing?expected:null;
+ }catch{return null;}
+}
 /** Reassess every sent candidate in small, separately bound groups; never reuse partial labels. */
 export function prepareRelevanceRecovery(prepared,{groupSize=4}={}){
  if(!Number.isSafeInteger(groupSize)||groupSize<1||groupSize>4)throw TypeError('invalid relevance recovery group size');
@@ -146,9 +166,22 @@ export async function assessPreparedRelevance(prepared,{assessRelevance,signal,t
     const decisions=inspectRelevance(rawResponse,item,{parserVersion:RELEVANCE_PARSER_VERSION});
     await emit({phase:'validated',kind,index,...(parentIndex===null?{}:{parentIndex})});return {decisions,rawResponse};
    }catch(error){
+    // A syntactically truncated multi-candidate response contains no decisions
+    // that can be trusted. Rebind every candidate to smaller requests; a bad
+    // hash, field, evidence selection, or single-candidate response still fails.
+    if(allowGap&&item.input.candidates.length>1&&error instanceof SyntaxError){
+     const missingCandidateIds=item.input.candidates.map(candidate=>candidate.candidateId);
+     await emit({phase:'recoverable',kind,index,...(parentIndex===null?{}:{parentIndex}),recoveryReason:'invalid_json',missingCandidateIds});
+     return {missingCandidateIds,recoveryReason:'invalid_json',rawResponse};
+    }
+    const omittedEvidenceCandidateIds=allowGap&&item.input.candidates.length>1?missingRelevanceEvidenceIds(rawResponse,item):null;
+    if(omittedEvidenceCandidateIds){
+     await emit({phase:'recoverable',kind,index,...(parentIndex===null?{}:{parentIndex}),recoveryReason:'missing_evidence_ids',missingCandidateIds:omittedEvidenceCandidateIds});
+     return {missingCandidateIds:omittedEvidenceCandidateIds,recoveryReason:'missing_evidence_ids',rawResponse};
+    }
     const missingCandidateIds=allowGap?incompleteRelevanceCoverage(rawResponse,item):null;
     if(!missingCandidateIds)throw error;
-    await emit({phase:'incomplete',kind,index,...(parentIndex===null?{}:{parentIndex}),missingCandidateIds});return {missingCandidateIds,rawResponse};
+    await emit({phase:'incomplete',kind,index,...(parentIndex===null?{}:{parentIndex}),recoveryReason:'incomplete_coverage',missingCandidateIds});return {missingCandidateIds,recoveryReason:'incomplete_coverage',rawResponse};
    }
   }catch(error){
    await onAttempt({phase:'failed',kind,index,...(parentIndex===null?{}:{parentIndex}),errorCode:error?.code==='RELEVANCE_EVIDENCE_INVALID'?error.code:error?.code==='RELEVANCE_DEADLINE'?error.code:'RELEVANCE_UNAVAILABLE',...(error?.candidateId?{candidateId:error.candidateId}:{})});

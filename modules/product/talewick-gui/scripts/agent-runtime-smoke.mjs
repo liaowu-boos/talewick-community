@@ -101,7 +101,7 @@ export function makeAgentModels({ adjudicationDecision = 'confirm', reviewDecisi
     if (args.stage === 'draft:ch-1') return originalBodies[0];
     if (args.stage === 'draft:ch-2') return originalBodies[1];
     if (['agent:reviseChapter:ch-2', 'revision:ch-2'].includes(args.stage)) {
-      if (input.revisionScope) return JSON.stringify({ replacements: input.revisionScope.ranges.map(range => ({ start: range.start, end: range.end, quote: range.quote, replacement: range.quote.replace('铜钱', '银币') })) });
+      if (input.revisionScope?.ranges) return JSON.stringify({ replacements: input.revisionScope.ranges.map(range => ({ start: range.start, end: range.end, quote: range.quote, replacement: range.quote.replace('铜钱', '银币') })) });
       return input.currentChapter.body.replace('铜钱', '银币');
     }
     if (args.stage === 'requestedRevision') {
@@ -114,6 +114,18 @@ export function makeAgentModels({ adjudicationDecision = 'confirm', reviewDecisi
       const current = input.chapters.find(chapter => chapter.id === 'ch-2');
       return JSON.stringify({ readingObservations: [], summary: '模拟模型已读取当前测试正文。', issues: current?.body.includes('铜钱') ? [{ chapterId: 'ch-2', category: '物件细节', severity: 'must_fix', quote: '铜钱', explanation: '测试替身指定必修意见：把钱的材质明确为银币。', suggestion: '将铜钱改为银币，保留其他动作。' }] : [], strengths: [], limitations: ['仅验证真实 SDK 与本地任务接通；不是实际模型质量评估。'] });
     }
+    if (args.stage === 'continuity-review') return JSON.stringify({
+      inputHash: input.inputHash,
+      manuscriptSha256: input.manuscriptSha256,
+      checkedChapterIds: input.chapters.map(chapter => chapter.id),
+      checkedDimensions: ['knowledge', 'obligation', 'physical_state', 'time', 'promise'],
+      coverage: { status: 'complete', omissions: [] },
+      comparisons: [],
+      hintChecks: (input.transitionHints?.hints ?? []).map(hint => ({
+        hintId: hint.id, status: 'explained', comparisonIds: [],
+        reason: '合成测试已检查该提示，未发现跨章状态冲突。',
+      })),
+    });
     throw new Error(`Unrecognized ordinary stage in agent fixture: ${args.stage}`);
   } };
   return { model, agentModel, stageCalls, decisions, controls };

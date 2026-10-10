@@ -12,6 +12,13 @@ The project separates the writing interface, source material management, writing
 
 ![Talewick workspace](examples/workspace.png)
 
+## Latest update · 2026-10-10
+
+- New tasks in the default Agent workflow receive a whole-manuscript state review covering character knowledge, time, objects, and commitments. Existing tasks resume with their saved workflow.
+- A completed review response with JSON syntax or field errors can be reviewed again once. Malformed reference screening output or omitted evidence IDs can trigger smaller, separately bound reassessments within the existing budget; validation remains strict.
+- Fixed explicit revision instructions being mistaken for discussion because of conditional wording, or being blocked by an earlier reply saying tools were unavailable.
+- Added revised manuscripts of *Jinhua Clothing* (锦华服饰) and *Empty Seat* (空座) to the [reading examples](examples/README.md).
+
 ## What you can do
 
 - **Discuss and draft**: describe your genre, characters, conflict, length, and ending, then proceed through requirements, planning, and chapter-by-chapter writing.
@@ -79,7 +86,7 @@ Open [http://127.0.0.1:4326](http://127.0.0.1:4326). For example, send:
 
 When the draft is ready, edit it directly or select a passage and request a specific change, then review and accept the suggestions.
 
-The public edition contains no private source corpus, analysis dataset, or historical release bundles. See [reading examples](examples/README.md) for four recent complete stories; they are not automatically loaded into the library.
+The public edition contains no private source corpus, analysis dataset, or historical release bundles. See [reading examples](examples/README.md) for six complete stories, including two delivered on 2026-10-09. They are not automatically loaded into the library.
 
 ## Data and model calls
 
@@ -96,7 +103,7 @@ The interface and server run locally. Generation sends the requirements, manuscr
 | --- | --- |
 | Deployment | Local web workspace; the source server binds to `127.0.0.1` by default |
 | Writing engine | AI SDK ToolLoopAgent by default; fixed workflow also available |
-| Quality checks | Model review and basic mechanical checks; the Full15 experimental validation platform is off by default |
+| Quality checks | Model review and basic mechanical checks; new default Agent tasks also receive a whole-manuscript state review. The Full15 experimental validation platform is off by default |
 | Reference library | Requires local imports or configuration; sample counts in development reports do not mean a fresh installation includes that library |
 | Interaction modes | Automatic drafting and targeted revision are connected; complete stage-by-stage assisted and professional review interactions are unfinished |
 | Other capabilities | Style training, a complete product account system, and native desktop installers are unfinished |
@@ -114,7 +121,7 @@ modules/
   data/                            # Sources, analysis, and knowledge delivery
   validation/                      # Basic checks and experimental validation
 
-examples/                          # Four recent stories for reading
+examples/                          # Six stories, including two recent revised manuscripts
 licenses/                          # Third-party licenses
 ```
 
@@ -148,7 +155,7 @@ npm run test:ui
 npm run build
 ```
 
-`test:runtime` covers the server, creation runtime, and interface state tests selected by the package script, not every experiment in the repository. Passing tests do not replace real-provider compatibility checks or literary evaluation.
+`test:runtime` covers the server, creation runtime, reference screening, and interface state tests selected by the package script, not every experiment in the repository. Passing tests do not replace real-provider compatibility checks or literary evaluation.
 
 ### Submission guidelines
 

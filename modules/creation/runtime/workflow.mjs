@@ -258,22 +258,25 @@ function controllerTrace(value) {
 }
 
 /** Sequential business stages with optional bounded controller hooks; the host checkpoints artifacts. */
-export async function runWorkflow({ request, model, artifacts = {}, checkpoint = async () => {}, signal, controller, retrieveKnowledge, prepareKnowledge: prepare = prepareKnowledge, followupMode = 'dynamic', existingReviewMode } = {}) {
+export async function runWorkflow({ request, model, artifacts = {}, checkpoint = async () => {}, signal, controller, retrieveKnowledge, prepareKnowledge: prepare = prepareKnowledge, followupMode = 'dynamic', existingReviewMode, createStateReviewMode } = {}) {
   if (existingReviewMode !== undefined && !['review-existing-v1','review-existing-v2','review-existing-v3'].includes(existingReviewMode)) throw new Error('未知已有稿审阅版本。');
+  if (createStateReviewMode !== undefined && createStateReviewMode !== 'create-state-review-v1') throw new Error('未知新建创作状态专审版本。');
   const reviewExisting = existingReviewMode !== undefined;
-  const stateReviewEnabled = ['review-existing-v2','review-existing-v3'].includes(existingReviewMode);
-  const transitionHintsEnabled = existingReviewMode === 'review-existing-v3';
+  const createStateReview = createStateReviewMode !== undefined;
+  const stateReviewEnabled = createStateReview || ['review-existing-v2','review-existing-v3'].includes(existingReviewMode);
+  const transitionHintsEnabled = createStateReview || existingReviewMode === 'review-existing-v3';
   const reviewPolicyVersion = reviewExisting ? ADJUDICATION_RELIABILITY_VERSION : ADJUDICATION_VERSION;
   if (reviewExisting && (request?.kind !== 'revise' || request?.quoteSource || controller)) throw new Error('已有稿审阅仅支持完整 revise 输入及固定独立裁定流程。');
+  if (createStateReview && (request?.kind !== 'create' || reviewExisting)) throw new Error('新建创作状态专审仅支持 create 流程，不能与已有稿审阅混用。');
   if (!['dynamic', 'fixed_materials'].includes(followupMode)) throw new Error('未知补查模式。');
   if (typeof model?.complete !== 'function') throw new Error('缺少真实模型调用配置。');
   if (controller && (!string(controller.runtimeVersion) || controller.runtimeVersion === RUNTIME_VERSION)) throw new Error('可选控制器需要独立的非空执行版本，不能复用固定流程版本。');
-  const runtimeVersion = reviewExisting ? (transitionHintsEnabled ? 'review-existing-workflow-3' : stateReviewEnabled ? 'review-existing-workflow-2' : 'review-existing-workflow-1') : controller?.runtimeVersion || RUNTIME_VERSION;
+  const runtimeVersion = reviewExisting ? (transitionHintsEnabled ? 'review-existing-workflow-3' : stateReviewEnabled ? 'review-existing-workflow-2' : 'review-existing-workflow-1') : createStateReview ? controller ? `${controller.runtimeVersion}:create-state-review-1` : 'fixed-workflow-create-state-review-1' : controller?.runtimeVersion || RUNTIME_VERSION;
   const input = requestInput(request);
   const inputFingerprint = sha(json(canonical(input)));
   const saved = clone(artifacts);
   if (Object.keys(saved).length && !saved.requestSpec) throw new Error('任务进度缺少原始需求绑定，不能安全恢复；请建立新任务。');
-  if (saved.requestSpec && (saved.requestSpec.inputFingerprint !== inputFingerprint || saved.requestSpec.runtimeVersion !== runtimeVersion || saved.requestSpec.reviewPolicyVersion !== reviewPolicyVersion || saved.requestSpec.existingReviewMode !== existingReviewMode)) {
+  if (saved.requestSpec && (saved.requestSpec.inputFingerprint !== inputFingerprint || saved.requestSpec.runtimeVersion !== runtimeVersion || saved.requestSpec.reviewPolicyVersion !== reviewPolicyVersion || saved.requestSpec.existingReviewMode !== existingReviewMode || saved.requestSpec.createStateReviewMode !== createStateReviewMode)) {
     throw new Error('任务输入或执行版本已变化，请建立新任务；不能复用另一份需求的进度。');
   }
   const step = async (key, execute) => {
@@ -346,7 +349,7 @@ export async function runWorkflow({ request, model, artifacts = {}, checkpoint =
         throw new Error('模型连续两次未返回完整的创作规格，本次未开始写作。已保留输入，请重试当前步骤。');
       }
     }
-    return { runtimeVersion, inputFingerprint, requirements, rules, ...(reviewExisting ? { existingReviewMode } : {}), boundedRevisionPolicyVersion: BOUNDED_REVISION_POLICY, reviewPolicyVersion, followupPolicyVersion: FOLLOWUP_POLICY, authorMaterialPolicyVersion: AUTHOR_MATERIAL_POLICY, retrievalFailurePolicyVersion: 'stop-on-retrieval-failure-1',
+    return { runtimeVersion, inputFingerprint, requirements, rules, ...(reviewExisting ? { existingReviewMode } : {}), ...(createStateReview ? { createStateReviewMode } : {}), boundedRevisionPolicyVersion: BOUNDED_REVISION_POLICY, reviewPolicyVersion, followupPolicyVersion: FOLLOWUP_POLICY, authorMaterialPolicyVersion: AUTHOR_MATERIAL_POLICY, retrievalFailurePolicyVersion: 'stop-on-retrieval-failure-1',
       ...(input.kind === 'create' && requirements.referenceIntent?.purpose === 'expression'
         ? { materialEvidencePolicyVersion: MATERIAL_USE_EVIDENCE_POLICY } : {}),
       followupPolicy: { mode: followupMode === 'fixed_materials' ? 'disabled' : typeof retrieveKnowledge === 'function' ? 'dynamic' : 'disabled',
@@ -465,7 +468,7 @@ export async function runWorkflow({ request, model, artifacts = {}, checkpoint =
   for (const [key, value] of Object.entries(saved)) {
     if (key.startsWith('agent:review:tool:') && Array.isArray(value?.state?.chapters)) approvedManuscripts.add(manuscriptFingerprint(value.state.chapters));
     if (key.startsWith('reviewAdjudication:') && value?.sourceReview) generatedReviews.add(adjudicationFingerprint(value.sourceReview));
-    if (key.startsWith('agentReviewReading:') && value?.manuscriptSha256) generatedReviews.add(adjudicationFingerprint(value));
+    if (/^agentReviewReading:[a-f0-9]{64}$/.test(key) && value?.manuscriptSha256) generatedReviews.add(adjudicationFingerprint(value));
   }
   const registeredAdjudication = bound => {
     const stored = saved[`reviewAdjudication:${bound.inputHash}`];
@@ -512,7 +515,8 @@ export async function runWorkflow({ request, model, artifacts = {}, checkpoint =
           candidate = controllerChapters(candidate, baseline, Boolean(input.quoteSource));
           if (!approvedManuscripts.has(manuscriptFingerprint(candidate))) throw new Error('正文没有通过已授权修订步骤，不能覆盖当前版本。');
           const key = `agentReviewReading:${adjudicationFingerprint({ candidate, previousIssues })}`;
-          const actual = await step(key, () => business.reviewManuscript(candidate, clone(previousIssues), { stage: 'agent:reviewManuscript', phase: 'after_controller_revision' }));
+          const actual = await readCurrent(key, candidate, clone(previousIssues),
+            { stage: 'agent:reviewManuscript', phase: 'after_controller_revision' });
           generatedReviews.add(adjudicationFingerprint(actual));
           return actual;
         },

@@ -101,8 +101,13 @@ async function completed(runtime, id) {
     const result = await api(runtime, `/api/tasks/${id}`);
     assert.equal(result.status, 200);
     const task = result.body.task;
-    if (task.status === 'completed') return task;
-    assert.ok(['queued', 'running'].includes(task.status), `Task stopped as ${task.status}: ${task.error ?? ''}`);
+    // The status becomes visible before the worker finishes its final disk write.
+    // Wait for that write before this integration test inspects persisted files.
+    if (task.status === 'completed') {
+      if (!runtime.tasks.busy) return task;
+    } else {
+      assert.ok(['queued', 'running'].includes(task.status), `Task stopped as ${task.status}: ${task.error ?? ''}`);
+    }
     await pause(100);
   }
   throw new Error('Timed out waiting for the fixed workflow integration task.');

@@ -17,7 +17,7 @@ const query={contractVersion:'v04-contract-1',query:'转轴',context:'检修动�
 const sourceText='转轴维护。';
 const failedModes=new Set(['HTTP','length','empty','invalid','missing-evidence','foreign-evidence']);
 const event=(content,finish='stop')=>new Response(`data: ${JSON.stringify({choices:[{index:0,delta:{content},finish_reason:finish}]})}\n\ndata: [DONE]\n\n`,{headers:{'content-type':'text/event-stream'}});
-test('normal DATA loader through existing model transport: bounded complete candidates, no fallback or retries',async()=>{
+test('normal DATA loader through existing model transport: bounded recovery without unverified fallback',async()=>{
  const rootDir=await mkdtemp(join(tmpdir(),'relevance-normal-'));let library,calls=0,mode='usable';const stages=[],bodies=[];
  const adapter=createModel({baseURL:'https://example.invalid',agentProvider:'deepseek',apiKey:'fixture',model:'deepseek-flash',timeoutMs:2000},async(_url,init)=>{
   calls++;const b=JSON.parse(init.body);bodies.push(b);const p=JSON.parse(b.messages[1].content);
@@ -31,9 +31,10 @@ test('normal DATA loader through existing model transport: bounded complete cand
   if(mode==='length')return event('{}','length');
   if(mode==='empty')return event('');
   if(mode==='invalid')return event('{}');
-  const relevance=['missing-evidence','foreign-evidence'].includes(mode)?'usable':mode;
+  const relevance=['missing-evidence','foreign-evidence','recovered-evidence'].includes(mode)?'usable':mode;
+  const omitEvidence=mode==='missing-evidence'||(mode==='recovered-evidence'&&expanded.candidates.length>1);
   return event(JSON.stringify({inputHash,decisions:expanded.candidates.map(c=>({candidateId:c.candidateId,relevance,reason:'固定协议测试，不代表语义准确性',
-   ...(mode==='missing-evidence'?{}:{evidenceIds:mode==='foreign-evidence'?['999999']:relevance==='usable'?['1']:[]})}))}));
+   ...(omitEvidence?{}:{evidenceIds:mode==='foreign-evidence'?['999999']:relevance==='usable'?['1']:[]})}))}));
  });
  const model={complete:async args=>{
   if(args.stage==='library-analysis')return JSON.stringify(analysis);
@@ -47,18 +48,31 @@ test('normal DATA loader through existing model transport: bounded complete cand
   const source=await library.importSource({requestId:'fixture',fileName:'fixture.txt',bytes:Buffer.from(sourceText)});
   for(let i=0;i<300;i++){if(!['running','queued'].includes((await library.get(source.sourceId)).status))break;await new Promise(r=>setTimeout(r,5));}
   assert.equal((await library.get(source.sourceId)).indexStatus,'ready');
-  for(const verdict of ['usable','irrelevant','insufficient_context',...failedModes]){
-   mode=verdict;const before=calls;const result=await retrieve(query);assert.equal(calls-before,1,verdict);
+  for(const verdict of ['usable','recovered-evidence','irrelevant','insufficient_context',...failedModes]){
+   mode=verdict;const before=calls;const result=await retrieve(query);
+   const usable=['usable','recovered-evidence'].includes(verdict);
+   assert.equal(calls-before,verdict==='recovered-evidence'?3:verdict==='missing-evidence'?2:1,verdict);
    assert.equal(result.relevanceReview.status,failedModes.has(verdict)?'failed':'completed');
-   assert.equal(result.status,verdict==='usable'?'matched':verdict==='irrelevant'?'uncovered':'unavailable');
-   if(verdict!=='usable')assert.equal(result.materials.length,0);
+   assert.equal(result.status,usable?'matched':verdict==='irrelevant'?'uncovered':'unavailable');
+   if(!usable)assert.equal(result.materials.length,0);
    const receipt=await library.getRelevanceReview(result.relevanceReview.receiptId);
    assert.equal(receipt.schemaVersion,'library-relevance-4');assert.equal(receipt.parserVersion,'library-relevance-parser-6');
-   if(!failedModes.has(verdict))for(const decision of receipt.decisions)assert.deepEqual(decision.evidenceQuotes,verdict==='usable'?[sourceText]:undefined);
+   if(!failedModes.has(verdict))for(const decision of receipt.decisions)assert.deepEqual(decision.evidenceQuotes,usable?[sourceText]:undefined);
    if(verdict==='foreign-evidence')assert.equal(receipt.validationError.code,'RELEVANCE_EVIDENCE_INVALID');
-   assert.equal(receipt.user,bodies.at(-1).messages[1].content);
+   assert.equal(receipt.user,bodies[before].messages[1].content);
+   if(['missing-evidence','recovered-evidence'].includes(verdict)){
+    assert.equal(receipt.recovery.reason,'missing_evidence_ids');
+    assert.equal(receipt.recovery.groups.length,usable?2:1);
+    for(const [index,group] of receipt.recovery.groups.entries()){
+     assert.equal(group.user,bodies[before+index+1].messages[1].content);
+     assert.equal(group.inputHash,JSON.parse(group.user).inputHash);
+     assert.equal(group.sent.length,1);
+     assert.equal(group.status,usable?'validated':'failed');
+    }
+    if(!usable)assert.deepEqual(receipt.decisions,[]);
+   }
    assert.deepEqual(validateRelevanceReview(result.relevanceReview,{status:result.status,candidateCount:result.candidates.length,materialCount:result.materials.length}),result.relevanceReview);
-   if(verdict==='usable'){
+   if(usable){
     assert.equal(receipt.finalMaterialBindings.length,result.materials.length);
     for(const m of result.materials){
      const binding=receipt.finalMaterialBindings.find(b=>b.materialId===m.id);assert.ok(binding);
