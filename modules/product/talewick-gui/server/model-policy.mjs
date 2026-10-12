@@ -1,4 +1,5 @@
 export const isLibraryStage = stage => stage === 'library-relevance' || stage === 'library-analysis' || stage === 'library-analysis-revision' || stage === 'library-review';
+export const isFull15Stage = stage => stage === 'full15-cold-read' || stage === 'full15-check';
 export const agentProviderFor = config => config.agentProvider || (new URL(config.baseURL).hostname === 'api.deepseek.com' ? 'deepseek' : 'openai-compatible');
 
 // Current Flash and legacy V4 aliases share the thinking/streaming contract.
@@ -15,6 +16,12 @@ export function outputTextLimit(requestedTokens, ceiling = 16000) {
 
 export const RECOVERY_BUDGET_VERSION = 'planning-recovery-text-2';
 
+/** Full15 uses isolated, single-request stages. Low thinking keeps semantic
+ * review enabled while reserving room in the shared output budget for JSON. */
+export function full15ReasoningEffort(config, stage) {
+  return usesDeepSeekThinking(config) && isFull15Stage(stage) ? 'low' : undefined;
+}
+
 /** A complete structured plan can exceed the legacy 6K text hint. This changes
  * only the existing no-thinking recovery, never its count or shared deadline. */
 export function recoveryTextLimit(stage, requestedTokens) {
@@ -30,6 +37,9 @@ export function outputTokenLimit(config, requestedTokens = 6000, stage) {
   // Relevance requests 6000 text tokens; native thinking shares one 32768 total limit.
   if (stage === 'library-relevance') return thinkingV4 ? 32768 : outputTextLimit(requestedTokens, 6000);
   if (!thinkingV4) return Math.min(16000, Math.max(512, Math.ceil(requestedTokens)));
+  // Full15 packets need a larger shared thinking + JSON allowance, without
+  // changing the budgets of ordinary review, creation or library stages.
+  if (isFull15Stage(stage)) return 65536;
   // Explicit opt-in for large continuity JSON: shared thinking + text allowance,
   // not a guarantee of complete output. Recovery keeps the requested text cap.
   if (stage === 'continuity-review') return 65536;

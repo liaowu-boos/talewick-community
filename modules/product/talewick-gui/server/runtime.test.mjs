@@ -19,12 +19,26 @@ async function until(fn) {
   const end = Date.now() + 5000;
   while (!fn()) { if (Date.now() > end) throw new Error('Timed out'); await new Promise(resolve => setTimeout(resolve, 10)); }
 }
-async function fixture(t, workflow) {
+async function fixture(t, workflow, options = {}) {
   const runsDir = await mkdtemp(path.join(os.tmpdir(), 'talewick-task-test-'));
-  const service = await new TaskService({ runsDir, model: { complete: async () => 'test only' }, workflow }).init();
+  const service = await new TaskService({ runsDir, model: { complete: async () => 'test only' }, workflow, ...options }).init();
   t.after(async () => { await service.close(); await until(() => !service.busy); await rm(runsDir, { recursive: true, force: true }); });
   return { service, runsDir };
 }
+
+test('a synchronous completion hook failure cannot reverse a completed task', async t => {
+  let hookCalls = 0;
+  const { service, runsDir } = await fixture(t, async () => structuredClone(result), {
+    onCompleted() { hookCalls++; throw new Error('isolated auxiliary queue failure'); },
+  });
+  const task = await service.create(request());
+  await until(() => service.get(task.id).status === 'completed' && !service.busy);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(hookCalls, 1);
+  assert.equal(service.get(task.id).status, 'completed');
+  assert.equal(JSON.parse(await readFile(path.join(runsDir, task.id, 'task.json'), 'utf8')).status, 'completed');
+  assert.deepEqual(JSON.parse(await readFile(path.join(runsDir, task.id, 'result.json'), 'utf8')), result);
+});
 
 test('concurrent duplicate submission executes once and rejects conflicting identity', async t => {
   let calls = 0;

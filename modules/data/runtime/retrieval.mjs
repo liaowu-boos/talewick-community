@@ -249,9 +249,9 @@ function analysisLimitations(row) {
   .filter(([,notes])=>notes.length).map(([kind,notes])=>`${provenance}的${kind}（逐条完整保留）：\n${JSON.stringify(notes)}`);
 }
 /** Organize only bounded ranked candidates. readText is lazy (at most maxCandidates sources). */
-export async function organizeMaterials(candidates,budget,readText,{signal}={}){
+export async function organizeMaterials(candidates,budget,readText,{signal,cache:sharedCache}={}){
  budget=Object.fromEntries(['maxCandidates','maxUnits','maxChars'].map(k=>{const n=budget?.[k]??RETRIEVAL_LIMITS[k];if(!Number.isSafeInteger(n)||n<0)throw new TypeError('Invalid retrieval budget');return [k,Math.min(n,RETRIEVAL_LIMITS[k])];}));
- const bounded=candidates.slice(0,budget.maxCandidates),cache=new Map();
+ const bounded=candidates.slice(0,budget.maxCandidates),cache=sharedCache??new Map();
  const initial=await packRankedMaterials(bounded,budget,readText,cache,signal);
  if(initial.materials.some(m=>m.use==='reviewed_analysis'))return initial;
  // Repair route starvation only. The caller's relevance gate remains authoritative:
@@ -268,6 +268,65 @@ export async function organizeMaterials(candidates,budget,readText,{signal}={}){
   return repaired;
  }
  return initial;
+}
+const materialSourceKey=m=>JSON.stringify([m.references[0].sourceSha256,m.references[0].textVersion]);
+const materialUnitCost=m=>Math.max(1,new Set(m.references.flatMap(r=>r.unitIds)).size);
+const materialRangesOverlap=(a,b)=>a.references.some(x=>b.references.some(y=>x.sourceSha256===y.sourceSha256&&x.textVersion===y.textVersion&&overlap(x,y)));
+const allocationMetrics=materials=>({
+ sources:new Set(materials.map(materialSourceKey)).size,
+ materials:materials.length,
+ units:materials.reduce((n,m)=>n+materialUnitCost(m),0),
+ chars:materials.reduce((n,m)=>n+m.content.length,0)
+});
+const betterAllocation=(a,b)=>a.sources!==b.sources?a.sources>b.sources:a.materials!==b.materials?a.materials>b.materials:a.units!==b.units?a.units<b.units:false;
+/**
+ * Select only from complete materials whose candidates have already passed the
+ * semantic gate. This is budget fairness, not a second relevance rank: maximize
+ * source opportunity, then complete material count; if coverage ties, avoid a
+ * high-unit item monopolizing the packet, then preserve original rank.
+ */
+export function selectDiversePreparedMaterials(items,budget){
+ budget=Object.fromEntries(['maxCandidates','maxUnits','maxChars'].map(k=>{const n=budget?.[k]??RETRIEVAL_LIMITS[k];if(!Number.isSafeInteger(n)||n<0)throw new TypeError('Invalid retrieval budget');return [k,Math.min(n,RETRIEVAL_LIMITS[k])];}));
+ if(!Array.isArray(items))throw new TypeError('Invalid prepared materials');
+ const bounded=items.slice(0,budget.maxCandidates).map((item,rank)=>{
+  const material=item?.material;
+  if(typeof item?.candidateId!=='string'||!material||typeof material.content!=='string'||!Array.isArray(material.references)||!material.references.length)throw new TypeError('Invalid prepared material');
+  return {...item,rank};
+ });
+ let best=[];
+ const fits=(selected,item)=>{
+  const next=[...selected,item],materials=next.map(x=>x.material),metrics=allocationMetrics(materials);
+  if(metrics.materials>budget.maxUnits||metrics.units>budget.maxUnits||metrics.chars>budget.maxChars)return false;
+  const key=materialSourceKey(item.material),same=materials.filter(m=>materialSourceKey(m)===key);
+  if(same.length>RETRIEVAL_LIMITS.maxSourceMaterials||same.reduce((n,m)=>n+m.content.length,0)>RETRIEVAL_LIMITS.maxSourceChars)return false;
+  return !selected.some(x=>x.material.id===item.material.id||materialRangesOverlap(x.material,item.material));
+ };
+ const rankBefore=(a,b)=>{for(let i=0;i<Math.min(a.length,b.length);i++){if(a[i].rank!==b[i].rank)return a[i].rank<b[i].rank;}return a.length<b.length;};
+ const visit=(at,selected)=>{
+  if(at===bounded.length){const am=allocationMetrics(selected.map(x=>x.material)),bm=allocationMetrics(best.map(x=>x.material));if(betterAllocation(am,bm)||(!betterAllocation(bm,am)&&rankBefore(selected,best)))best=selected;return;}
+  if(fits(selected,bounded[at]))visit(at+1,[...selected,bounded[at]]);
+  visit(at+1,selected);
+ };
+ visit(0,[]);
+ return {selectedCandidateIds:best.map(x=>x.candidateId),metrics:allocationMetrics(best.map(x=>x.material))};
+}
+/** Final packing for the already-usable set; generic retrieval ordering is unchanged. */
+export async function organizeUsableMaterials(candidates,budget,readText,{signal}={}){
+ const cache=new Map(),baseline=await organizeMaterials(candidates,budget,readText,{signal,cache});
+ const bounded=candidates.slice(0,Math.min(budget?.maxCandidates??RETRIEVAL_LIMITS.maxCandidates,RETRIEVAL_LIMITS.maxCandidates)),prepared=[];
+ for(const candidate of bounded){
+  signal?.throwIfAborted();
+  const single=await packRankedMaterials([candidate],Object.fromEntries(['maxCandidates','maxUnits','maxChars'].map(k=>[k,Math.min(budget?.[k]??RETRIEVAL_LIMITS[k],RETRIEVAL_LIMITS[k])])),readText,cache,signal);
+  if(single.materials.length===1)prepared.push({candidateId:candidate.id,material:single.materials[0]});
+ }
+ const allocation=selectDiversePreparedMaterials(prepared,budget),selected=new Set(allocation.selectedCandidateIds);
+ const fair=await packRankedMaterials(bounded.filter(c=>selected.has(c.id)),Object.fromEntries(['maxCandidates','maxUnits','maxChars'].map(k=>[k,Math.min(budget?.[k]??RETRIEVAL_LIMITS[k],RETRIEVAL_LIMITS[k])])),readText,cache,signal);
+ const before=allocationMetrics(baseline.materials),after=allocationMetrics(fair.materials);
+ if(!betterAllocation(after,before))return baseline;
+ const beforeIds=new Set(baseline.materials.map(m=>m.id)),afterIds=new Set(fair.materials.map(m=>m.id));
+ const added=[...afterIds].filter(id=>!beforeIds.has(id)),displaced=[...beforeIds].filter(id=>!afterIds.has(id));
+ fair.limits.push(`语义可用材料按预算公平分配：先增加不同来源机会，再增加完整材料数；覆盖相同时减少单元占用，最后保持原候选次序。新增供应：${added.join('；')||'无'}；未保留：${displaced.join('；')||'无'}。这不是相关性重判或文学增益结论。`);
+ return fair;
 }
 async function packRankedMaterials(candidates,budget,readText,cache,signal){
  const materials=[],limits=[];let usedChars=0;

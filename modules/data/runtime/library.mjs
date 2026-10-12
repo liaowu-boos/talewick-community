@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename, unlink, link } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
-import { INDEX_VERSION, buildRetrievalIndex, compatibleIndex, rankCandidates, rankWithRecall, normalizeRecall, recallReason, organizeMaterials } from './retrieval.mjs';
+import { INDEX_VERSION, buildRetrievalIndex, compatibleIndex, rankCandidates, rankWithRecall, normalizeRecall, recallReason, organizeMaterials, organizeUsableMaterials } from './retrieval.mjs';
 import { inspectAnalysisCandidate } from './analysis-candidate.mjs';
 import { analysisReviewPrompt, inspectAnalysisReview } from './analysis-review.mjs';
 import { analysisBudget, ANALYSIS_BUDGET_VERSION, REVIEW_MAX_TOKENS, REVISION_MAX_TOKENS } from './analysis-budget.mjs';
@@ -813,7 +813,9 @@ async function createLibraryServiceImpl({ rootDir, model, reviewCandidates, revi
         }
       }
       let organized;
-      try { organized = await organizeMaterials(selected, budget, relevancePrepared?.readText ?? textFor, { signal }); } catch (error) { abort(signal); throw error; }
+      try { organized = relevanceReceipt
+        ? await organizeUsableMaterials(selected, budget, relevancePrepared.readText, { signal })
+        : await organizeMaterials(selected, budget, textFor, { signal }); } catch (error) { abort(signal); throw error; }
       if (relevanceReceipt) {
         try {
           relevanceReceipt.finalMaterialBindings = bindFinalMaterials(organized.materials, relevancePrepared, relevanceReceipt.decisions);

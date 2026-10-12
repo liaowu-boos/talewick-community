@@ -19,6 +19,7 @@ import { getEditStart } from '@/model/revision-anchor';
 import { cx } from '@/utils/cx';
 import { useWorkspace } from '@/features/context';
 import { DialogShell, downloadText, EmptyState, formatDate, TextAreaField } from '@/features/shared';
+import { Full15ReviewPanel } from '@/features/Full15ReviewPanel';
 
 interface LocalDraft {
   key: string;
@@ -269,6 +270,7 @@ function ManuscriptContent({ project, onQuote, savedLabel, progress }: { project
       <div className="flex flex-wrap items-center gap-2 text-caption-1-regular text-text-tertiary"><span>{project.chapters.length} 章</span><span>·</span><span>{hanCharacterCount(project.chapters.map(item => item.body).join('')).toLocaleString()} 汉字</span><span>·</span><span aria-live="polite">{hasUnsavedDraft ? '有未保存的修改' : savedLabel}</span><span className="tw-manuscript-demo">{project.runtime ? '本机稿件' : '演示稿件'}</span></div>
     </div>
     {progress}
+    <Full15ReviewPanel project={project} hasUnsavedDraft={hasUnsavedDraft} />
     <Tabs selectedKey={project.docMode} onSelectionChange={value => changeMode(String(value) as DocMode)} className="tw-manuscript-tabs gap-0">
       <div className="tw-manuscript-mode-row"><TabList aria-label="文稿模式" className="tw-manuscript-mode-list"><Tab id="read">阅读</Tab><Tab id="edit">编辑</Tab><Tab id="review" count={allPending.length || undefined}>审阅</Tab></TabList>
         <div className="tw-manuscript-tools"><IconButton icon={RiHistoryLine} aria-label="版本记录" title="版本记录" onClick={openVersions} /><IconButton icon={RiDownload2Line} aria-label="导出稿件" title="导出稿件" onClick={() => guard({ run: () => setDialog('export') })} /></div>

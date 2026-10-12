@@ -1,0 +1,12 @@
+{
+  "schema_version": "novel-review-source-snapshots-1",
+  "sources": [
+    {
+      "package_path": "source-snapshots/public-check-rules.md",
+      "bytes": 2810,
+      "sha256": "6808b54207722328ae65c0f7b49c1e5c1917ae20eb19dfcb45e003c57e92598f",
+      "purpose": "Public edition rules; authored for this package, not a historical private snapshot."
+    }
+  ],
+  "snapshot_policy": "Only the public rule edition is packaged. Rules and excerpts are checked against these bytes; private plans and historical paths are excluded."
+}

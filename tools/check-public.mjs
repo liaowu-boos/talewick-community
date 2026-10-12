@@ -22,6 +22,13 @@ try{
 }catch{files=await walk();}
 const approvedRoots=new Set(['modules','examples','licenses','tools','.github']);
 const approvedRootFiles=new Set(['README.md','README.en.md','CONTRIBUTING.md','CONTRIBUTING.en.md','LICENSE','THIRD_PARTY_NOTICES.md','VERIFICATION.md','.gitignore']);
+// Review definitions and one audited synthetic fixture; never allow a whole JSON directory.
+const approvedReviewJSON=new Set([
+ 'modules/creation/novel-review/checks.json',
+ 'modules/creation/novel-review/report_fields.json',
+ 'modules/creation/novel-review/SOURCE_SNAPSHOTS.json',
+ 'modules/creation/novel-review/acceptance/functional_cases.json',
+]);
 const forbidden=/(?:^|\/)(?:node_modules|dist|\.local-runs|\.local-releases|private|source-library|objects|project-archive|development|9月爆款分类|10月爆款分类|优秀文笔例文—爱意全家桶|小说样本数据补充-可信样本)(?:\/|$)/;
 const secrets=/(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|sk-[A-Za-z0-9_-]{24,}|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)/;
 const errors=[];let bytes=0;
@@ -32,7 +39,9 @@ for(const rel of new Set(files)){
  if(/(?:^|\/)\.env(?:\.|$)/.test(rel)&&!rel.endsWith('/.env.example'))errors.push([rel,'private environment file']);
  if(st.size>10*1024*1024){errors.push([rel,'over 10 MiB']);continue;}
  const extension=path.extname(rel);
- if(extension==='.json'&&!/^modules\/product\/talewick-gui\/(?:package(?:-lock)?|tsconfig)\.json$/.test(rel))errors.push([rel,'unreviewed JSON data']);
+ if(extension==='.json'&&!approvedReviewJSON.has(rel)&&!/^modules\/product\/talewick-gui\/(?:package(?:-lock)?|tsconfig)\.json$/.test(rel))errors.push([rel,'unreviewed JSON data']);
+ if(rel.includes('/source-snapshots/')&&rel!=='modules/creation/novel-review/source-snapshots/public-check-rules.md')errors.push([rel,'unreviewed rule snapshot']);
+ if(rel.includes('/migration-evidence/'))errors.push([rel,'private historical evidence']);
  if(extension==='.txt'&&!rel.startsWith('licenses/')&&!rel.startsWith('examples/'))errors.push([rel,'text outside examples/licenses']);
  if(/\.(?:zip|gz|tar|pdf|sqlite|db|pem|key)$/i.test(rel))errors.push([rel,'unreviewed binary/archive/key file']);
  if(extension!=='.png'){

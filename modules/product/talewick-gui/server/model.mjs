@@ -1,4 +1,4 @@
-import { agentProviderFor, isBusinessStage, isLibraryStage, recoveryTextLimit, RECOVERY_BUDGET_VERSION, outputTokenLimit, usesDeepSeekThinking } from './model-policy.mjs';
+import { agentProviderFor, full15ReasoningEffort, isBusinessStage, isFull15Stage, isLibraryStage, recoveryTextLimit, RECOVERY_BUDGET_VERSION, outputTokenLimit, usesDeepSeekThinking } from './model-policy.mjs';
 import { readModelResponse } from './model-response.mjs';
 import { validateRelevanceModel, validateRelevanceProvider } from './config.mjs';
 import { createCodexRelevanceAssessor } from './codex-relevance.mjs';
@@ -15,15 +15,15 @@ export function projectCodexAttempt(record = {}, { requestedModel, effort, statu
     timedOut: record.timedOut === true, aborted: record.aborted === true };
 }
 
-const JSON_STAGES = new Set(['library-relevance', 'library-analysis', 'library-analysis-revision', 'library-review', 'requirements', 'requirements:repair', 'planning', 'agent:replan', 'review', 'agent:reviewManuscript', 'revisionReview', 'review-adjudication', 'review-adjudication:repair', 'requestedRevision', 'continuity-review']);
-const stageLabel = stage => /^draft:ch-\d+$/.test(stage ?? '') ? `第 ${stage.slice(9)} 章写作` : ({ 'library-relevance': '材料相关性复核', 'library-analysis': '小说拆解', 'library-analysis-revision': '拆解修订', 'library-review': '拆解复核', requirements: '需求整理', 'requirements:repair': '需求纠正', planning: '故事规划', 'agent:replan': '故事重规划', review: '审稿', 'agent:reviewManuscript': '全文复核', revisionReview: '修后复核', 'review-adjudication': '审稿证据裁定', 'review-adjudication:repair': '裁定响应纠正', requestedRevision: '指定修改', 'continuity-review': '连续性核查' }[stage] ?? (/^(revision|agent:reviseChapter):/.test(stage ?? '') ? '章节修订' : '当前步骤'));
+const JSON_STAGES = new Set(['library-relevance', 'library-analysis', 'library-analysis-revision', 'library-review', 'requirements', 'requirements:repair', 'planning', 'agent:replan', 'review', 'agent:reviewManuscript', 'revisionReview', 'review-adjudication', 'review-adjudication:repair', 'requestedRevision', 'continuity-review', 'full15-cold-read', 'full15-check']);
+const stageLabel = stage => /^draft:ch-\d+$/.test(stage ?? '') ? `第 ${stage.slice(9)} 章写作` : ({ 'library-relevance': '材料相关性复核', 'library-analysis': '小说拆解', 'library-analysis-revision': '拆解修订', 'library-review': '拆解复核', requirements: '需求整理', 'requirements:repair': '需求纠正', planning: '故事规划', 'agent:replan': '故事重规划', review: '审稿', 'agent:reviewManuscript': '全文复核', revisionReview: '修后复核', 'review-adjudication': '审稿证据裁定', 'review-adjudication:repair': '裁定响应纠正', requestedRevision: '指定修改', 'continuity-review': '连续性核查', 'full15-cold-read': '全文冷读', 'full15-check': '全文问题检查' }[stage] ?? (/^(revision|agent:reviseChapter):/.test(stage ?? '') ? '章节修订' : '当前步骤'));
 
 /** A plain, stateless Chat Completions call. No agent loop or model-selected tools. */
 export function createModel(config, fetchImpl = fetch, { codexAssessorFactory = createCodexRelevanceAssessor } = {}) {
   const relevanceModel = validateRelevanceModel(config);
   const relevanceProvider = validateRelevanceProvider(config);
   return {
-    async complete({ stage, system, user, signal, directory, maxTokens = 6000, onAttempt = async () => {} }) {
+    async complete({ stage, system, user, signal, directory, maxTokens = 6000, allowRecovery = true, onAttempt = async () => {}, onReceipt = async () => {} }) {
       if (stage === 'library-relevance' && relevanceProvider === 'codex-cli') {
         signal?.throwIfAborted();
         const startedAt = Date.now(); let receipt, content, rejected = false;
@@ -52,10 +52,12 @@ export function createModel(config, fetchImpl = fetch, { codexAssessorFactory = 
       const requestConfig = requestedModel === config.model ? config : { ...config, model: requestedModel };
       const nativeDeepSeek = agentProviderFor(config) === 'deepseek';
       const nativeV4 = usesDeepSeekThinking(requestConfig);
+      const full15Effort = full15ReasoningEffort(requestConfig, stage);
       // These stages already require JSON in their business prompts; prose stays plain text.
       const requestBody = { model: requestedModel, messages: [{ role: 'system', content: system }, { role: 'user', content: user }], max_tokens: outputTokenLimit(requestConfig, maxTokens, stage), stream: Boolean(nativeV4),
         ...((nativeDeepSeek || stage === 'library-relevance') && JSON_STAGES.has(stage) ? { response_format: { type: 'json_object' } } : {}),
-        ...(nativeV4 && isLibraryStage(stage) ? { thinking: { type: stage === 'library-relevance' ? 'enabled' : 'disabled' } } : {}) };
+        ...(nativeV4 && isLibraryStage(stage) ? { thinking: { type: stage === 'library-relevance' ? 'enabled' : 'disabled' } } : {}),
+        ...(full15Effort ? { thinking: { type: 'enabled' }, reasoning_effort: full15Effort } : {}) };
       const total = new AbortController();
       const idle = new AbortController();
       const combined = AbortSignal.any([...(signal ? [signal] : []), total.signal, idle.signal]);
@@ -100,7 +102,7 @@ export function createModel(config, fetchImpl = fetch, { codexAssessorFactory = 
             const choice = await readModelResponse(response, { signal: combined, onProgress: progress });
             checkAbort();
             // 只记数值与枚举，便于定位阶段限制；不记录输入、正文或推理文本。
-            await onAttempt({ stage: isBusinessStage(stage) || isLibraryStage(stage) ? stage : 'other', attempt: withoutThinking ? 2 : 1, requestedModel,
+            await onAttempt({ stage: isBusinessStage(stage) || isLibraryStage(stage) || isFull15Stage(stage) ? stage : 'other', attempt: withoutThinking ? 2 : 1, requestedModel,
               mode: withoutThinking ? 'recovery' : 'primary', maxOutputTokens: body.max_tokens,
               ...(withoutThinking ? { recoveryBudgetVersion: RECOVERY_BUDGET_VERSION } : {}),
               finishReason: choice.finish_reason, contentCharacters: choice.message.content.length,
@@ -113,7 +115,10 @@ export function createModel(config, fetchImpl = fetch, { codexAssessorFactory = 
         let payload;
         try { payload = await response.json(); } catch { checkAbort(); throw new Error('模型返回了无法识别的响应，可以重试当前步骤。'); }
         checkAbort();
-        const choice = payload.choices?.[0];
+        const rawChoice = payload.choices?.[0];
+        const headerRequestId = response.headers?.get?.('x-request-id') || response.headers?.get?.('request-id');
+        const providerRequestId = typeof payload.id === 'string' && payload.id.trim() ? payload.id : typeof headerRequestId === 'string' && headerRequestId.trim() ? headerRequestId : undefined;
+        const choice = rawChoice && providerRequestId ? { ...rawChoice, providerRequestId } : rawChoice;
         if (stage === 'library-relevance') {
           await onAttempt({ stage, attempt: 1, mode: 'primary', requestedModel, maxOutputTokens: body.max_tokens,
             finishReason: choice?.finish_reason, contentCharacters: typeof choice?.message?.content === 'string' ? choice.message.content.length : 0,
@@ -128,15 +133,21 @@ export function createModel(config, fetchImpl = fetch, { codexAssessorFactory = 
         const emptyStopped = choice?.finish_reason === 'stop' && (firstContent == null || (typeof firstContent === 'string' && !firstContent.trim()));
         const truncatedBusiness = isBusinessStage(stage) && choice?.finish_reason === 'length';
         const truncatedRelevance = stage === 'library-relevance' && choice?.finish_reason === 'length' && choice?.hasReasoning;
-        if (nativeV4 && stage !== 'publication-feedback-review' && choice?.hasReasoning && ((!isLibraryStage(stage) && (emptyStopped || truncatedBusiness)) || truncatedRelevance)) {
+        if (allowRecovery && !isFull15Stage(stage) && nativeV4 && stage !== 'publication-feedback-review' && choice?.hasReasoning && ((!isLibraryStage(stage) && (emptyStopped || truncatedBusiness)) || truncatedRelevance)) {
           // 创作阶段或推理挤占相关性 JSON 时最多恢复一次：完整原输入重新生成，关闭额外推理。
           // 不拼接截断文本、不重置截止时间、不增加第三次调用；仍须通过原业务校验。
           choice = await requestChoice(true);
         }
+        // A Full15 provider ID describes the one completed wire response even
+        // when its semantic output is rejected below. Other stages retain the
+        // existing success-only receipt behavior.
+        const full15ReceiptRecorded = isFull15Stage(stage) && Boolean(choice?.providerRequestId);
+        if (full15ReceiptRecorded) await onReceipt({ provider: agentProviderFor(config), invocationId: choice.providerRequestId, contextId: choice.providerRequestId });
         if (choice?.finish_reason === 'length') throw new Error(`模型输出达到长度上限（${stageLabel(stage)}），本步骤未完成；此前内容已保留，需要处理该步骤的生成范围后重试。`);
         if (choice?.finish_reason && choice.finish_reason !== 'stop') throw new Error('模型未正常完成本次输出，请查看服务设置后重试。');
         const content = choice?.message?.content;
         if (typeof content !== 'string' || !content.trim()) throw new Error('模型没有返回正文，本步骤未完成。');
+        if (!full15ReceiptRecorded) await onReceipt({ provider: agentProviderFor(config), invocationId: choice.providerRequestId, contextId: choice.providerRequestId });
         return content;
       } finally {
         clearTimeout(totalTimer);

@@ -26,7 +26,7 @@ test('HTTP binds new create mode, preserves legacy resume, and restores saved ne
   const legacyId = await seed(runsDir, 'legacy-project');
   const resumedId = await seed(runsDir, 'mode-project', CREATE_STATE_REVIEW_MODE);
   const seen = new Map();
-  const runtime = await createRuntime({ config: { runsDir, port: 0, baseURL: 'https://example.invalid/v1', apiKey: 'fixture', model: 'fixture', engine: 'ai-sdk', timeoutMs: 1000 }, model: { complete: async () => assert.fail('workflow fixture owns this test') }, library: null,
+  const runtime = await createRuntime({ full15Adapter: null, config: { runsDir, port: 0, baseURL: 'https://example.invalid/v1', apiKey: 'fixture', model: 'fixture', engine: 'ai-sdk', timeoutMs: 1000 }, model: { complete: async () => assert.fail('workflow fixture owns this test') }, library: null,
     workflow: async args => { seen.set(args.request.projectId, args.createStateReviewMode); if (!args.artifacts.requestSpec) await args.checkpoint('requestSpec', { runtimeVersion: 'fixture', ...(args.createStateReviewMode ? { createStateReviewMode: args.createStateReviewMode } : {}) }); return structuredClone(output); } });
   t.after(async () => { await runtime.close(); if (runtime.server.listening) await new Promise(resolve => runtime.server.close(resolve)); await rm(runsDir, { recursive: true, force: true }); });
   await new Promise((resolve, reject) => { runtime.server.once('error', reject); runtime.server.listen(0, '127.0.0.1', resolve); }); const base = `http://127.0.0.1:${runtime.server.address().port}`;

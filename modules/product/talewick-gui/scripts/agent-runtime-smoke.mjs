@@ -92,6 +92,21 @@ export function makeAgentModels({ adjudicationDecision = 'confirm', reviewDecisi
     args.signal?.throwIfAborted();
     const input = JSON.parse(args.user);
     stageCalls.push({ stage: args.stage, input });
+    if (['full15-cold-read', 'full15-check'].includes(args.stage)) {
+      const questions = ['actor', 'event', 'goal_or_risk'].map(question => ({ question, answer: null, citations: [] }));
+      const common = { source_sha256: input.transport.source_sha256, scope: { full_text_read: true, read_chunks: input.inline_packet.chunks.map(chunk => chunk.index) }, limitations: ['Synthetic protocol fixture; no semantic quality claim.'] };
+      const result = args.stage === 'full15-cold-read'
+        ? { schema_version: 'full15-cold-read-1', ...common, questions, candidates: [] }
+        : { schema_version: 'full15-analysis-1', ...common, checks: {
+          C02: { status: 'insufficient_evidence', summary: 'Synthetic fixture leaves opening answers unresolved.', answers: questions },
+          C03: { status: 'checked', summary: 'Synthetic protocol response.' },
+          C04: { status: 'checked', summary: 'Synthetic protocol response.' },
+          C05: { status: 'not_applicable', summary: 'No explicit chapter cut requirement.', data: { action_done_in_ch4: null, pending_result_or_cost: null, actual_ch5_continuation: null }, citations: [] },
+        }, issues: [], reference_use: [] };
+      const id = `synthetic-${randomUUID()}`;
+      await args.onReceipt?.({ provider: 'fixture-only', invocationId: id, contextId: id });
+      return JSON.stringify(result);
+    }
     if (args.stage === 'review-adjudication') return syntheticAdjudication(input, adjudicationDecision);
     if (args.stage === 'requirements') return JSON.stringify({ summary: '固定测试：山村旧钟。', genre: '测试短故事', pointOfView: '第三人称', setting: '山村', targetHanMin: input.kind === 'revise' ? null : 1, targetHanMax: input.kind === 'revise' ? null : 1000, targetChapterCount: 2, requiredElements: [], prohibitions: [], assumptions: [], completeEnding: true });
     if (['planning', 'agent:replan'].includes(args.stage)) return JSON.stringify({ characterArcs: [{ character: '小禾', experience: '旧钟停摆', belief: '亲手修复', desire: '钟声恢复', fear: '无法修好', change: '担忧到行动', expression: '修理动作' }], emotionalScenes: Array.from({length:2},()=>({experience:'修钟',cognition:'发现问题',action:'修理',expression:'动作',development:'展开现场',echo:'钟声回应'})), materialDecisions: [], psychologyLimitations: ['明确新版测试替身'], title: '旧钟', premise: '旧钟停摆，需要修理。', ending: '小禾修好钟并支付代价。', constraints: [], chapters: [
@@ -134,7 +149,7 @@ export function makeAgentModels({ adjudicationDecision = 'confirm', reviewDecisi
 export const requestFor = extra => ({ projectId: 'agent-http-project', requestId: 'agent-create', kind: 'create', idea: '两章测试：小禾修好山村旧钟。', context: {}, materials: [], style: null, chapters: [], instruction: '', quote: '', baseRevision: 'initial', ...extra });
 export const configFor = (runsDir, engine = 'ai-sdk', port = 4326) => ({ baseURL: 'https://example.invalid/v1', apiKey: secretMarker, model: 'explicit-agent-fixture', port, timeoutMs: 30000, runsDir, engine });
 export async function startAgentFixture(config, models, distDir) {
-  const runtime = await createRuntime({ config, model: models.model, agentModel: models.agentModel, conversationModel: models.conversationModel, ...(distDir ? { distDir } : {}) });
+  const runtime = await createRuntime({ config, model: models.model, agentModel: models.agentModel, conversationModel: models.conversationModel, full15Adapter: models.full15Enabled ? undefined : null, ...(distDir ? { distDir } : {}) });
   await new Promise((resolve, reject) => { runtime.server.once('error', reject); runtime.server.listen(config.port === 4326 ? 0 : config.port, '127.0.0.1', resolve); });
   return { ...runtime, base: `http://127.0.0.1:${runtime.server.address().port}`, config, models };
 }
@@ -191,6 +206,7 @@ async function runBrowserSmoke() {
   async function pageFor(options) {
     const models = makeAgentModels(options), runsDir = await mkdtemp(path.join(os.tmpdir(), 'talewick-agent-browser-'));
     models.conversationModel = makeConversationModel();
+    models.full15Enabled = true;
     const runtime = await startAgentFixture(configFor(runsDir, 'ai-sdk', await freePort()), models, dist); runtimes.push(runtime);
     const context = await browser.newContext({ viewport: { width: 1512, height: 982 }, reducedMotion: 'reduce' }); contexts.push(context);
     await context.route('**/*', route => { const url = route.request().url(); if (url.startsWith(runtime.base + '/') || /^(data:|blob:)/.test(url)) return route.continue(); report.externalRequests.push(url); return route.abort(); });
@@ -219,6 +235,16 @@ async function runBrowserSmoke() {
       const file = path.join(reportDir, 'agent-decision-report.png'); await fixture.page.screenshot({ path: file, fullPage: true }); report.captures.push(file);
       await dialog.getByRole('button', { name: '关闭', exact: true }).click();
     });
+    await check('saved creation completes auxiliary checks through the bundled Python package', async () => {
+      const project = active(await state(fixture.page));
+      await until(() => fixture.runtime.full15.list(project.id)[0]?.status === 'complete', 'Auxiliary review did not complete');
+      const panel = fixture.page.getByRole('region', { name: '全文辅助检查', exact: true });
+      await panel.getByText('查看检查结果', { exact: true }).click();
+      const similarity = panel.getByRole('region', { name: 'C06 字面重合', exact: true });
+      await similarity.getByText('未评估', { exact: true }).waitFor();
+      assert.deepEqual(active(await state(fixture.page)).chapters.map(chapter => chapter.body), originalBodies);
+      const file = path.join(reportDir, 'full15-review-report.png'); await fixture.page.screenshot({ path: file, fullPage: true }); report.captures.push(file);
+    });
     await check('agent revision remains a proposal until accepted and preserves prior manuscript', async () => {
       const before = active(await state(fixture.page));
       await send(fixture.page, '把第二章的铜钱改成银币，其他内容保留。');
@@ -229,6 +255,19 @@ async function runBrowserSmoke() {
       project = await waitProject(fixture.page, item => item.chapters[1].body === revisedBody);
       assert.equal(project.chapters[0].body, before.chapters[0].body);
       assert.ok(project.versions.some(version => version.chapters[1]?.body === originalBodies[1]));
+    });
+    await check('editing invalidates the old auxiliary report and manual checks bind the new version', async () => {
+      const panel = fixture.page.getByRole('region', { name: '全文辅助检查', exact: true });
+      await panel.getByText('报告对应另一版稿件，请检查当前版本', { exact: true }).waitFor();
+      const project = active(await state(fixture.page));
+      const previous = fixture.runtime.full15.list(project.id)[0];
+      await panel.getByRole('button', { name: '检查当前版本', exact: true }).click();
+      const current = await until(() => { const task = fixture.runtime.full15.list(project.id)[0]; return task?.id !== previous.id && task?.status === 'complete' ? task : false; }, 'Manual auxiliary review did not complete');
+      assert.match(current.manuscriptRevision, /^manuscript-v1-/);
+      assert.notEqual(current.manuscriptRevision, previous.manuscriptRevision);
+      assert.equal(current.trigger, 'manual');
+      assert.equal(fixture.runtime.full15.get(previous.id).status, 'complete');
+      assert.equal(active(await state(fixture.page)).chapters[1].body, revisedBody);
     });
     await check('cancelled agent resumes the same task without repeating a completed plan revision', async () => {
       const fixture = await pageFor({ replan: true, pauseBefore: 'approve_plan' });

@@ -496,7 +496,9 @@ export async function runWorkflow({ request, model, artifacts = {}, checkpoint =
       ...(previousManuscriptSha256 ? {previousManuscriptSha256} : {})});
     if (!stateReviewEnabled) return step(key, readGeneral);
     const general = await step(`${key}:general`, readGeneral);
-    const state = await step(`${key}:state`, () => reviewStates({chapters:current, requirements, model, signal, transitionHintsEnabled}));
+    const state = await step(`${key}:state`, () => reviewStates({chapters:current, requirements, model, signal, transitionHintsEnabled,
+      formatRetryAllowed: !Object.keys(saved).some(name => name.startsWith(`${key}:state:rejected:`)),
+      onRejectedResponse: response => persist(`${key}:state:rejected:${Object.keys(saved).filter(name => name.startsWith(`${key}:state:rejected:`)).length + 1}:${response.responseSha256}`, response)}));
     return step(key, () => mergeStateReview(general, state));
   };
   let review = await readCurrent('review', chapters, undefined, reviewExisting ? { phase: 'existing_manuscript' } : undefined);

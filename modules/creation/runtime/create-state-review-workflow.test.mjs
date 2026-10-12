@@ -185,6 +185,62 @@ test('create state review failure resumes its saved general review without repea
   assert.deepEqual(retry.calls.map(call => call.stage), ['continuity-review', 'review-adjudication']);
 });
 
+test('capped state response is archived before one format correction, then resumed from the saved state', async () => {
+ const artifacts = {}, worker = model({ decision: 'reject' });
+ const original = worker.complete;
+ let stateCalls = 0;
+ worker.complete = async args => {
+  if (args.stage !== 'continuity-review') return original(args);
+  worker.calls.push(args); stateCalls++;
+  const value = JSON.parse(stateResponse(args, {}));
+  value.comparisons = Array.from({ length: 8 }, (_, i) => ({ ...value.comparisons[0], id: `case-${i}`,
+    issue: null }));
+  value.hintChecks = value.hintChecks.map(h => ({ ...h,
+    comparisonIds: h.comparisonIds.length ? ['case-0'] : [] }));
+  if (stateCalls === 2) {
+    assert.equal(JSON.parse(args.user).fieldError, '状态专审达到记录上限');
+    value.coverage = { status: 'bounded', omissions: ['八条记录以外未逐项记录'] };
+  }
+  return JSON.stringify(value);
+ };
+ const checkpoint = async (key, value) => { artifacts[key] = value; };
+ const result = await runWorkflow({ request, createStateReviewMode: 'create-state-review-v1',
+   model: worker, artifacts, checkpoint });
+ const rejectedKey = Object.keys(artifacts).find(key => key.startsWith('review:state:rejected:'));
+ assert.ok(rejectedKey);
+ assert.equal(artifacts[rejectedKey].attempt, 1);
+ assert.equal(artifacts[rejectedKey].manuscriptSha256, artifacts['review:state'].manuscriptSha256);
+ assert.equal(artifacts['review:state'].rejectedResponses[0].rawResponse, artifacts[rejectedKey].rawResponse);
+ assert.equal(result.revisionApplied, false);
+ assert.equal(stateCalls, 2);
+ await runWorkflow({ request, createStateReviewMode: 'create-state-review-v1',
+   model: worker, artifacts, checkpoint });
+ assert.equal(stateCalls, 2);
+});
+
+test('same task never spends a second automatic format retry after two capped failures', async () => {
+ const artifacts = {}, checkpoint = async (key, value) => { artifacts[key] = value; };
+ const worker = model({ decision: 'reject' }), original = worker.complete;
+ let stateCalls = 0;
+ worker.complete = async args => {
+  if (args.stage !== 'continuity-review') return original(args);
+  worker.calls.push(args); stateCalls++;
+  const value = JSON.parse(stateResponse(args, {}));
+  value.comparisons = Array.from({ length: 8 }, (_, i) => ({ ...value.comparisons[0], id: `case-${i}`, issue: null }));
+  value.hintChecks = value.hintChecks.map(h => ({ ...h,
+    comparisonIds: h.comparisonIds.length ? ['case-0'] : [] }));
+  return JSON.stringify(value);
+ };
+ const options = { request, createStateReviewMode: 'create-state-review-v1', model: worker, artifacts, checkpoint };
+ await assert.rejects(runWorkflow(options), error => error.code === 'STATE_REVIEW_REJECTED');
+ assert.equal(stateCalls, 2);
+ assert.equal(Object.keys(artifacts).filter(key => key.startsWith('review:state:rejected:')).length, 2);
+ await assert.rejects(runWorkflow(options), error => error.code === 'STATE_REVIEW_REJECTED');
+ assert.equal(stateCalls, 3);
+ assert.equal(Object.keys(artifacts).filter(key => key.startsWith('review:state:rejected:')).length, 3);
+ assert.equal(worker.calls.filter(call => call.stage === 'review').length, 1);
+});
+
 test('default create workflow keeps its prior call count; state review mode rejects incompatible use', async () => {
   const worker = model();
   await runWorkflow({ request, model: worker });

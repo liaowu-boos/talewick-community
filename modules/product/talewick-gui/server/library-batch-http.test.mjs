@@ -11,7 +11,7 @@ test('real HTTP registers without dispatch, starts ten actual DATA jobs, survive
  const config={runsDir,port:4398,baseURL:'https://example.invalid',apiKey:'synthetic-test-key',model:'synthetic',engine:'fixed',timeoutMs:1000};
  const model={async complete(request){calls.push(request.stage);return JSON.stringify(request.stage==='library-review'?{approved:true,notes:['合成接口测试'],rubricVersion:ANALYSIS_REVIEW_RUBRIC,checks:ANALYSIS_REVIEW_CHECKS.map(id=>({id,status:'passed',notes:['合成依据'],unitIds:['u1']}))}:{evidenceMode:'source-lines-v1',overview:'合成样例',coverage:{scope:'unknown',notes:['测试片段']},units:[{id:'u1',title:'收起围巾',event:'她收起围巾，没有回头',psychology:'未知',emotion:'未知',expression:'动作',readerEffectHypothesis:'可能注意离开',locator:{lineStart:1,lineEnd:2},evidence:[{lineStart:1,lineEnd:2}],relatedUnitIds:[]}],limitations:['仅测试接口']});}};
  let runtime;
- const start=async()=>{runtime=await createRuntime({config,model});await new Promise(resolve=>runtime.server.listen(0,'127.0.0.1',resolve));};
+ const start=async()=>{runtime=await createRuntime({config,model,full15Adapter:null});await new Promise(resolve=>runtime.server.listen(0,'127.0.0.1',resolve));};
  const stop=async()=>{if(runtime){const old=runtime;runtime=null;await old.close();await new Promise(resolve=>old.server.close(resolve));}};
  const api=async(path,body,headers={})=>{const res=await fetch(`http://127.0.0.1:${runtime.server.address().port}${path}`,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json',...headers},body:body===undefined?undefined:JSON.stringify(body)});return{status:res.status,body:await res.json()};};
  const upload=i=>({requestId:'http-'+i,fileName:i+'.txt',contentBase64:Buffer.from(`她收起围巾。编号${i}。\n她没有回头。`).toString('base64')});

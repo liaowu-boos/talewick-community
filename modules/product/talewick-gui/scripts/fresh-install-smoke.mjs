@@ -20,6 +20,7 @@ try {
   assert.ok(status, output); assert.equal(status.configured,false);assert.equal(status.library.available,true);
   const sources=await(await fetch(base+'/api/library/sources')).json();assert.deepEqual(sources.items,[]);
   const tasks=await(await fetch(base+'/api/tasks')).json();assert.deepEqual(tasks.tasks,[]);
+  const reviews=await(await fetch(base+'/api/full15')).json();assert.equal(reviews.available,true);assert.deepEqual(reviews.tasks,[]);assert.ok(reviews.versions.rulesVersion);
   const pw=process.env.TALEWICK_PLAYWRIGHT_MODULE?await import(pathToFileURL(resolve(process.env.TALEWICK_PLAYWRIGHT_MODULE))):await import('playwright');
   browser=await pw.chromium.launch({headless:true,executablePath:process.env.TALEWICK_BROWSER_EXECUTABLE||undefined});
   const context=await browser.newContext({viewport:{width:1440,height:1000},reducedMotion:'reduce'});const page=await context.newPage();

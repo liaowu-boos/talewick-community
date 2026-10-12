@@ -110,6 +110,14 @@ export interface RuntimeInfo {
   engineLabel: string;
 }
 export type RuntimeTaskStatus = 'queued' | 'running' | 'needs_input' | 'completed' | 'failed' | 'interrupted' | 'cancelled';
+export type RuntimeFailureKind = 'review_output' | 'delivery_check' | 'network' | 'configuration' | 'writing' | 'unknown' | 'interrupted' | 'cancelled';
+export type RuntimeRetryScope = 'unfinished_review' | 'unfinished_check' | 'unfinished_writing' | 'unfinished_step';
+export interface RuntimeTaskFailure {
+  kind: RuntimeFailureKind;
+  phase: 'writing' | 'review' | 'check' | 'step';
+  retryScope: RuntimeRetryScope;
+  message: string;
+}
 export interface RuntimeRequest {
   projectTitle?: string;
   projectId: string;
@@ -207,6 +215,7 @@ export interface RuntimeTask {
   engine: RuntimeEngine;
   engineVersion: string;
   error?: string;
+  failure?: RuntimeTaskFailure;
   question?: string;
   result?: RuntimeResult;
   partialDraft?: PartialDraft;

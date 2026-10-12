@@ -1,0 +1,75 @@
+{
+  "schema_version": "full15-report-fields-1",
+  "document_type": "finite_interface_definition_not_generic_schema_framework",
+  "top_level": [
+    "schema_version",
+    "run_id",
+    "diagnostic_notice",
+    "input",
+    "requirements",
+    "execution",
+    "checks",
+    "issues",
+    "priority_issue_ids",
+    "limitations"
+  ],
+  "check_ids": [
+    "C01",
+    "C02",
+    "C03",
+    "C04",
+    "C05",
+    "C06"
+  ],
+  "check_statuses": [
+    "checked",
+    "insufficient_evidence",
+    "not_applicable",
+    "not_evaluated",
+    "incomplete"
+  ],
+  "issue_required_fields": [
+    "id",
+    "check_id",
+    "kind",
+    "rule_source_ids",
+    "citations",
+    "reasoning",
+    "alternative_explanations",
+    "uncertainty",
+    "suggested_verification"
+  ],
+  "issue_kinds": [
+    "spec_violation",
+    "novel_question"
+  ],
+  "citation_required_fields": [
+    "source_id",
+    "source_sha256",
+    "start_char",
+    "end_char",
+    "quote"
+  ],
+  "priority_limit": 3,
+  "final_files": [
+    "report.md",
+    "report.json",
+    "source-map.json",
+    "evidence.json",
+    "run-manifest.json"
+  ],
+  "banned_product_verdicts": [
+    "QUALITY_PASS",
+    "PLATFORM_PASS",
+    "SYSTEM_GO",
+    "CLUSTER_GO"
+  ],
+  "cold_read_input_must_exclude": [
+    "expected",
+    "old_review",
+    "author_explanation",
+    "reference_novels"
+  ],
+  "observed_analysis_tasks_per_normal_run": 2,
+  "maximum_format_repair_tasks": 1
+}

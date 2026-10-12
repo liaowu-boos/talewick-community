@@ -5,6 +5,7 @@ import { engineBinding } from './engines.mjs';
 import { projectReviewAdjudication } from './service-public.mjs';
 import { assertWorkflowResultReady } from './workflow-result-gate.mjs';
 import { projectCodexAttempt } from './model.mjs';
+import { cancelledFailure, classifyTaskFailure, interruptedFailure } from './task-failure.mjs';
 
 const active = new Set(['queued', 'running']);
 const recoverable = new Set(['failed', 'interrupted', 'cancelled']);
@@ -75,9 +76,9 @@ export function validateRequest(body) {
 
 /** File-backed sequential task runner; each successful stage is saved for recovery. */
 export class TaskService {
-  constructor({ runsDir, model, workflow, engine = 'fixed' }) {
+  constructor({ runsDir, model, workflow, engine = 'fixed', onCompleted }) {
     this.runsDir = runsDir; this.model = model; this.workflow = workflow;
-    this.defaultEngine = engineBinding(engine);
+    this.defaultEngine = engineBinding(engine); this.onCompleted = onCompleted;
     this.tasks = new Map(); this.requests = new Map(); this.artifacts = new Map(); this.controller = null; this.busy = false; this.closing = false;
     this.mutations = Promise.resolve(); this.writes = new Map();
   }
@@ -94,7 +95,7 @@ export class TaskService {
         if (task.id !== entry.name || task.projectId !== request.projectId || task.requestId !== request.requestId) throw new Error('invalid task');
         const artifacts = JSON.parse(await readFile(path.join(folder, 'artifacts.json'), 'utf8'));
         this.tasks.set(task.id, task); this.requests.set(task.id, request); this.artifacts.set(task.id, artifacts);
-        if (active.has(task.status)) { task.status = 'interrupted'; task.error = '上次运行中断，已保留完成步骤，可继续运行。'; task.updatedAt = now(); await this.save(task); }
+        if (active.has(task.status)) { task.status = 'interrupted'; task.failure = interruptedFailure('上次运行中断。已完成步骤已保存；可以继续未完成步骤。'); task.error = task.failure.message; task.updatedAt = now(); await this.save(task); }
       } catch { console.warn(`未载入不完整的本地任务目录：${entry.name}。原文件已保留。`); }
     }
     return this;
@@ -158,7 +159,7 @@ export class TaskService {
     if (!task) return;
     this.busy = true; this.controller = { id: task.id, abort: new AbortController() };
     const signal = this.controller.abort.signal;
-    task.status = 'running'; task.stage = '整理需求'; task.updatedAt = now(); delete task.error; delete task.question;
+    task.status = 'running'; task.stage = '整理需求'; task.updatedAt = now(); delete task.error; delete task.failure; delete task.question;
     try {
       await this.save(task);
       const checkpoint = async (key, value) => {
@@ -214,6 +215,9 @@ export class TaskService {
       await writeFile(path.join(this.runsDir, task.id, 'manuscript.txt'), text, { mode: 0o600 });
       signal.throwIfAborted();
       task.result = result; task.status = 'completed'; task.stage = '创作完成'; task.updatedAt = now(); await this.save(task);
+      // Queue auxiliary work after the durable completion write. It must not delay
+      // manuscript readability or turn a saved creation into a failed task.
+      void Promise.resolve().then(() => this.onCompleted?.(this.get(task.id), structuredClone(this.requests.get(task.id)), structuredClone(this.artifacts.get(task.id)))).catch(() => {});
     } catch (error) {
       if (task.status !== 'cancelled') {
         if (!this.closing && error.code === 'INPUT_REQUIRED') {
@@ -221,7 +225,8 @@ export class TaskService {
           task.question = error.message || '请补充创作要求后再发送。'; delete task.error; delete task.result;
         } else {
           task.status = this.closing ? 'interrupted' : 'failed';
-          task.error = this.closing ? '服务已停止，已保留完成步骤。' : error.message || '当前步骤未完成，可以重试。';
+          task.failure = this.closing ? interruptedFailure('服务已停止。已完成步骤已保存；可以继续未完成步骤。') : classifyTaskFailure(error, task.stage);
+          task.error = task.failure.message;
         }
         task.updatedAt = now(); await this.save(task);
       }
@@ -236,13 +241,13 @@ export class TaskService {
     if (!recoverable.has(task.status)) throw fail('只有失败、中断或取消的任务可以继续。', 409);
     if (this.controller?.id === id) throw fail('任务正在结束当前调用，请稍后继续。', 409);
     this.ensureIdleProject(task.projectId, task.id);
-    task.status = 'queued'; task.updatedAt = now(); delete task.error; await this.save(task); this.schedule(); return this.get(id);
+    task.status = 'queued'; task.updatedAt = now(); delete task.error; delete task.failure; await this.save(task); this.schedule(); return this.get(id);
   }
   cancel(id) { return this.mutate(() => this.cancelTask(id)); }
   async cancelTask(id) {
     const task = this.tasks.get(id); this.get(id);
     if (!active.has(task.status)) return this.get(id);
-    task.status = 'cancelled'; task.error = '任务已取消，已完成的步骤仍保留。'; task.updatedAt = now();
+    task.status = 'cancelled'; task.failure = cancelledFailure(); task.error = task.failure.message; task.updatedAt = now();
     if (this.controller?.id === id) this.controller.abort.abort();
     await this.save(task); return this.get(id);
   }
@@ -250,7 +255,7 @@ export class TaskService {
     this.closing = true;
     await this.mutations;
     this.controller?.abort.abort();
-    for (const task of this.tasks.values()) if (task.status === 'queued') { task.status = 'interrupted'; task.error = '服务已停止，可以继续任务。'; task.updatedAt = now(); await this.save(task); }
+    for (const task of this.tasks.values()) if (task.status === 'queued') { task.status = 'interrupted'; task.failure = interruptedFailure('服务已停止。已完成步骤已保存；可以继续未完成步骤。'); task.error = task.failure.message; task.updatedAt = now(); await this.save(task); }
     while (this.busy) await new Promise(resolve => setTimeout(resolve, 10));
     await Promise.allSettled(this.writes.values());
     if (this.ownerFile) { await unlink(this.ownerFile).catch(error => { if (error.code !== 'ENOENT') throw error; }); this.ownerFile = null; }

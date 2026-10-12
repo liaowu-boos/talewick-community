@@ -1,10 +1,18 @@
-import type { AgentDecisionTrace, AppState, Chapter, Project, PartialDraft, QuoteSource, RuntimeBinding, RuntimeEngine, RuntimeInfo, RuntimeRequest, ReadingObservation, RuntimeResult, RuntimeTask, RuntimeTaskStatus } from './types';
+import type { AgentDecisionTrace, AppState, Chapter, Project, PartialDraft, QuoteSource, RuntimeBinding, RuntimeEngine, RuntimeInfo, RuntimeRequest, ReadingObservation, RuntimeResult, RuntimeTask, RuntimeTaskFailure, RuntimeTaskStatus } from './types';
 
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const string = (value: unknown): value is string => typeof value === 'string';
 const statuses: RuntimeTaskStatus[] = ['queued', 'running', 'needs_input', 'completed', 'failed', 'interrupted', 'cancelled'];
 const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter(string) : [];
 const supportedEngine = (value: unknown): boolean => value === undefined || value === 'ai-sdk' || value === 'fixed';
+const failureKinds: RuntimeTaskFailure['kind'][] = ['review_output', 'delivery_check', 'network', 'configuration', 'writing', 'unknown', 'interrupted', 'cancelled'];
+const retryScopes: RuntimeTaskFailure['retryScope'][] = ['unfinished_review', 'unfinished_check', 'unfinished_writing', 'unfinished_step'];
+
+function readTaskFailure(value: unknown): RuntimeTaskFailure | undefined {
+  if (!record(value) || !failureKinds.includes(value.kind as RuntimeTaskFailure['kind']) || !['writing', 'review', 'check', 'step'].includes(String(value.phase))
+    || !retryScopes.includes(value.retryScope as RuntimeTaskFailure['retryScope']) || !string(value.message) || !value.message.trim()) return undefined;
+  return { kind: value.kind as RuntimeTaskFailure['kind'], phase: value.phase as RuntimeTaskFailure['phase'], retryScope: value.retryScope as RuntimeTaskFailure['retryScope'], message: value.message };
+}
 
 export function runtimeEngineLabel(engine?: RuntimeEngine): string { return engine === 'ai-sdk' ? 'Agent 创作' : '固定创作流程'; }
 
@@ -94,6 +102,7 @@ export function readRuntimeTask(value: unknown): RuntimeTask | undefined {
     kind: value.kind as RuntimeTask['kind'], status: value.status as RuntimeTaskStatus, stage: string(value.stage) ? value.stage : '',
     createdAt: string(value.createdAt) ? value.createdAt : '', updatedAt: string(value.updatedAt) ? value.updatedAt : '',
     error: value.status !== 'needs_input' && string(value.error) ? value.error : undefined,
+    failure: value.status !== 'needs_input' ? readTaskFailure(value.failure) : undefined,
     question: string(value.question) ? value.question : undefined,
     partialDraft: value.kind === 'create' && ['failed', 'interrupted', 'cancelled'].includes(String(value.status)) && !value.result ? readPartialDraft(value.partialDraft) : undefined,
     result: value.status === 'needs_input' ? undefined : readResult(value.result) };
@@ -145,6 +154,36 @@ export function makeRuntimeRequest(project: Project, state: AppState, requestId:
 
 export function taskActive(task?: RuntimeTask): boolean { return task?.status === 'queued' || task?.status === 'running'; }
 export function runtimeBusy(project?: Project): boolean { return Boolean(project?.runtime?.submitting || taskActive(project?.runtime?.task)); }
+
+export function runtimeTaskPhase(task?: RuntimeTask): RuntimeTaskFailure['phase'] {
+  if (task?.failure?.phase) return task.failure.phase;
+  const stage = task?.stage ?? '';
+  if (stage === 'continuity-review' || stage === 'review' || stage === 'revisionReview' || stage === 'agent:reviewManuscript'
+    || stage.startsWith('review-adjudication') || stage.startsWith('reviewAdjudication') || stage.startsWith('agent:review')) return 'review';
+  if (/^(draft|revision):/.test(stage) || stage.startsWith('agent:reviseChapter:') || ['write', 'writing', 'manuscript', 'revise', 'revision'].includes(stage)) return 'writing';
+  if (['checks', 'validation', 'result', 'delivery'].includes(stage)) return 'check';
+  return 'step';
+}
+
+export function runtimeProgressDetail(task?: RuntimeTask): string {
+  const phase = runtimeTaskPhase(task);
+  if (taskActive(task)) return phase === 'writing' ? '正在生成或修改正文。已完成章节会随任务检查点保存。'
+    : phase === 'review' ? '正文已经生成，正在审阅当前稿件。'
+      : phase === 'check' ? '正文已经生成，正在核对交付条件。' : '正在准备本次任务。';
+  if (task?.status === 'failed') return task.failure?.message || '当前步骤未完成。已完成步骤已保存；继续任务时只会运行未完成步骤。';
+  if (task?.status === 'interrupted') return task.failure?.message || '运行已中断。已完成步骤已保存；可以继续未完成步骤。';
+  if (task?.status === 'cancelled') return task.failure?.message || '任务已取消。已完成步骤仍保留；需要时可继续未完成步骤。';
+  return '';
+}
+
+export function runtimeResumeLabel(task?: RuntimeTask): string {
+  switch (task?.failure?.retryScope) {
+    case 'unfinished_review': return '继续未完成审阅';
+    case 'unfinished_check': return '继续未完成检查';
+    case 'unfinished_writing': return '继续未完成写作';
+    default: return '继续未完成步骤';
+  }
+}
 
 /** A stored task remains readable; its engine version is never silently upgraded. */
 export function runtimeResumeMessage(task?: RuntimeTask): string {

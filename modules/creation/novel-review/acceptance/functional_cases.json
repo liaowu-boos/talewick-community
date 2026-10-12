@@ -1,0 +1,242 @@
+{
+  "schema_version": "full15-functional-cases-1",
+  "definition": "预先固定的合成功能对照；expected不得进入分析输入包",
+  "content_frozen": true,
+  "cases": [
+    {
+      "case_id": "F01",
+      "check_id": "C01",
+      "synthetic": true,
+      "purpose": "有限功能对照片段，不是产品小说或人工文学真值",
+      "input": {
+        "text": "# 第一章\n小舟靠岸。\n# 第二章\n阿宁上船。\n",
+        "requirements": {
+          "count_basis": "han",
+          "min_body_length": 10,
+          "max_body_length": 12,
+          "min_chapters": 2,
+          "max_chapters": 2
+        },
+        "references": []
+      },
+      "expected": {
+        "body_han_count": 8,
+        "body_non_whitespace_count": 10,
+        "chapter_count": 2,
+        "length_result": "below_minimum",
+        "chapter_result": "satisfied"
+      }
+    },
+    {
+      "case_id": "F02",
+      "check_id": "C01",
+      "synthetic": true,
+      "purpose": "有限功能对照片段，不是产品小说或人工文学真值",
+      "input": {
+        "text": "# 第一章\n小舟靠岸。\n# 第二章\n阿宁上船。\n",
+        "requirements": {
+          "count_basis": "han",
+          "min_body_length": 8,
+          "max_body_length": 12,
+          "min_chapters": 2,
+          "max_chapters": 2
+        },
+        "references": []
+      },
+      "expected": {
+        "body_han_count": 8,
+        "body_non_whitespace_count": 10,
+        "chapter_count": 2,
+        "length_result": "satisfied",
+        "chapter_result": "satisfied"
+      }
+    },
+    {
+      "case_id": "F03",
+      "check_id": "C02",
+      "synthetic": true,
+      "purpose": "有限功能对照片段，不是产品小说或人工文学真值",
+      "input": {
+        "text": "# 第一章\n那件事后来变得越来越重要。很多人谈论它，有人沉默，有人叹息。\n",
+        "requirements": {},
+        "references": []
+      },
+      "expected": {
+        "actor": "insufficient_evidence",
+        "event": "insufficient_evidence",
+        "goal_or_risk": "insufficient_evidence",
+        "must_not_invent_named_actor": true
+      }
+    },
+    {
+      "case_id": "F04",
+      "check_id": "C02",
+      "synthetic": true,
+      "purpose": "有限功能对照片段，不是产品小说或人工文学真值",
+      "input": {
+        "text": "# 第一章\n林夏抱着报名表跑进学校办公室。校门还有十分钟关闭，她要赶在截止前替妹妹交上参赛申请。\n",
+        "requirements": {},
+        "references": []
+      },
+      "expected": {
+        "actor_anchor": "林夏",
+        "event_anchor": "抱着报名表跑进学校办公室",
+        "goal_or_risk_anchor": "她要赶在截止前替妹妹交上参赛申请",
+        "missing_answers": 0
+      }
+    },
+    {
+      "case_id": "F05",
+      "check_id": "C03",
+      "synthetic": true,
+      "purpose": "有限功能对照片段，不是产品小说或人工文学真值",
+      "input": {
+        "text": "# 第一章\n周宁当晚亲手拆开信，读到仓库钥匙藏在东墙第三块砖后。他把这个位置默记了三遍。\n# 第二章\n第二天早晨，周宁第一次得知钥匙在东墙第三块砖后。在此之前，他从未读过那封信，也从不知道钥匙藏在哪里。\n",
+        "requirements": {
+          "narration": "第三人称直接陈述，无失忆或不可靠叙述设定"
+        },
+        "references": []
+      },
+      "expected": {
+        "candidate_required": true,
+        "anchors": [
+          "他把这个位置默记了三遍",
+          "在此之前，他从未读过那封信，也从不知道钥匙藏在哪里"
+        ],
+        "cross_chapter": true
+      }
+    },
+    {
+      "case_id": "F06",
+      "check_id": "C03",
+      "synthetic": true,
+      "purpose": "有限功能对照片段，不是产品小说或人工文学真值",
+      "input": {
+        "text": "# 第一章\n周宁当晚读完信，知道钥匙在东墙第三块砖后。\n# 第二章\n故事回到前一天下午。那时周宁尚未收到信，因此不知道钥匙的位置。\n回到第二天早晨，他故意对守门人谎称自己从不知道钥匙在哪里。\n",
+        "requirements": {},
+        "references": []
+      },
+      "expected": {
+        "contradiction_candidates": 0,
+        "explanations": [
+          "明确回忆",
+          "角色故意撒谎不能当叙述事实"
+        ]
+      }
+    },
+    {
+      "case_id": "F07",
+      "check_id": "C04",
+      "synthetic": true,
+      "purpose": "有限功能对照片段，不是产品小说或人工文学真值",
+      "input": {
+        "text": "# 第一章\n正午，陈岚把唯一那把刻着辰字的铜钥匙投入熔炉。钥匙彻底熔成铜水，再也无法使用；没有复制品，也没有复原机制。\n# 第二章\n当晚，陈岚从封好的口袋里取出同一把刻着辰字的铜钥匙。它从未被熔化，始终完好，正是正午投入熔炉的那一把。\n",
+        "requirements": {
+          "setting": "现实，无复制或复原机制"
+        },
+        "references": []
+      },
+      "expected": {
+        "candidate_required": true,
+        "anchors": [
+          "钥匙彻底熔成铜水，再也无法使用",
+          "它从未被熔化，始终完好"
+        ],
+        "cross_chapter": true
+      }
+    },
+    {
+      "case_id": "F08",
+      "check_id": "C04",
+      "synthetic": true,
+      "purpose": "有限功能对照片段，不是产品小说或人工文学真值",
+      "input": {
+        "text": "# 第一章\n离开前，陈岚把刻着辰字的唯一一把钥匙交给周宁。周宁当面把钥匙放进自己的上衣口袋。\n# 第二章\n第二天，周宁从上衣口袋取出那把钥匙，打开仓库的门。\n",
+        "requirements": {},
+        "references": []
+      },
+      "expected": {
+        "contradiction_candidates": 0,
+        "explanation_anchor": "周宁当面把钥匙放进自己的上衣口袋"
+      }
+    },
+    {
+      "case_id": "F09",
+      "check_id": "C05",
+      "synthetic": true,
+      "purpose": "有限功能对照片段，不是产品小说或人工文学真值",
+      "input": {
+        "text": "# 第四章\n我按下投影仪的播放键。那段能证明叔叔冒领奖金的录音即将当众播出，众人转头看向屏幕，叔叔伸手去拔电线。\n# 第五章\n二十年前，叔叔住在河边。他每天去桥头卖鱼，雨季时河水会漫过门槛。那年秋天，他换了一辆新自行车。\n",
+        "requirements": {
+          "c05_applicable": true
+        },
+        "references": []
+      },
+      "expected": {
+        "candidate_required": true,
+        "pending_anchor": "那段能证明叔叔冒领奖金的录音即将当众播出",
+        "ch5_anchor": "二十年前，叔叔住在河边",
+        "immediate_payment_found": false
+      }
+    },
+    {
+      "case_id": "F10",
+      "check_id": "C05",
+      "synthetic": true,
+      "purpose": "有限功能对照片段，不是产品小说或人工文学真值",
+      "input": {
+        "text": "# 第一章\n老太太把新烤好的面包放在窗台上，等孩子们放学。\n",
+        "requirements": {
+          "c05_applicable": false,
+          "declared_type": "日常生活短篇"
+        },
+        "references": []
+      },
+      "expected": {
+        "status": "not_applicable",
+        "must_not_require_chapters_4_5": true
+      }
+    },
+    {
+      "case_id": "F11",
+      "check_id": "C06",
+      "synthetic": true,
+      "purpose": "有限功能对照片段，不是产品小说或人工文学真值",
+      "input": {
+        "text": "# 第一章\n雨停以后我把那把缺了一个齿的旧钥匙交还给妹妹。\n",
+        "requirements": {},
+        "references": [
+          {
+            "id": "R1",
+            "text": "这是另一段原文。雨停以后我把那把缺了一个齿的旧钥匙交还给妹妹，她没有再说话。\n"
+          }
+        ]
+      },
+      "expected": {
+        "match_required": true,
+        "normalized_anchor": "雨停以后我把那把缺了一个齿的旧钥匙交还给妹妹",
+        "both_source_locations_required": true
+      }
+    },
+    {
+      "case_id": "F12",
+      "check_id": "C06",
+      "synthetic": true,
+      "purpose": "有限功能对照片段，不是产品小说或人工文学真值",
+      "input": {
+        "text": "# 第一章\n雨停以后我把那把缺了一个齿的旧钥匙交还给妹妹。\n",
+        "requirements": {},
+        "references": [
+          {
+            "id": "R1",
+            "text": "# 第一章\n雨停以后我把那把缺了一个齿的旧钥匙交还给妹妹。\n"
+          }
+        ]
+      },
+      "expected": {
+        "same_sha_excluded": 1,
+        "remaining_matches": 0
+      }
+    }
+  ]
+}

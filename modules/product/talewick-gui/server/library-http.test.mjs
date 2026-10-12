@@ -15,7 +15,7 @@ test('real runtime injects library, enforces wire bounds, lazy details and close
   retry:async(id,options)=>{calls.push({id,options});return source;},cancel:async()=>source,
   retrieve:async()=>{throw Error('not called by test');},close:async()=>{closed++;},
  };
- const runtime=await createRuntime({config:{runsDir,port:4398,baseURL:'https://example.invalid',apiKey:'',model:'test',engine:'fixed',timeoutMs:1000},library,model:{complete(){throw Error('No model call authorized in test');}}});
+ const runtime=await createRuntime({full15Adapter:null,config:{runsDir,port:4398,baseURL:'https://example.invalid',apiKey:'',model:'test',engine:'fixed',timeoutMs:1000},library,model:{complete(){throw Error('No model call authorized in test');}}});
  await new Promise(resolve=>runtime.server.listen(0,'127.0.0.1',resolve));
  const api=async(route,body,headers={})=>{const res=await fetch(`http://127.0.0.1:${runtime.server.address().port}${route}`,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json',...headers},body:body===undefined?undefined:JSON.stringify(body)});return {status:res.status,body:await res.json()};};
  try {

@@ -27,7 +27,7 @@ export async function readModelResponse(response, { signal, onProgress = () => {
   const reader = response.body.getReader();
   const decoder = new TextDecoder('utf-8', { fatal: true });
   let responseBytes = 0, contentBytes = 0, eventBytes = 0;
-  let buffer = '', data = [], content = '', finishReason, hasReasoning = false, done = false;
+  let buffer = '', data = [], content = '', finishReason, providerRequestId, hasReasoning = false, done = false;
 
   const append = delta => {
     if (delta.content != null && typeof delta.content !== 'string') throw invalid();
@@ -53,6 +53,10 @@ export async function readModelResponse(response, { signal, onProgress = () => {
     let payload;
     try { payload = JSON.parse(raw); } catch { throw invalid(); }
     if (!payload || payload.error || !Array.isArray(payload.choices)) throw invalid();
+    if (payload.id !== undefined) {
+      if (typeof payload.id !== 'string' || !payload.id.trim() || (providerRequestId && providerRequestId !== payload.id)) throw invalid();
+      providerRequestId = payload.id;
+    }
     if (!payload.choices.length) {
       if (!payload.usage) throw invalid();
       return;
@@ -111,12 +115,14 @@ export async function readModelResponse(response, { signal, onProgress = () => {
       let payload;
       try { payload = JSON.parse(buffer); } catch { throw invalid(); }
       if (!payload || payload.error) throw invalid();
+      if (payload.id !== undefined && (typeof payload.id !== 'string' || !payload.id.trim())) throw invalid();
+      providerRequestId = payload.id;
       const choice = payload.choices?.[0];
       if (!choice?.message || !FINISH_REASONS.has(choice.finish_reason)) throw incomplete();
       append(choice.message);
       finishReason = choice.finish_reason;
     }
-    return { finish_reason: finishReason, message: { content }, hasReasoning };
+    return { finish_reason: finishReason, message: { content }, hasReasoning, ...(providerRequestId ? { providerRequestId } : {}) };
   } catch (error) {
     signal?.throwIfAborted();
     if (error instanceof ModelResponseError) throw error;

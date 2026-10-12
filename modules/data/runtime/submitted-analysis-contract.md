@@ -12,4 +12,6 @@ provenance 必须且只能包含 artifactSha256、analysisVersion、parentAnalys
 
 以后显式 `retryRevisionReview(sourceId, submittedRevisionId, {expectedAnalysisVersion})`，配置真实复核器后复用现有 review_only 分支。该调用创建新的复核尝试身份，保留登记候选内容指纹和 derivedFromRevisionId。最多一次 `library-review` 调用，maxTokens=2000，六项 analysis-review-v2 协议必须通过；无生成/自动修复/自动重试。有效拒绝的相同内容在相同服务父版下不能从原提交或其重试链再次复核；新内容仍应走新提交。有效批准才由既有事务归档、索引与发布，reviewRecordId 由服务记录真实复核结果时生成。
 
-无复核器时登记仍可用，但 retry 报 REVIEW_UNAVAILABLE，重启不自动调用。活动 review 的取消/关闭恢复、有效拒绝及批准、协议失败和旧引用均沿现有流程处理。API 本身不包含真实供应商预算授权：当前 40/40 剩余 0，调用方禁止配置可用真实调用能力；未来须获得新授权并在统一适配器封住额外调用。禁止注入伪 approved/human/trusted 响应。
+无复核器时登记仍可用，但 retry 报 REVIEW_UNAVAILABLE，重启不自动调用。活动 review 的取消/关闭恢复、有效拒绝及批准、协议失败和旧引用均沿现有流程处理。模型调用使用调用方配置的提供商，费用和预算由调用方管理；外部复核工件与新模型调用分别记录。
+
+可用 `reviewAnalysis` 注入真实独立 AI 复核意见，但调用方必须核对完整原文、候选和复核工件的版本及哈希，保留实际复核者、方法和读取范围。读取已完成意见属于复核工件回放，不能伪称新模型调用、人工复核或文学质量验收。服务仍检查六项协议，记录 `method=injected-reviewer`；外部工件来历应另行存证。禁止构造未经实际评审的 `approved/human/trusted` 响应。

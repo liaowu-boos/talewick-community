@@ -51,6 +51,47 @@ function stateResponse(args,{issue=true,unknown=false,stale=false,empty=false}={
  const cite=(n,needle)=>({chapterId:u.chapters[n].id,fragmentStart:u.chapters[n].fragments.find(f=>f.text.includes(needle)).id,fragmentEnd:u.chapters[n].fragments.find(f=>f.text.includes(needle)).id,role:'narration',actor:'她'});
  return JSON.stringify({inputHash:stale?'0'.repeat(64):u.inputHash,manuscriptSha256:u.manuscriptSha256,checkedChapterIds:u.chapters.map(c=>c.id),checkedDimensions:['knowledge','obligation','physical_state','time','promise'],coverage:{status:'complete',omissions:[]},comparisons:empty?[]:[{id:'synthetic-case',dimension:'knowledge',subject:'同一封信退回的已知事实',identity:'same',time:'ordered_events',before:{state:'早已知道',certainty:'stated',evidence:cite(0,'知道信已退回')},after:{state:'当作首次得知',certainty:'stated',evidence:cite(1,'第一次知道')},alternatives:[{explanation:'是否只是公开谈起而非新得知，合成语句明确写知道',status:unknown?'unresolved':'ruled_out',evidence:[0,1]}],counterEvidence:[],assessment:unknown?'unknown':'conflict_candidate',reason:'仅合成测试，不代表真实稿文学结论',issue:issue?{evidenceIndex:1,category:'STORY_COMPREHENSION_BLOCKER',severity:'must_fix',explanation:'合成已知事实重置',suggestion:'只承接已知信息，保留回环'}:null}]});
 }
+function cappedResponse(args,{corrected=false}={}){
+ const value=JSON.parse(stateResponse(args,{issue:false}));
+ value.comparisons=Array.from({length:8},(_,index)=>({...value.comparisons[0],id:`comparison-${index+1}`}));
+ if(corrected)value.coverage={status:'bounded',omissions:['八条记录已占满，其余状态转移未逐项记录']};
+ return JSON.stringify(value);
+}
+test('eight comparisons with complete coverage get one format feedback call; both raw responses remain bound',async()=>{
+ const calls=[],rejected=[];
+ const model={complete:async args=>{
+  calls.push(args);
+  if(calls.length===2){
+   const retry=JSON.parse(args.user);
+   assert.equal(retry.invalidResponse,cappedResponse(calls[0]));
+   assert.equal(retry.fieldError,'状态专审达到记录上限');
+   assert.equal(retry.inputHash,JSON.parse(calls[0].user).inputHash);
+   assert.equal(args.system,calls[0].system);
+   return cappedResponse(args,{corrected:true});
+  }
+  return cappedResponse(args);
+ }};
+ const result=await reviewStates({chapters:existing.chapters,requirements,model,onRejectedResponse:x=>rejected.push(x)});
+ assert.equal(calls.length,2);assert.equal(result.coverage.status,'bounded');assert.equal(result.comparisons.length,8);
+ assert.equal(rejected.length,1);assert.equal(rejected[0].rawResponse,cappedResponse(calls[0]));
+ assert.deepEqual(result.rejectedResponses,rejected);
+ assert.equal(result.responseSha256,adjudicationFingerprint(result.rawResponse));
+});
+test('a second capped response fails closed without a third call and archives both attempts',async()=>{
+ const rejected=[],calls=[];
+ const model={complete:async args=>{calls.push(args);return cappedResponse(args);}};
+ await assert.rejects(reviewStates({chapters:existing.chapters,requirements,model,onRejectedResponse:x=>rejected.push(x)}),
+  error=>error.code==='STATE_REVIEW_REJECTED'&&error.message==='状态专审达到记录上限');
+ assert.equal(calls.length,2);assert.deepEqual(rejected.map(x=>x.attempt),[1,2]);
+ assert.equal(rejected[0].inputHash,rejected[1].inputHash);
+});
+test('cancellation after archiving a capped response prevents the correction call',async()=>{
+ const controller=new AbortController();let calls=0;
+ const model={complete:async args=>{calls++;return cappedResponse(args);}};
+ await assert.rejects(reviewStates({chapters:existing.chapters,requirements,model,signal:controller.signal,
+  onRejectedResponse:()=>controller.abort(new Error('cancelled after archive'))}),/cancelled after archive/);
+ assert.equal(calls,1);
+});
 function v2model({decision='confirm',stateFail=false,uncertainState=false}={}){
  const m=fixture({decision}),base=m.complete;
  m.complete=async args=>{

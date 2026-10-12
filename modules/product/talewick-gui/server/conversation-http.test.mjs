@@ -57,7 +57,7 @@ async function fixture(t) {
   const source = controlledModel();
   let workflowCalls = 0;
   const config = { runsDir, port: 0, baseURL: 'https://model.invalid/v1', apiKey: 'test-only-key', model: 'test-model', agentProvider: 'openai-compatible', engine: 'fixed', timeoutMs: 1000 };
-  const runtime = await createRuntime({ config, conversationModel: source.model,
+  const runtime = await createRuntime({ config, full15Adapter: null, conversationModel: source.model,
     model: { complete: async () => { assert.fail('no business-model call is authorized by these conversation tests'); } },
     workflow: async () => { workflowCalls++; assert.fail('read-only websocket input must not start manuscript work'); },
   });

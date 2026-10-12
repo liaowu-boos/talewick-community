@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createRuntime } from './index.mjs';
@@ -62,7 +62,7 @@ const requestFor = (extra = {}) => ({
 
 async function startRuntime(config, model) {
   // Intentionally omit workflow: this exercises createRuntime's actual default runWorkflow.
-  const runtime = await createRuntime({ config, model });
+  const runtime = await createRuntime({ config, model, full15Adapter: null });
   try {
     await new Promise((resolve, reject) => {
       runtime.server.once('error', reject);
@@ -240,9 +240,13 @@ test('a second runtime cannot take ownership of a live runsDir', async () => {
   try {
     const config = configFor(runsDir);
     runtime = await startRuntime(config, modelStub());
+    const full15File = path.join(runsDir, 'full15-product', '11111111-1111-4111-8111-111111111111.json');
+    const runningRecord = JSON.stringify({ id: '11111111-1111-4111-8111-111111111111', projectId: 'ownership-test', status: 'running', updatedAt: '2026-10-12T00:00:00.000Z' }, null, 2) + '\n';
+    await writeFile(full15File, runningRecord);
     await assert.rejects(async () => {
-      unexpectedSecond = await createRuntime({ config, model: modelStub() });
+      unexpectedSecond = await createRuntime({ config, model: modelStub(), full15Adapter: null });
     }, /已有创作服务/);
+    assert.equal(await readFile(full15File, 'utf8'), runningRecord, 'rejected runtime must not rewrite Full15 recovery state');
     assert.equal((await api(runtime, '/api/runtime')).status, 200);
     assert.equal((await readdir(path.join(runsDir, '.runtime-owners'))).length, 1);
   } finally {

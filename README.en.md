@@ -12,12 +12,14 @@ The project separates the writing interface, source material management, writing
 
 ![Talewick workspace](examples/workspace.png)
 
-## Latest update · 2026-10-10
+## Latest update · 2026-10-12
 
-- New tasks in the default Agent workflow receive a whole-manuscript state review covering character knowledge, time, objects, and commitments. Existing tasks resume with their saved workflow.
-- A completed review response with JSON syntax or field errors can be reviewed again once. Malformed reference screening output or omitted evidence IDs can trigger smaller, separately bound reassessments within the existing budget; validation remains strict.
-- Fixed explicit revision instructions being mistaken for discussion because of conditional wording, or being blocked by an earlier reply saying tools were unavailable.
-- Added revised manuscripts of *Jinhua Clothing* (锦华服饰) and *Empty Seat* (空座) to the [reading examples](examples/README.md).
+- Added separate manuscript checks: new drafts queue after saving, existing drafts can be checked manually, and reports remain bound to the submitted version. Editing marks an earlier report as outdated; failed checks preserve the saved manuscript.
+- Improved recovery when state review reaches its record limit. Review format, network, configuration, and delivery errors now have distinct messages, with rejected responses retained.
+- Improved allocation of already approved reference material within the existing budget so large analysis packets do not crowd out other complete material. This does not change relevance decisions or require the writer to use a reference.
+- Included the Python review tools, independent public rules, and synthetic tests. The file library retains source and analysis versions; private data remains excluded.
+
+Output budgeting, inline packet transport, and failure receipts have been repaired and covered by regression tests. The repaired two-stage workflow has not yet completed a full real-provider rerun. This remains a development preview, without a claim of review quality. The six earlier [reading examples](examples/README.md) remain available.
 
 ## What you can do
 
@@ -33,6 +35,7 @@ The project separates the writing interface, source material management, writing
 ### 1. Prepare your environment
 
 - Node.js **22.13 or later**, with npm.
+- Python **3.10 or later**, available as `python3` in the server environment. Run `python3 --version` to confirm; the review tools use only the standard library.
 - Download and extract this repository, or clone it with Git.
 - Have a model API base URL, model ID, and API key ready. The default Agent workflow requires tool calling support.
 
@@ -90,7 +93,7 @@ The public edition contains no private source corpus, analysis dataset, or histo
 
 ## Data and model calls
 
-The interface and server run locally. Generation sends the requirements, manuscript, and relevant reference material to your configured model provider and may incur API charges. A single writing task involves multiple model calls.
+The interface and server run locally. Generation sends the requirements, manuscript, and relevant reference material to your configured model provider and may incur API charges. A single writing task involves multiple model calls. The separate review after saving a new draft normally adds two requests; manual rechecks may also incur charges. You can cancel from the manuscript check panel.
 
 - The server reads your API key from `.env.local`. Do not commit that file.
 - Tasks and generated artifacts are stored in `.local-runs/` under the product directory by default. Set `TALEWICK_RUNS_DIR` to change this location.
@@ -103,7 +106,8 @@ The interface and server run locally. Generation sends the requirements, manuscr
 | --- | --- |
 | Deployment | Local web workspace; the source server binds to `127.0.0.1` by default |
 | Writing engine | AI SDK ToolLoopAgent by default; fixed workflow also available |
-| Quality checks | Model review and basic mechanical checks; new default Agent tasks also receive a whole-manuscript state review. The Full15 experimental validation platform is off by default |
+| Quality checks | Model review, whole-manuscript state review, and separate C01–C06 checks; the historical Full15 platform is not enabled, and a full real-provider rerun of the repair is pending |
+| Auxiliary scope | C05 requires an explicit chapter-four/five cut requirement; the product supplies no reference corpus, so C06 is not evaluated |
 | Reference library | Requires local imports or configuration; sample counts in development reports do not mean a fresh installation includes that library |
 | Interaction modes | Automatic drafting and targeted revision are connected; complete stage-by-stage assisted and professional review interactions are unfinished |
 | Other capabilities | Style training, a complete product account system, and native desktop installers are unfinished |
@@ -117,6 +121,7 @@ A completed task or passing engineering tests do not establish publication readi
 modules/
   product/talewick-gui/             # React interface and local Node.js server
   creation/runtime/                # Requirements, planning, writing, review, revision
+  creation/novel-review/            # Python checks, public rules, and synthetic tests
   creation/write-short-fiction-candidate/references/  # Workflow rules
   data/                            # Sources, analysis, and knowledge delivery
   validation/                      # Basic checks and experimental validation
@@ -152,10 +157,11 @@ Before submitting, run `node tools/check-public.mjs` from the repository root, t
 ```sh
 npm run test:runtime
 npm run test:ui
+npm run test:review
 npm run build
 ```
 
-`test:runtime` covers the server, creation runtime, reference screening, and interface state tests selected by the package script, not every experiment in the repository. Passing tests do not replace real-provider compatibility checks or literary evaluation.
+`test:runtime` covers the server, creation runtime, reference screening, auxiliary review tasks, and interface state tests selected by the package script. `test:review` runs the Python protocol tests. These do not cover every experiment in the repository. Passing tests do not replace real-provider compatibility checks or literary evaluation.
 
 ### Submission guidelines
 
@@ -169,6 +175,8 @@ npm run build
 
 - [Product runtime entry](modules/product/talewick-gui/README.md)
 - [Module responsibilities](modules/README.md)
+- [Manuscript checks](modules/creation/novel-review/README.md)
+- [File library](modules/data/runtime/FILE-LIBRARY.md)
 - [Reading examples](examples/README.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
 
