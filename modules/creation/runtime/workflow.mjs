@@ -1,11 +1,12 @@
 import {reviewStates, mergeStateReview} from './state-review.mjs';
+import {reviewWorkflowContinuityChain, continuityChainWarnings, inheritContinuityDisputes} from './continuity-chain.mjs';
 import { BOUNDED_REVISION_POLICY, automaticRevisionScope, bindRevisionScope } from './bounded-revision.mjs';
 import {userRequirementSources,requirementsSourceView,requirementOriginSuffix} from './requirement-sources.mjs';
 import {compileReferenceStrategy,REFERENCE_STRATEGY_CONTRACT} from './v04/reference-strategy.mjs';
 import { validateReferenceIntent, referenceBasisContract } from './v04/reference-intent.mjs';
 import { FOLLOWUP_POLICY, referenceNeedsField } from './v04/reference-needs.mjs';
 import { createFollowup, AUTHOR_MATERIAL_POLICY } from './v04/followup.mjs';
-import { ADJUDICATION_VERSION, ADJUDICATION_RELIABILITY_VERSION, createAdjudicationInput, adjudicateReview, validateAdjudication, revisionEligibleIssues, adjudicationFingerprint } from '../../validation/runtime/review-adjudication.mjs';
+import { ADJUDICATION_VERSION, ADJUDICATION_RELIABILITY_VERSION, ADJUDICATION_CONTINUITY_VERSION, createAdjudicationInput, adjudicateReview, validateAdjudication, revisionEligibleIssues, adjudicationFingerprint } from '../../validation/runtime/review-adjudication.mjs';
 import { authorizedRevisionIssues } from './review-policy.mjs';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
@@ -17,6 +18,7 @@ import { createBusinessTools, parseModelObject as parseObject } from './business
 import { prepareWorkflowKnowledge, knowledgeForAuthor, validateRecall, validateReferenceQuestion, validateRelevanceSummary } from './v04/knowledge.mjs';
 import { CREATION_POLICY_VERSION, normalizePsychology, normalizeReadingObservations } from './v04/psychology.mjs';
 import { MATERIAL_USE_EVIDENCE_POLICY } from './v04/material-use-evidence.mjs';
+import { PLANNING_FOLLOWUP_DECISION_POLICY, PLANNING_FOLLOWUP_DECISION_CONTRACT, createPlanningFollowupDecisionInput, createPlanningFollowupDecisionStart, validatePlanningFollowupDecisionStart, createPlanningFollowupResponseReceipt, validatePlanningFollowupResponseReceipt, createPlanningFollowupDecisionCommit, validatePlanningFollowupDecisionCommit } from './v04/planning-followup-decisions.mjs';
 import { CHAPTER_BUDGET_VERSION, normalizeChapterBudgets, chapterWritingBudget } from './chapter-budget.mjs';
 
 const RULE_ROOT = new URL('../write-short-fiction-candidate/references/', import.meta.url);
@@ -258,25 +260,36 @@ function controllerTrace(value) {
 }
 
 /** Sequential business stages with optional bounded controller hooks; the host checkpoints artifacts. */
-export async function runWorkflow({ request, model, artifacts = {}, checkpoint = async () => {}, signal, controller, retrieveKnowledge, prepareKnowledge: prepare = prepareKnowledge, followupMode = 'dynamic', existingReviewMode, createStateReviewMode } = {}) {
+export async function runWorkflow({ request, model, artifacts = {}, checkpoint = async () => {}, signal, controller, retrieveKnowledge, prepareKnowledge: prepare = prepareKnowledge, followupMode = 'dynamic', existingReviewMode, createStateReviewMode, planningFollowupDecisionMode } = {}) {
   if (existingReviewMode !== undefined && !['review-existing-v1','review-existing-v2','review-existing-v3'].includes(existingReviewMode)) throw new Error('未知已有稿审阅版本。');
-  if (createStateReviewMode !== undefined && createStateReviewMode !== 'create-state-review-v1') throw new Error('未知新建创作状态专审版本。');
+  if (createStateReviewMode !== undefined && !['create-state-review-v1','create-state-review-v2','create-state-review-v3'].includes(createStateReviewMode)) throw new Error('未知新建创作状态专审版本。');
+  const continuityChainEnabled = ['create-state-review-v2','create-state-review-v3'].includes(createStateReviewMode);
+  const continuityChainVersion = createStateReviewMode === 'create-state-review-v3'
+    ? 'continuity-chain-review-3' : undefined;
+  if (planningFollowupDecisionMode !== undefined && planningFollowupDecisionMode !== PLANNING_FOLLOWUP_DECISION_POLICY) throw new Error('未知规划补查材料决定版本。');
   const reviewExisting = existingReviewMode !== undefined;
   const createStateReview = createStateReviewMode !== undefined;
   const stateReviewEnabled = createStateReview || ['review-existing-v2','review-existing-v3'].includes(existingReviewMode);
   const transitionHintsEnabled = createStateReview || existingReviewMode === 'review-existing-v3';
-  const reviewPolicyVersion = reviewExisting ? ADJUDICATION_RELIABILITY_VERSION : ADJUDICATION_VERSION;
+  const reviewPolicyVersion = continuityChainEnabled ? ADJUDICATION_CONTINUITY_VERSION : reviewExisting ? ADJUDICATION_RELIABILITY_VERSION : ADJUDICATION_VERSION;
   if (reviewExisting && (request?.kind !== 'revise' || request?.quoteSource || controller)) throw new Error('已有稿审阅仅支持完整 revise 输入及固定独立裁定流程。');
   if (createStateReview && (request?.kind !== 'create' || reviewExisting)) throw new Error('新建创作状态专审仅支持 create 流程，不能与已有稿审阅混用。');
   if (!['dynamic', 'fixed_materials'].includes(followupMode)) throw new Error('未知补查模式。');
   if (typeof model?.complete !== 'function') throw new Error('缺少真实模型调用配置。');
   if (controller && (!string(controller.runtimeVersion) || controller.runtimeVersion === RUNTIME_VERSION)) throw new Error('可选控制器需要独立的非空执行版本，不能复用固定流程版本。');
-  const runtimeVersion = reviewExisting ? (transitionHintsEnabled ? 'review-existing-workflow-3' : stateReviewEnabled ? 'review-existing-workflow-2' : 'review-existing-workflow-1') : createStateReview ? controller ? `${controller.runtimeVersion}:create-state-review-1` : 'fixed-workflow-create-state-review-1' : controller?.runtimeVersion || RUNTIME_VERSION;
+  const createStateReviewVersion = createStateReviewMode === 'create-state-review-v3' ? '3'
+    : createStateReviewMode === 'create-state-review-v2' ? '2' : '1';
+  const runtimeVersion = reviewExisting ? (transitionHintsEnabled ? 'review-existing-workflow-3' : stateReviewEnabled ? 'review-existing-workflow-2' : 'review-existing-workflow-1') : createStateReview ? controller ? `${controller.runtimeVersion}:create-state-review-${createStateReviewVersion}` : `fixed-workflow-create-state-review-${createStateReviewVersion}` : controller?.runtimeVersion || RUNTIME_VERSION;
   const input = requestInput(request);
   const inputFingerprint = sha(json(canonical(input)));
   const saved = clone(artifacts);
+  const continuityProtocolHistory = saved['continuity:protocol-migration:history'] ?? [];
+  if (!Array.isArray(continuityProtocolHistory)) throw new Error('事件链协议迁移历史必须是验证 helper 产物列表。');
+  if (continuityProtocolHistory.length && createStateReviewMode !== 'create-state-review-v3') {
+    throw new Error('事件链协议迁移历史只能由显式 create-state-review-v3 任务继续保留。');
+  }
   if (Object.keys(saved).length && !saved.requestSpec) throw new Error('任务进度缺少原始需求绑定，不能安全恢复；请建立新任务。');
-  if (saved.requestSpec && (saved.requestSpec.inputFingerprint !== inputFingerprint || saved.requestSpec.runtimeVersion !== runtimeVersion || saved.requestSpec.reviewPolicyVersion !== reviewPolicyVersion || saved.requestSpec.existingReviewMode !== existingReviewMode || saved.requestSpec.createStateReviewMode !== createStateReviewMode)) {
+  if (saved.requestSpec && (saved.requestSpec.inputFingerprint !== inputFingerprint || saved.requestSpec.runtimeVersion !== runtimeVersion || saved.requestSpec.reviewPolicyVersion !== reviewPolicyVersion || saved.requestSpec.existingReviewMode !== existingReviewMode || saved.requestSpec.createStateReviewMode !== createStateReviewMode || saved.requestSpec.planningFollowupDecisionMode !== planningFollowupDecisionMode)) {
     throw new Error('任务输入或执行版本已变化，请建立新任务；不能复用另一份需求的进度。');
   }
   const step = async (key, execute) => {
@@ -349,7 +362,9 @@ export async function runWorkflow({ request, model, artifacts = {}, checkpoint =
         throw new Error('模型连续两次未返回完整的创作规格，本次未开始写作。已保留输入，请重试当前步骤。');
       }
     }
-    return { runtimeVersion, inputFingerprint, requirements, rules, ...(reviewExisting ? { existingReviewMode } : {}), ...(createStateReview ? { createStateReviewMode } : {}), boundedRevisionPolicyVersion: BOUNDED_REVISION_POLICY, reviewPolicyVersion, followupPolicyVersion: FOLLOWUP_POLICY, authorMaterialPolicyVersion: AUTHOR_MATERIAL_POLICY, retrievalFailurePolicyVersion: 'stop-on-retrieval-failure-1',
+    if (planningFollowupDecisionMode !== undefined && (input.kind !== 'create' || followupMode === 'fixed_materials' || typeof retrieveKnowledge !== 'function'))
+      throw new Error('规划补查材料决定模式仅支持启用动态补查的新建任务。');
+    return { runtimeVersion, inputFingerprint, requirements, rules, ...(reviewExisting ? { existingReviewMode } : {}), ...(createStateReview ? { createStateReviewMode } : {}), ...(planningFollowupDecisionMode !== undefined ? { planningFollowupDecisionMode } : {}), boundedRevisionPolicyVersion: BOUNDED_REVISION_POLICY, reviewPolicyVersion, followupPolicyVersion: FOLLOWUP_POLICY, authorMaterialPolicyVersion: AUTHOR_MATERIAL_POLICY, retrievalFailurePolicyVersion: 'stop-on-retrieval-failure-1',
       ...(input.kind === 'create' && requirements.referenceIntent?.purpose === 'expression'
         ? { materialEvidencePolicyVersion: MATERIAL_USE_EVIDENCE_POLICY } : {}),
       followupPolicy: { mode: followupMode === 'fixed_materials' ? 'disabled' : typeof retrieveKnowledge === 'function' ? 'dynamic' : 'disabled',
@@ -358,6 +373,10 @@ export async function runWorkflow({ request, model, artifacts = {}, checkpoint =
   const { requirements, rules } = requestSpec;
   if (requestSpec.materialEvidencePolicyVersion !== undefined && requestSpec.materialEvidencePolicyVersion !== MATERIAL_USE_EVIDENCE_POLICY)
     throw new Error('未知材料使用证据策略版本，不能改变旧任务规划行为。');
+  if (requestSpec.planningFollowupDecisionMode !== undefined && requestSpec.planningFollowupDecisionMode !== PLANNING_FOLLOWUP_DECISION_POLICY)
+    throw new Error('未知规划补查材料决定策略版本，不能改变旧任务执行协议。');
+  const planningFollowupDecisions = requestSpec.planningFollowupDecisionMode === PLANNING_FOLLOWUP_DECISION_POLICY
+    && requestSpec.materialEvidencePolicyVersion === MATERIAL_USE_EVIDENCE_POLICY;
   if (requestSpec.boundedRevisionPolicyVersion !== undefined && requestSpec.boundedRevisionPolicyVersion !== BOUNDED_REVISION_POLICY) throw new Error('未知局部修订策略版本，不能改变旧任务修订行为。');
   const boundedRevisions = requestSpec.boundedRevisionPolicyVersion === BOUNDED_REVISION_POLICY;
   if (reviewExisting && !boundedRevisions) throw new Error('已有稿审阅保存点必须保留有界修订策略，不能退回整章重写。');
@@ -420,13 +439,37 @@ export async function runWorkflow({ request, model, artifacts = {}, checkpoint =
     }
     authorPlan = plan;
     await followup.consume('planning', plan.referenceNeeds, { plan });
+    const planningSlot = followup.summary().slots.find(slot => slot.slot === 'planning');
+    if (planningFollowupDecisions && planningSlot.acceptedCount > 0) {
+      const addedMaterialIds = planningSlot.delta?.accepted?.map(material => typeof material === 'string' ? material : material.id);
+      const activeSnapshotHash = followup.summary().activeSnapshotHash;
+      const decisionInput = createPlanningFollowupDecisionInput({ plan,
+        knowledge: followup.view({ materialDecisions: plan.materialDecisions, forPlanning: true }), activeSnapshotHash, addedMaterialIds });
+      const hadDecisionStart = Object.hasOwn(saved, 'planningFollowupDecisionStarted');
+      const hadDecisionResponse = Object.hasOwn(saved, 'planningFollowupDecisionResponse');
+      if (hadDecisionResponse && !hadDecisionStart) throw new Error('规划补查材料决定响应缺少调用前保存点，不能恢复。');
+      const decisionStart = await step('planningFollowupDecisionStarted', () => createPlanningFollowupDecisionStart(decisionInput));
+      validatePlanningFollowupDecisionStart(decisionStart, decisionInput);
+      if (hadDecisionStart && !hadDecisionResponse) throw Object.assign(new Error('规划补查材料决定调用曾开始但没有完整保存响应；恢复不会重新询问或重新判断，请建立新任务。'), { code: 'PLANNING_FOLLOWUP_DECISION_INTERRUPTED' });
+      const responseReceipt = await step('planningFollowupDecisionResponse', async () => createPlanningFollowupResponseReceipt(decisionInput,
+        await call('planning:material-decisions', PLANNING_FOLLOWUP_DECISION_CONTRACT, decisionInput, 6000)));
+      validatePlanningFollowupResponseReceipt(responseReceipt, decisionInput);
+      const decisionOutput = parseObject(responseReceipt.rawResponse, '规划补查材料决定');
+      const commitArgs = { input: decisionInput, responseReceipt, output: decisionOutput,
+        normalizePlan: value => normalizePlanForTask(value, requirements, { allowLegacy: continuingLegacyPlan,
+          allowReferenceNeeds: followup.enabled, requirePsychology: Boolean(rules.v04_planning) }) };
+      const decisionCommit = await step('planningFollowupDecisionCommit', () => createPlanningFollowupDecisionCommit(commitArgs));
+      validatePlanningFollowupDecisionCommit(decisionCommit, commitArgs);
+      plan = decisionCommit.plan;
+      authorPlan = plan;
+    }
     title = plan.title;
     chapters = [];
     for (let index = 0; index < plan.chapters.length; index++) {
       const chapterPlan = plan.chapters[index];
       const chapter = await step(`draft:${chapterPlan.id}`, async () => {
         const writingBudget = chapterWritingBudget({ requirements, plan, chapterIndex: index, previousChapters: chapters });
-        const body = string(await call(`draft:${chapterPlan.id}`, `${rules.manuscript.content}${requirementOriginSuffix(requirements)}\n${rules.v04_manuscript?.content ?? ''}\n本次只写指定一章，返回纯小说正文，不含章节标题、代码块、说明或后续章节。衔接已经写成的前文；以实际正文事实为准。先落实本章 scenes、goal 和 continuity，再按本章范围安排场景展开尺度；writingBudget 是实际前文计量和剩余篇幅参考，不是必填字数。前文写长时减少重复交代、及时推进行动，给后续关键场景留空间；前文写短时不要自动把差额摊入后章。章节任务已完成且自然收束时，即使略低于范围也直接结束；不追加重复心理、对白或景物凑数。不得用摘要代替必要场景。若预算与必要情节冲突，仍完成行动、因果交接和结局，不截断、不伪报达标。若为末章，实际完成结局。`, { requirements, plan, chapterIndex: index + 1, currentChapter: chapterPlan, writingBudget, previousChapters: chapters, knowledge: followup.view({ materialDecisions: plan.materialDecisions }) }, 6500));
+        const body = string(await call(`draft:${chapterPlan.id}`, `${rules.manuscript.content}${requirementOriginSuffix(requirements)}\n${rules.v04_manuscript?.content ?? ''}\n本次只写指定一章，返回纯小说正文，不含章节标题、代码块、说明或后续章节。衔接已经写成的前文；以实际正文事实为准。先落实本章 scenes、goal 和 continuity，再按本章范围安排场景展开尺度。writingBudget.currentChapter 保留批准规划，writingBudget.operationalChapter 则由实际已写汉字、全书上限与后续章容量计算；优先在 operationalChapter.target/max 内完成本章，通过删除重复交代、合并同功能动作和及时转场控制长度。前文写短时不要自动把差额摊入后章。章节任务完成且自然收束时，即使略低于范围也直接结束；不追加重复心理、对白或景物凑数。不得用摘要代替必要场景。若 operationalChapter.status=no_safe_headroom 或预算与必要情节冲突，仍写最短的完整章节，完成必要行动、因果交接和结局，不返回空章，不截断，不伪报达标；程序不会静默裁切正文。若为末章，实际完成结局。`, { requirements, plan, chapterIndex: index + 1, currentChapter: chapterPlan, writingBudget, previousChapters: chapters, knowledge: followup.view({ materialDecisions: plan.materialDecisions }) }, 6500));
         return { id: chapterPlan.id, title: chapterPlan.title, body };
       });
       chapters.push(chapter);
@@ -491,7 +534,13 @@ export async function runWorkflow({ request, model, artifacts = {}, checkpoint =
       afterManuscriptSha256: manuscriptFingerprint(bound.modelInput.chapters.map(c => c.id === revised.id ? revised : c)), scope }));
     return key;
   };
-  const readCurrent = async (key, current, previousIssues, options, previousManuscriptSha256) => {
+  const readCurrent = async (key, current, previousIssues, options, previousManuscriptSha256, previousReview) => {
+    if (continuityChainEnabled && previousReview?.continuityChainFailure?.manuscriptSha256 === manuscriptFingerprint(current)) {
+      const unchangedFailureReview = inheritContinuityDisputes(previousReview,previousReview,continuityProtocolHistory);
+      const preserved = await step(key, () => unchangedFailureReview);
+      if (!isDeepStrictEqual(preserved,unchangedFailureReview)) throw new Error('同一正文的事件链未完成状态被替换，不能恢复。');
+      return preserved;
+    }
     const readGeneral = async () => ({...await business.reviewManuscript(current, previousIssues, options),
       ...(previousManuscriptSha256 ? {previousManuscriptSha256} : {})});
     if (!stateReviewEnabled) return step(key, readGeneral);
@@ -499,6 +548,16 @@ export async function runWorkflow({ request, model, artifacts = {}, checkpoint =
     const state = await step(`${key}:state`, () => reviewStates({chapters:current, requirements, model, signal, transitionHintsEnabled,
       formatRetryAllowed: !Object.keys(saved).some(name => name.startsWith(`${key}:state:rejected:`)),
       onRejectedResponse: response => persist(`${key}:state:rejected:${Object.keys(saved).filter(name => name.startsWith(`${key}:state:rejected:`)).length + 1}:${response.responseSha256}`, response)}));
+    if (continuityChainEnabled) {
+      const chainReview = inheritContinuityDisputes(mergeStateReview(general, state), previousReview, continuityProtocolHistory);
+      if (chainReview.continuityChainFailure?.manuscriptSha256 === manuscriptFingerprint(current)) {
+        const preserved = await step(key, () => chainReview);
+        if (!isDeepStrictEqual(preserved,chainReview)) throw new Error('同一正文的事件链未完成状态被替换，不能恢复。');
+        return preserved;
+      }
+      return reviewWorkflowContinuityChain({key, chapters:current,review:chainReview,
+        requirements, model, signal, step, ...(continuityChainVersion ? {version:continuityChainVersion} : {})});
+    }
     return step(key, () => mergeStateReview(general, state));
   };
   let review = await readCurrent('review', chapters, undefined, reviewExisting ? { phase: 'existing_manuscript' } : undefined);
@@ -508,6 +567,7 @@ export async function runWorkflow({ request, model, artifacts = {}, checkpoint =
   let reviewAdjudication = await adjudicate(chapters, review);
   if (typeof controller?.review === 'function') {
     const baseline = clone(chapters);
+    let lastReadReview = review;
     const controlled = await step('agentReview', async () => {
       const output = await controller.review({ input: clone(input), requirements: clone(requirements), chapters: clone(chapters), review: clone(review), reviewAdjudication: clone(reviewAdjudication), rules: clone(rules),
         ...(boundedRevisions ? { boundedRevisionPolicyVersion: BOUNDED_REVISION_POLICY } : {}),
@@ -518,7 +578,8 @@ export async function runWorkflow({ request, model, artifacts = {}, checkpoint =
           if (!approvedManuscripts.has(manuscriptFingerprint(candidate))) throw new Error('正文没有通过已授权修订步骤，不能覆盖当前版本。');
           const key = `agentReviewReading:${adjudicationFingerprint({ candidate, previousIssues })}`;
           const actual = await readCurrent(key, candidate, clone(previousIssues),
-            { stage: 'agent:reviewManuscript', phase: 'after_controller_revision' });
+            { stage: 'agent:reviewManuscript', phase: 'after_controller_revision' }, undefined, lastReadReview);
+          lastReadReview = actual;
           generatedReviews.add(adjudicationFingerprint(actual));
           return actual;
         },
@@ -589,7 +650,7 @@ export async function runWorkflow({ request, model, artifacts = {}, checkpoint =
       chapters = chapters.map(c => c.id === chapter.id ? revised : c);
       revisionApplied = reviewExisting ? chapters.some((c, i) => c.body !== input.chapters[i].body) : true;
       review = await readCurrent(round === 1 ? 'revisionReview' : 'revisionReview:2', chapters, mustFix,
-        { stage: 'revisionReview', phase: round === 1 ? 'after_one_revision' : 'after_two_revisions' }, previousReview.manuscriptSha256);
+        { stage: 'revisionReview', phase: round === 1 ? 'after_one_revision' : 'after_two_revisions' }, previousReview.manuscriptSha256, previousReview);
       generatedReviews.add(adjudicationFingerprint(review));
       reviewAdjudication = await adjudicate(chapters, review);
       if (boundedRevisions) await step(boundedReceiptKey.replace('boundedRevision:', 'boundedRevisionCheck:'), () => ({ status: 'reread_recorded',
@@ -600,8 +661,10 @@ export async function runWorkflow({ request, model, artifacts = {}, checkpoint =
   }
   await followup.finishReview(initialReview?.referenceNeeds, { chapters, initialChapters: initialReviewChapters, issues: initialReview?.issues });
   const checks = await step('checks', () => runChecks({ chapters, requirements }));
-  return step('result', async () => ({
-    title, chapters, review, reviewAdjudication, adjudicationHistory, checks, knowledge,
+  const qualityCheckIncomplete = Boolean(review.continuityChainFailure || review.continuityChainFailureHistory?.length);
+  const result = await step('result', async () => ({
+    title, chapters, review, reviewAdjudication, adjudicationHistory, checks,
+    requestConformance: checks.requestConformance, knowledge,
     ...(followup.enabled ? { activeKnowledge: followup.activeKnowledge(), followupRetrieval: followup.summary() } : {}),
     warnings: [
       ...requirements.assumptions,
@@ -611,11 +674,20 @@ export async function runWorkflow({ request, model, artifacts = {}, checkpoint =
       ...(input.kind === 'revise' && !revisionApplied ? ['模型没有产生正文变更；现稿已原样保留，请查看审稿意见或调整修改要求。'] : []),
       ...(reviewAdjudication.retainedDisputeIssueIds.length ? ['部分原审稿意见存在争议或尚不能确定，已保留原意见与裁定依据，未据此自动改稿。'] : []),
       ...(review.issues.some((issue) => issue.severity === 'must_fix') ? ['本轮复核仍有需要关注的问题，已保留在审稿意见中。'] : []),
+      ...(continuityChainEnabled ? continuityChainWarnings(review) : []),
       '完整 Full15 未执行；本轮结果不代表文学质量或方法增益已验收。',
     ],
     requirements, runtimeVersion, revisionApplied,
+    ...(qualityCheckIncomplete ? {qualityCheckStatus:'incomplete'} : {}),
     ...(controller ? { agentTrace } : {}),
     baseRevision: input.baseRevision ?? null,
     provenance: Object.fromEntries(Object.entries(rules).map(([name, value]) => [name, { path: value.path, sha256: value.sha256 }])),
   }));
+  if (continuityChainEnabled && (!isDeepStrictEqual(result.chapters, chapters)
+    || !isDeepStrictEqual(result.review, review) || !isDeepStrictEqual(result.reviewAdjudication, reviewAdjudication)
+    || result.qualityCheckStatus !== (qualityCheckIncomplete ? 'incomplete' : undefined)
+    || continuityChainWarnings(review).some(warning => !result.warnings.includes(warning)))) {
+    throw new Error('已保存最终结果与当前正文、事件链审稿或保留问题不一致，不能恢复。');
+  }
+  return result;
 }

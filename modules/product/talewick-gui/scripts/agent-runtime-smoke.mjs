@@ -92,6 +92,13 @@ export function makeAgentModels({ adjudicationDecision = 'confirm', reviewDecisi
     args.signal?.throwIfAborted();
     const input = JSON.parse(args.user);
     stageCalls.push({ stage: args.stage, input });
+    if (args.stage === 'whole-revision:diagnosis') return JSON.stringify({ ...input.responseBindings, inputHash: input.inputHash,
+      coverage: { status: 'complete', omissions: [] }, summary: '合成诊断未提出修改；只验证整稿任务链。', findings: [] });
+    if (args.stage === 'whole-revision:plan') return JSON.stringify({ ...input.responseBindings, inputHash: input.inputHash,
+      decision: 'preserve_original', summary: '合成方案决定保留原稿。', items: [], unresolved: [] });
+    if (args.stage === 'whole-revision:reread') return JSON.stringify({ ...input.responseBindings, inputHash: input.inputHash,
+      coverage: { status: 'complete', omissions: [] }, summary: '合成复读完成，未改动原稿。', changeChecks: [],
+      introducedIssues: [], unresolvedItems: [], preservedStrengths: [] });
     if (['full15-cold-read', 'full15-check'].includes(args.stage)) {
       const questions = ['actor', 'event', 'goal_or_risk'].map(question => ({ question, answer: null, citations: [] }));
       const common = { source_sha256: input.transport.source_sha256, scope: { full_text_read: true, read_chunks: input.inline_packet.chunks.map(chunk => chunk.index) }, limitations: ['Synthetic protocol fixture; no semantic quality claim.'] };
@@ -107,7 +114,7 @@ export function makeAgentModels({ adjudicationDecision = 'confirm', reviewDecisi
       await args.onReceipt?.({ provider: 'fixture-only', invocationId: id, contextId: id });
       return JSON.stringify(result);
     }
-    if (args.stage === 'review-adjudication') return syntheticAdjudication(input, adjudicationDecision);
+    if (['review-adjudication', 'review-adjudication:continuity-v4'].includes(args.stage)) return syntheticAdjudication(input, adjudicationDecision);
     if (args.stage === 'requirements') return JSON.stringify({ summary: '固定测试：山村旧钟。', genre: '测试短故事', pointOfView: '第三人称', setting: '山村', targetHanMin: input.kind === 'revise' ? null : 1, targetHanMax: input.kind === 'revise' ? null : 1000, targetChapterCount: 2, requiredElements: [], prohibitions: [], assumptions: [], completeEnding: true });
     if (['planning', 'agent:replan'].includes(args.stage)) return JSON.stringify({ characterArcs: [{ character: '小禾', experience: '旧钟停摆', belief: '亲手修复', desire: '钟声恢复', fear: '无法修好', change: '担忧到行动', expression: '修理动作' }], emotionalScenes: Array.from({length:2},()=>({experience:'修钟',cognition:'发现问题',action:'修理',expression:'动作',development:'展开现场',echo:'钟声回应'})), materialDecisions: [], psychologyLimitations: ['明确新版测试替身'], title: '旧钟', premise: '旧钟停摆，需要修理。', ending: '小禾修好钟并支付代价。', constraints: [], chapters: [
       { title: '停钟', goal: '发现齿轮松脱，决定修钟。', scenes: ['检查齿轮并决定修理'], continuity: '下一章落实修理', targetHanMin: 80, targetHan: 100, targetHanMax: 120 },
@@ -129,6 +136,15 @@ export function makeAgentModels({ adjudicationDecision = 'confirm', reviewDecisi
       const current = input.chapters.find(chapter => chapter.id === 'ch-2');
       return JSON.stringify({ readingObservations: [], summary: '模拟模型已读取当前测试正文。', issues: current?.body.includes('铜钱') ? [{ chapterId: 'ch-2', category: '物件细节', severity: 'must_fix', quote: '铜钱', explanation: '测试替身指定必修意见：把钱的材质明确为银币。', suggestion: '将铜钱改为银币，保留其他动作。' }] : [], strengths: [], limitations: ['仅验证真实 SDK 与本地任务接通；不是实际模型质量评估。'] });
     }
+    if (args.stage === 'continuity-chain-review') return JSON.stringify({
+      inputHash: input.inputHash,
+      manuscriptSha256: input.manuscriptSha256,
+      reportSha256: input.reportSha256,
+      checkedChapterIds: input.chapters.map(chapter => chapter.id),
+      coverage: { status: 'complete', omissions: [] },
+      evidence: [], anchors: [], transitions: [], cases: [],
+      retention: { majorUnknownCaseIds: [], contradictionCaseIds: [], nonLocalContradictionCaseIds: [] },
+    });
     if (args.stage === 'continuity-review') return JSON.stringify({
       inputHash: input.inputHash,
       manuscriptSha256: input.manuscriptSha256,
@@ -268,6 +284,32 @@ async function runBrowserSmoke() {
       assert.equal(current.trigger, 'manual');
       assert.equal(fixture.runtime.full15.get(previous.id).status, 'complete');
       assert.equal(active(await state(fixture.page)).chapters[1].body, revisedBody);
+    });
+    await check('whole-manuscript dialog waits for explicit start and a no-change review preserves the draft', async () => {
+      const before = active(await state(fixture.page));
+      const callsBefore = fixture.models.stageCalls.length;
+      await fixture.page.getByRole('button', { name: '整稿修订', exact: true }).click();
+      let dialog = fixture.page.getByRole('dialog', { name: '发起整稿修订' });
+      await dialog.getByRole('textbox', { name: '本轮整稿修改目标' }).waitFor();
+      assert.equal(fixture.models.stageCalls.length, callsBefore);
+      await dialog.getByRole('button', { name: '取消', exact: true }).click();
+      assert.deepEqual(active(await state(fixture.page)).chapters, before.chapters);
+      await fixture.page.getByRole('button', { name: '整稿修订', exact: true }).click();
+      dialog = fixture.page.getByRole('dialog', { name: '发起整稿修订' });
+      await dialog.getByRole('textbox', { name: '本轮整稿修改目标' }).fill('通读全稿；没有充分依据时保留原稿。');
+      await dialog.getByRole('button', { name: '开始整稿修订', exact: true }).click();
+      const project = await waitProject(fixture.page, item => item.runtime?.request.revisionMode === 'whole-manuscript-v1'
+        && item.runtime?.resultDisposition === 'declined');
+      assert.deepEqual(project.chapters, before.chapters);
+      assert.equal(project.runtime.task.result.wholeRevision.status, 'no_change');
+      assert.deepEqual(fixture.models.stageCalls.slice(callsBefore).map(call => call.stage),
+        ['whole-revision:diagnosis', 'whole-revision:plan', 'whole-revision:reread']);
+      await fixture.page.getByRole('button', { name: '查看候选与原稿', exact: true }).click();
+      dialog = fixture.page.getByRole('dialog', { name: '整稿候选与原稿' });
+      assert.match(await dialog.innerText(), /已保留原稿/);
+      const file = path.join(reportDir, 'whole-revision-preserved.png');
+      await fixture.page.screenshot({ path: file, fullPage: true }); report.captures.push(file);
+      await dialog.getByRole('button', { name: '关闭', exact: true }).click();
     });
     await check('cancelled agent resumes the same task without repeating a completed plan revision', async () => {
       const fixture = await pageFor({ replan: true, pauseBefore: 'approve_plan' });

@@ -1,12 +1,28 @@
 export const isLibraryStage = stage => stage === 'library-relevance' || stage === 'library-analysis' || stage === 'library-analysis-revision' || stage === 'library-review';
 export const isFull15Stage = stage => stage === 'full15-cold-read' || stage === 'full15-check';
+export const FOLLOWUP_CONTINUITY_MODEL_POLICY = 'followup-continuity-json-1';
+export const WHOLE_REVISION_MODEL_POLICY = 'whole-manuscript-json-1';
+const FOLLOWUP_CONTINUITY_STAGES = new Set([
+  'planning:material-decisions',
+  'continuity-chain-review',
+  'review-adjudication:continuity-v4',
+  'review-adjudication:repair:continuity-v4',
+]);
+export const isFollowupContinuityStage = stage => FOLLOWUP_CONTINUITY_STAGES.has(stage);
+const WHOLE_REVISION_STAGES = new Set([
+  'whole-revision:diagnosis', 'whole-revision:diagnosis:format-repair', 'whole-revision:diagnosis:repair',
+  'whole-revision:plan', 'whole-revision:plan:format-repair', 'whole-revision:plan:repair',
+  'whole-revision:revision', 'whole-revision:revision:format-repair', 'whole-revision:revision:repair',
+  'whole-revision:reread', 'whole-revision:reread:format-repair', 'whole-revision:reread:repair',
+]);
+export const isWholeRevisionStage = stage => WHOLE_REVISION_STAGES.has(stage);
 export const agentProviderFor = config => config.agentProvider || (new URL(config.baseURL).hostname === 'api.deepseek.com' ? 'deepseek' : 'openai-compatible');
 
 // Current Flash and legacy V4 aliases share the thinking/streaming contract.
 export const usesDeepSeekThinking = config => agentProviderFor(config) === 'deepseek' &&
   (config.model === 'deepseek-flash' || /^deepseek-v4-(?:flash(?:-vision-exp)?|pro)$/.test(config.model ?? ''));
 
-const BUSINESS_STAGES = new Set(['requirements', 'requirements:repair', 'planning', 'agent:replan', 'review', 'agent:reviewManuscript', 'revisionReview', 'review-adjudication', 'review-adjudication:repair', 'requestedRevision', 'continuity-review']);
+const BUSINESS_STAGES = new Set(['requirements', 'requirements:repair', 'planning', 'planning:material-decisions', 'agent:replan', 'review', 'agent:reviewManuscript', 'revisionReview', 'review-adjudication', 'review-adjudication:repair', 'review-adjudication:continuity-v4', 'review-adjudication:repair:continuity-v4', 'requestedRevision', 'continuity-review', 'continuity-chain-review', ...WHOLE_REVISION_STAGES]);
 export const isBusinessStage = stage => typeof stage === 'string' && (BUSINESS_STAGES.has(stage) || /^(draft|revision|agent:reviseChapter):[\w-]+$/.test(stage));
 
 export function outputTextLimit(requestedTokens, ceiling = 16000) {
@@ -22,6 +38,16 @@ export function full15ReasoningEffort(config, stage) {
   return usesDeepSeekThinking(config) && isFull15Stage(stage) ? 'low' : undefined;
 }
 
+/** New-task-only structured checks reserve JSON space with bounded low thinking.
+ * Historical tasks do not receive this policy profile and retain their budgets. */
+export function followupContinuityReasoningEffort(config, stage, modelPolicy) {
+  return modelPolicy === FOLLOWUP_CONTINUITY_MODEL_POLICY && usesDeepSeekThinking(config) && isFollowupContinuityStage(stage) ? 'low' : undefined;
+}
+
+export function wholeRevisionReasoningEffort(config, stage, modelPolicy) {
+  return modelPolicy === WHOLE_REVISION_MODEL_POLICY && usesDeepSeekThinking(config) && isWholeRevisionStage(stage) ? 'low' : undefined;
+}
+
 /** A complete structured plan can exceed the legacy 6K text hint. This changes
  * only the existing no-thinking recovery, never its count or shared deadline. */
 export function recoveryTextLimit(stage, requestedTokens) {
@@ -31,15 +57,18 @@ export function recoveryTextLimit(stage, requestedTokens) {
 }
 
 /** Stage budgets describe the expected text, while V4 counts thinking in the same output limit. */
-export function outputTokenLimit(config, requestedTokens = 6000, stage) {
+export function outputTokenLimit(config, requestedTokens = 6000, stage, modelPolicy) {
   if (!Number.isFinite(requestedTokens) || requestedTokens <= 0) throw new Error('模型输出预算必须是正数。');
   const thinkingV4 = usesDeepSeekThinking(config);
   // Relevance requests 6000 text tokens; native thinking shares one 32768 total limit.
   if (stage === 'library-relevance') return thinkingV4 ? 32768 : outputTextLimit(requestedTokens, 6000);
-  if (!thinkingV4) return Math.min(16000, Math.max(512, Math.ceil(requestedTokens)));
+  if (!thinkingV4) return modelPolicy === WHOLE_REVISION_MODEL_POLICY && isWholeRevisionStage(stage)
+    ? outputTextLimit(requestedTokens, 32768) : Math.min(16000, Math.max(512, Math.ceil(requestedTokens)));
   // Full15 packets need a larger shared thinking + JSON allowance, without
   // changing the budgets of ordinary review, creation or library stages.
   if (isFull15Stage(stage)) return 65536;
+  if (modelPolicy === FOLLOWUP_CONTINUITY_MODEL_POLICY && isFollowupContinuityStage(stage)) return 65536;
+  if (modelPolicy === WHOLE_REVISION_MODEL_POLICY && isWholeRevisionStage(stage)) return 65536;
   // Explicit opt-in for large continuity JSON: shared thinking + text allowance,
   // not a guarantee of complete output. Recovery keeps the requested text cap.
   if (stage === 'continuity-review') return 65536;

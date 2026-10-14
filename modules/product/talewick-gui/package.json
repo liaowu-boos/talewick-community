@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node server/index.mjs",
-    "test:runtime": "node --test server/*.test.mjs ../../creation/runtime/*.test.mjs ../../data/tests/*.test.mjs ../../validation/tests/full15-task.test.mjs scripts/paper-runtime-state.test.mjs",
+    "test:runtime": "node --test server/*.test.mjs ../../creation/runtime/*.test.mjs ../../creation/runtime/v04/*.test.mjs ../../data/tests/*.test.mjs ../../validation/tests/*.test.mjs scripts/paper-runtime-state.test.mjs",
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build && node scripts/write-design-preview.mjs",
     "preview": "vite preview --host 127.0.0.1",

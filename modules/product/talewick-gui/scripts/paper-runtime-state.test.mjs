@@ -22,9 +22,9 @@ for (const name of ['seed', 'runtime', 'revision-anchor', 'store', 'conversation
   await writeFile(path.join(temporary, `${name}.mjs`), javascript, { flag: 'wx' });
 }
 const { createInitialState, createProject } = await import(pathToFileURL(path.join(temporary, 'seed.mjs')));
-const { manuscriptRevision, makeRuntimeRequest, readRuntimeTask, runtimeBusy, runtimeStage } = await import(pathToFileURL(path.join(temporary, 'runtime.mjs')));
+const { manuscriptRevision, makeRuntimeRequest, makeWholeRevisionRequest, readRuntimeTask, runtimeBusy, runtimeStage, wholeRevisionDispositionLabel, wholeRevisionRereadPresentation, wholeRevisionRereadReport } = await import(pathToFileURL(path.join(temporary, 'runtime.mjs')));
 const { getEditStart } = await import(pathToFileURL(path.join(temporary, 'revision-anchor.mjs')));
-const { parseState, canApplyPendingEdit, acceptPendingEdits, beginRuntimeTask, applyRuntimeTask, applyConversationTurn, clearSubmittedConversationQuote } = await import(pathToFileURL(path.join(temporary, 'store.mjs')));
+const { parseState, canAdoptWholeRevisionCandidate, canApplyPendingEdit, acceptPendingEdits, acceptWholeRevisionCandidate, declineWholeRevisionCandidate, beginRuntimeTask, applyRuntimeTask, applyConversationTurn, clearSubmittedConversationQuote } = await import(pathToFileURL(path.join(temporary, 'store.mjs')));
 const { conversationBusy, makeConversationSnapshot, makeConversationSubmission, readConversationTurn, streamConversation, submitConversation } = await import(pathToFileURL(path.join(temporary, 'conversation.mjs')));
 const { readProjectLink, recoverLinkedProject, loadLinkedProject, installLinkedProject, selectLinkedProject } = await import(pathToFileURL(path.join(temporary, 'project-link.mjs')));
 const copy = value => structuredClone(value);
@@ -169,6 +169,73 @@ test('task suggestions retain the complete source and title guards even with an 
   assert.equal(canApplyPendingEdit(pending, original), true);
   assert.equal(canApplyPendingEdit(pending, { ...original, title: '用户刚改的标题' }), false);
   assert.equal(canApplyPendingEdit(pending, { ...original, body: original.body + '用户刚加的正文。' }), false);
+});
+
+test('whole manuscript candidate stays separate, persists its mode, and adopts atomically with versions', () => {
+  const state = createInitialState(), project = projectWith('她在门外停了很久。');
+  state.projects = [project]; state.activeProjectId = project.id;
+  const request = makeWholeRevisionRequest(project, state, 'whole-request', '调整情绪递进，保留克制结尾。');
+  const originalTitle = project.title;
+  assert.equal(request.revisionMode, 'whole-manuscript-v1'); assert.equal(request.quote, ''); assert.equal(request.quoteSource, undefined);
+  beginRuntimeTask(project, request);
+  const candidate = chapter('她在门外停了很久，最后只把钥匙放在门槛上。');
+  const task = { id: 'whole-task', projectId: project.id, requestId: request.requestId, kind: 'revise', revisionMode: 'whole-manuscript-v1', status: 'completed', stage: '创作完成', baseRevision: request.baseRevision,
+    engine: 'fixed', engineVersion: 'fixed-workflow-2', createdAt: '2026-10-14T00:00:00.000Z', updatedAt: '2026-10-14T00:01:00.000Z', result: { title: '候选标题', chapters: [candidate], review: { summary: '合成结构夹具' }, checks: {}, knowledge: {}, warnings: [], wholeRevision: { schemaVersion: 'whole-manuscript-revision-1', status: 'candidate_ready', sourceChapters: copy(project.chapters), diagnosis: {}, plan: {}, diff: { changedChapterIds: ['chapter-one'] }, reread: { schemaVersion: 'whole-revision-reread-1' }, unresolvedItems: [], adoption: { status: 'not_applied', atomicGroups: [{ planItemId: 'p-1', chapterIds: ['chapter-one'] }] } } } };
+  const original = copy(project.chapters);
+  assert.equal(applyRuntimeTask(project, task), true); assert.deepEqual(project.chapters, original); assert.equal(project.runtime.resultDisposition, 'whole-revision-candidate');
+  assert.equal(canAdoptWholeRevisionCandidate(project), true);
+  assert.equal(acceptWholeRevisionCandidate(project), true); assert.equal(project.title, '候选标题'); assert.deepEqual(project.chapters, [candidate]);
+  assert.equal(project.versions.at(-2).title, originalTitle); assert.deepEqual(project.versions.at(-2).chapters, original); assert.equal(project.versions.at(-1).title, '候选标题');
+  const restored = parseState(copy(state)).projects[0];
+  assert.equal(restored.runtime.request.revisionMode, 'whole-manuscript-v1'); assert.equal(restored.runtime.task.revisionMode, 'whole-manuscript-v1'); assert.equal(restored.runtime.task.result.wholeRevision.status, 'candidate_ready');
+});
+
+test('whole revision presentation uses project disposition and reports bounded reread coverage', () => {
+  const whole = { reread: { schemaVersion: 'whole-revision-reread-1', coverage: { status: 'bounded', omissions: ['结尾意象没有逐句复核'] } }, adoption: { status: 'not_applied' } };
+  assert.equal(wholeRevisionDispositionLabel('applied'), '已整体采纳');
+  assert.equal(whole.adoption.status, 'not_applied', 'immutable model evidence stays unchanged after presenting project adoption state');
+  assert.deepEqual(wholeRevisionRereadPresentation(whole), { status: 'bounded', omissions: ['结尾意象没有逐句复核'] });
+  assert.deepEqual(wholeRevisionRereadPresentation({ reread: { schemaVersion: 'whole-revision-reread-1', coverage: { status: 'complete', omissions: [] } } }), { status: 'complete', omissions: [] });
+  assert.deepEqual(wholeRevisionRereadPresentation({ reread: { schemaVersion: 'whole-revision-reread-incomplete-1' } }), { status: 'incomplete', omissions: [] });
+});
+
+test('whole revision reread report maps questions and insufficiently supported changes without making a verdict', () => {
+  const report = wholeRevisionRereadReport({ reread: { summary: '复读报告摘要。', changeChecks: [
+    { planItemId: 'r1', assessment: 'supported', reason: '报告称已支持。', evidence: [], risks: [] },
+    { planItemId: 'r3', assessment: 'partly_supported', reason: '仍有纸条去向疑问。', evidence: [{ chapterId: 'ch-9', quote: '包里有两张纸' }], risks: ['可能产生误读。'] },
+  ], introducedIssues: [{ id: 'i1', claimType: 'textual_conflict', observation: '纸条去向含糊。', evidence: [], limitations: ['也可能是有意留白。'] }] } });
+  assert.equal(report.summary, '复读报告摘要。');
+  assert.equal(report.introducedIssueCount, 1);
+  assert.equal(report.unsupportedChangeCount, 1);
+  assert.deepEqual(report.changeChecks[1], { planItemId: 'r3', assessment: 'partly_supported', reason: '仍有纸条去向疑问。', evidence: [{ chapterId: 'ch-9', quote: '包里有两张纸' }], risks: ['可能产生误读。'] });
+  assert.deepEqual(report.introducedIssues[0], { id: 'i1', type: 'textual_conflict', observation: '纸条去向含糊。', evidence: [], limitations: ['也可能是有意留白。'] });
+});
+
+test('whole candidate never overwrites edits made after its task started and can be declined intact', () => {
+  const state = createInitialState(), project = projectWith('任务起点正文。'); state.projects = [project];
+  const request = makeWholeRevisionRequest(project, state, 'whole-conflict', '整体调整。'); beginRuntimeTask(project, request);
+  project.chapters[0].body = '用户在任务期间修改的正文。';
+  const task = { id: 'whole-conflict-task', projectId: project.id, requestId: request.requestId, kind: 'revise', revisionMode: 'whole-manuscript-v1', status: 'completed', stage: '创作完成', baseRevision: request.baseRevision,
+    engine: 'fixed', engineVersion: 'fixed-workflow-2', createdAt: '2026-10-14T00:00:00.000Z', updatedAt: '2026-10-14T00:01:00.000Z', result: { title: project.title, chapters: [chapter('候选正文。')], review: { summary: '' }, checks: {}, knowledge: {}, warnings: [], wholeRevision: { status: 'candidate_ready' } } };
+  assert.equal(applyRuntimeTask(project, task), true); assert.equal(project.runtime.resultDisposition, 'held'); assert.equal(canAdoptWholeRevisionCandidate(project), false); assert.equal(project.chapters[0].body, '用户在任务期间修改的正文。');
+  const clean = projectWith('干净原稿。'); state.projects = [clean]; const cleanRequest = makeWholeRevisionRequest(clean, state, 'whole-decline', '整体调整。'); beginRuntimeTask(clean, cleanRequest);
+  const cleanTask = { ...task, id: 'whole-decline-task', projectId: clean.id, requestId: cleanRequest.requestId, baseRevision: cleanRequest.baseRevision, result: { ...task.result, chapters: [chapter('未采纳候选。')] } };
+  assert.equal(applyRuntimeTask(clean, cleanTask), true); assert.equal(declineWholeRevisionCandidate(clean), true); assert.equal(clean.chapters[0].body, '干净原稿。'); assert.equal(clean.runtime.resultDisposition, 'declined');
+});
+
+test('whole no-change result preserves the manuscript without offering a meaningless adoption', () => {
+  const state = createInitialState(), project = projectWith('已经成立的原稿。'); state.projects = [project];
+  const request = makeWholeRevisionRequest(project, state, 'whole-no-change', '只修改有充分证据的问题。'); beginRuntimeTask(project, request);
+  const task = { id: 'whole-no-change-task', projectId: project.id, requestId: request.requestId, kind: 'revise', revisionMode: 'whole-manuscript-v1', status: 'completed', stage: '创作完成', baseRevision: request.baseRevision,
+    engine: 'fixed', engineVersion: 'fixed-workflow-2', createdAt: '2026-10-14T00:00:00.000Z', updatedAt: '2026-10-14T00:01:00.000Z', result: { title: project.title, chapters: copy(project.chapters), warnings: [], revisionApplied: false, baseRevision: request.baseRevision, wholeRevision: { schemaVersion: 'whole-manuscript-revision-1', status: 'no_change', sourceChapters: copy(project.chapters), diagnosis: {}, plan: {}, diff: { changedChapterIds: [] }, reread: { schemaVersion: 'whole-revision-reread-1' }, unresolvedItems: [], adoption: { status: 'not_applied', atomicGroups: [] } } } };
+  const parsed = readRuntimeTask(task);
+  assert.ok(parsed); assert.equal(parsed.result.wholeRevision.status, 'no_change'); assert.equal(parsed.result.review.summary, '');
+  const original = copy(project.chapters);
+  assert.equal(applyRuntimeTask(project, parsed), true);
+  assert.deepEqual(project.chapters, original);
+  assert.equal(project.runtime.resultDisposition, 'declined');
+  assert.equal(canAdoptWholeRevisionCandidate(project), false);
+  assert.match(project.runtime.message, /保留原稿/);
 });
 
 test('multiple anchored edits use original positions and skip overlapping replacements', () => {

@@ -30,6 +30,11 @@ export const REFERENCE_STRATEGIES = Object.freeze({
 const sourceAt=(request,path)=>({'/idea':request?.idea,'/instruction':request?.instruction,'/context/instruction':request?.context?.instruction})[path];
 const exact=(x,keys)=>x&&typeof x==='object'&&!Array.isArray(x)&&JSON.stringify(Object.keys(x).sort())===JSON.stringify([...keys].sort());
 const text=(x,n)=>typeof x==='string'&&x.length>0&&x.length<=n&&x===x.trim();
+const strategyBasis=value=>{
+  const basis=Array.isArray(value)?value.length===1?value[0]:undefined:value;
+  if(!text(basis,64))throw new TypeError('reference strategy basis must be a string or a one-element string array');
+  return basis;
+};
 export function validateStoryProblem(value) {
   if (!exact(value, ['relationship', 'trigger', 'desiredEffect', 'constraints'])
     || !['relationship', 'trigger', 'desiredEffect'].every(k => text(value[k], 80))
@@ -41,8 +46,8 @@ export function validateStoryProblem(value) {
 export function compileReferenceStrategy(value,request) {
   const hasProblem = value?.storyProblem !== undefined;
   if(!exact(value,['status','mechanism','basis','quote','reason',...(hasProblem?['storyProblem']:[])])||value.status!=='selected'||!Object.hasOwn(REFERENCE_STRATEGIES,value.mechanism)||!text(value.quote,240)||!text(value.reason,400))throw Error('invalid reference strategy');
-  const source=sourceAt(request,value.basis);
-  if(!text(value.basis,64)||typeof source!=='string'||!source.includes(value.quote))throw Error('reference strategy quote is not current instruction');
+  const basis=strategyBasis(value.basis),source=sourceAt(request,basis);
+  if(typeof source!=='string'||!source.includes(value.quote))throw Error('reference strategy quote is not current instruction');
   const selected=REFERENCE_STRATEGIES[value.mechanism];
   const problem = hasProblem ? validateStoryProblem(value.storyProblem) : null;
   const referenceQuestion = problem
@@ -50,8 +55,8 @@ export function compileReferenceStrategy(value,request) {
     : value.quote.length + selected.question.length + 10 <= 240
       ? `本篇需要：${value.quote}。${selected.question}` : value.quote;
   if (referenceQuestion.length > 240) throw Error('具体参考问题超过240字符；压缩 storyProblem，不能退回通用模板或截掉限制');
-  return {referenceQuestion,referenceIntent:{purpose:'expression',basis:[value.basis],evidenceNeeds:[...selected.evidenceNeeds],contextNeeds:[...selected.contextNeeds]},
-    selection:{...structuredClone(value),origin:problem?'model_selected_story_problem':'model_selected_program_template',verification:'literal_quote_only_mechanism_fit_requires_review'}};
+  return {referenceQuestion,referenceIntent:{purpose:'expression',basis:[basis],evidenceNeeds:[...selected.evidenceNeeds],contextNeeds:[...selected.contextNeeds]},
+    selection:{...structuredClone(value),basis,origin:problem?'model_selected_story_problem':'model_selected_program_template',verification:'literal_quote_only_mechanism_fit_requires_review'}};
 }
 export function strategySelectionInput(request) {
   return {userInstructions:['/idea','/instruction','/context/instruction'].map(path=>({path,text:sourceAt(request,path)})).filter(x=>typeof x.text==='string'&&x.text.trim()),mechanisms:Object.entries(REFERENCE_STRATEGIES).map(([id,v])=>({id,description:v.description}))};

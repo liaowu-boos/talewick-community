@@ -12,19 +12,19 @@ The project separates the writing interface, source material management, writing
 
 ![Talewick workspace](examples/workspace.png)
 
-## Latest update · 2026-10-12
+## Latest update · 2026-10-14
 
-- Added separate manuscript checks: new drafts queue after saving, existing drafts can be checked manually, and reports remain bound to the submitted version. Editing marks an earlier report as outdated; failed checks preserve the saved manuscript.
-- Improved recovery when state review reaches its record limit. Review format, network, configuration, and delivery errors now have distinct messages, with rejected responses retained.
-- Improved allocation of already approved reference material within the existing budget so large analysis packets do not crowd out other complete material. This does not change relevance decisions or require the writer to use a reference.
-- Included the Python review tools, independent public rules, and synthetic tests. The file library retains source and analysis versions; private data remains excluded.
+- **Whole-manuscript revision**: diagnose the full draft, prepare a revision plan, change affected scenes, and perform an independent reread. Review the candidate, differences, and risks before accepting it or keeping the original.
+- **Cross-chapter continuity**: bind dates, object custody, and handover events to evidence and counterevidence. Incomplete checks remain visible while the manuscript can still be saved, edited, and exported. Missing evidence does not automatically establish a contradiction.
+- **Explicit reference decisions**: accept or reject each reference retrieved after planning. Narrative observations must bind to the supplied source windows and pass scope, version, and budget checks. Processing code is included; users supply their own library and analysis data.
+- **Length and recovery**: adjust remaining chapter budgets using saved prose and report whether requested length and chapter counts were met. Resume saved stages and protect manual edits from older revision candidates.
 
-Output budgeting, inline packet transport, and failure receipts have been repaired and covered by regression tests. The repaired two-stage workflow has not yet completed a full real-provider rerun. This remains a development preview, without a claim of review quality. The six earlier [reading examples](examples/README.md) remain available.
+These features produce candidates and diagnostics for review, without promising better literary quality. Separate C01–C06 checks remain available; the complete Full15 platform is unfinished. Independent fact-check units are developer interfaces and do not yet gate product adoption. The six earlier [reading examples](examples/README.md) remain unchanged, with no private samples added. See the [verification record](VERIFICATION.md) for checks actually run on this public edition.
 
 ## What you can do
 
 - **Discuss and draft**: describe your genre, characters, conflict, length, and ending, then proceed through requirements, planning, and chapter-by-chapter writing.
-- **Review and revise**: receive an independent manuscript review and request targeted or passage-level revisions. Changes are presented as suggestions for you to accept.
+- **Review and revise**: receive an independent manuscript review and request whole-manuscript, targeted, or passage-level revisions. Review candidates and differences before accepting them.
 - **Protect your manuscript**: edit, compare versions, and restore earlier text. If you edit while generation is running, the model output is kept separately.
 - **Save and resume tasks**: preserve stage outputs, task state, and completed chapters; cancel tasks, resume interrupted work, and recover progress after a page refresh.
 - **Use reference material**: import TXT/Markdown and manage knowledge and style references. The data module supports analysis, retrieval, and relevance screening; available material depends on your local library.
@@ -91,6 +91,8 @@ When the draft is ready, edit it directly or select a passage and request a spec
 
 The public edition contains no private source corpus, analysis dataset, or historical release bundles. See [reading examples](examples/README.md) for six complete stories, including two delivered on 2026-10-09. They are not automatically loaded into the library.
 
+For a complete draft, click **整稿修订** (whole-manuscript revision) in the manuscript toolbar and describe your objective. After starting, review the plan, candidate, differences, and reread risks, then accept the candidate or keep your original. Opening the dialog alone makes no model request.
+
 ## Data and model calls
 
 The interface and server run locally. Generation sends the requirements, manuscript, and relevant reference material to your configured model provider and may incur API charges. A single writing task involves multiple model calls. The separate review after saving a new draft normally adds two requests; manual rechecks may also incur charges. You can cancel from the manuscript check panel.
@@ -100,16 +102,18 @@ The interface and server run locally. Generation sends the requirements, manuscr
 - The browser also stores project and editing state. Clearing browser data does not delete task files on disk, but there is no complete one-click project reconstruction interface yet.
 - Export important manuscripts and back up both browser data and task files. Remove keys, private manuscripts, and personal paths from Issue and PR attachments.
 
+Whole-manuscript diagnosis, planning, scene changes, and rereading also make separate model requests. The total depends on the plan and any recovery steps.
+
 ## Current scope
 
 | Area | Status |
 | --- | --- |
 | Deployment | Local web workspace; the source server binds to `127.0.0.1` by default |
 | Writing engine | AI SDK ToolLoopAgent by default; fixed workflow also available |
-| Quality checks | Model review, whole-manuscript state review, and separate C01–C06 checks; the historical Full15 platform is not enabled, and a full real-provider rerun of the repair is pending |
+| Quality checks | Model review, manuscript state and cross-chapter event checks, and separate C01–C06 checks; the historical Full15 platform is not enabled, and real-provider validation of the public rule edition remains limited |
 | Auxiliary scope | C05 requires an explicit chapter-four/five cut requirement; the product supplies no reference corpus, so C06 is not evaluated |
 | Reference library | Requires local imports or configuration; sample counts in development reports do not mean a fresh installation includes that library |
-| Interaction modes | Automatic drafting and targeted revision are connected; complete stage-by-stage assisted and professional review interactions are unfinished |
+| Interaction modes | Automatic drafting, targeted revision, and whole-manuscript revision are connected; complete stage-by-stage assisted and professional review interactions are unfinished |
 | Other capabilities | Style training, a complete product account system, and native desktop installers are unfinished |
 | Export | TXT/Markdown in the workspace; PDF/ZIP export is not included in the current public edition |
 
@@ -161,7 +165,7 @@ npm run test:review
 npm run build
 ```
 
-`test:runtime` covers the server, creation runtime, reference screening, auxiliary review tasks, and interface state tests selected by the package script. `test:review` runs the Python protocol tests. These do not cover every experiment in the repository. Passing tests do not replace real-provider compatibility checks or literary evaluation.
+`test:runtime` includes the public creation/reference-decision, narrative-observation, continuity, and whole-revision suites, and covers the server, creation runtime, reference screening, auxiliary review tasks, and interface state tests selected by the package script. `test:review` runs the Python protocol tests. These do not cover every experiment in the repository. Passing tests do not replace real-provider compatibility checks or literary evaluation.
 
 ### Submission guidelines
 

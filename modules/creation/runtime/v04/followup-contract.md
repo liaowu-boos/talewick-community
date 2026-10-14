@@ -19,3 +19,15 @@ consumerBindings为{id,stage,snapshotHash|null,inputHash,neutralReview,outcome}�
 恢复从K0按两槽顺序使用原validated result及data helper重算active/retained/计费/delta，与保存值完整一致才恢复；started和commit还绑定实际阶段产物/当前need及query范围预算。knowledge-use:<stage>:N保存完整本次input及inputHash、snapshotHash；恢复核对其快照存在、材料视图与input一致。knowledge-returned:<useKey>保存useHash，证明该输入的适配器响应已返回。result只投影概要，原记录供独立核查。校验不是密码签名，不证明恶意整体重造全部产物的真实性。
 
 本轮没有正文中即时提出need的通道，不解析正文命令，不逐章增模型调用。新材料供应不回改过去规划的采用声明或已写正文。新依赖：reference-needs.mjs、followup.mjs与数据所有followup-materials.mjs；AB旧runtime会如实变化，禁止重封旧清单。
+
+## 规划槽新增材料决定协议
+
+只有新任务显式传入并在requestSpec保存`planningFollowupDecisionMode=planning-followup-decisions-1`时启用。它还要求create任务、dynamic补查、表达用途的严格材料证据策略同时成立；缺少该字段的旧保存点完整沿用旧协议，不补字段、不追问、不重判。固定材料实验与没有新增材料的槽不调用决定模型。
+
+规划槽提交`acceptedCount>0`后、第一章写入前，业务stage `planning:material-decisions`只接收最终plan、当前active snapshot、已有materialDecisions及本槽新增ID。输出只能逐份adopt/decline本槽新增ID。adopt沿用现有逐字来源短引、机制、真实章场目标与限制校验；decline写理由和限制。旧决定及除materialDecisions外的方案字段逐项保持，不能借此改情节、章节、篇幅、心理设计或referenceNeeds。
+
+保存点`planningFollowupDecisionResponse`先绑定完整输入、输入哈希、原始响应与响应哈希；`planningFollowupDecisionCommit`再绑定归一化决定、前后plan哈希、active snapshot和新增ID。恢复先重算followup snapshot和作者材料视图，再核对response与commit；已有response时不重新调用模型，已有commit时不重新判断。任何响应、引文、ID、方案或保存点不一致均在第一章前失败。
+
+该消费者只闭合planning槽。review槽没有经合同声明的修订消费者时仍记`deferred_no_consumer`，不得把新增审稿补查材料直接送入修订。采用声明只证明输入资格，不证明正文落实或文学效果。
+
+`createStateReviewMode=create-state-review-v2`拥有独立恢复版本边界。实际全文路径在综合审稿与原有状态专审后调用`continuity-chain-review-2`，保存完整输入、原始响应、归一化结果和合并记录，并以`review-adjudication-4`独立裁定。恢复重验正文、审稿与响应绑定；重大未知与跨章矛盾保留到最终结果，不能用零条必修或任务完成表示质量通过。旧v1路径不增加该调用。

@@ -16,6 +16,48 @@ function readTaskFailure(value: unknown): RuntimeTaskFailure | undefined {
 
 export function runtimeEngineLabel(engine?: RuntimeEngine): string { return engine === 'ai-sdk' ? 'Agent 创作' : '固定创作流程'; }
 
+export function wholeRevisionDispositionLabel(disposition?: RuntimeBinding['resultDisposition']): string {
+  if (disposition === 'applied') return '已整体采纳';
+  if (disposition === 'declined') return '已保留原稿';
+  if (disposition === 'whole-revision-candidate') return '待确认';
+  if (disposition === 'held') return '当前稿已变化，无法自动采纳';
+  return '未记录';
+}
+
+export function wholeRevisionRereadPresentation(value: unknown): { status: 'complete' | 'bounded' | 'incomplete'; omissions: string[] } {
+  if (!record(value) || !record(value.reread) || value.reread.schemaVersion !== 'whole-revision-reread-1') return { status: 'incomplete', omissions: [] };
+  const coverage = value.reread.coverage;
+  if (!record(coverage)) return { status: 'incomplete', omissions: [] };
+  const omissions = strings(coverage.omissions);
+  if (coverage.status === 'bounded') return { status: 'bounded', omissions };
+  if (coverage.status === 'complete' && omissions.length === 0) return { status: 'complete', omissions: [] };
+  return { status: 'incomplete', omissions };
+}
+
+export interface WholeRevisionRereadReport {
+  summary: string;
+  introducedIssueCount: number;
+  unsupportedChangeCount: number;
+  changeChecks: Array<{ planItemId: string; assessment: string; reason: string; risks: string[]; evidence: unknown[] }>;
+  introducedIssues: Array<{ id: string; type: string; observation: string; limitations: string[]; evidence: unknown[] }>;
+}
+
+/** Read report claims for display without turning them into product verdicts. */
+export function wholeRevisionRereadReport(value: unknown): WholeRevisionRereadReport {
+  const reread = record(value) && record(value.reread) ? value.reread : {};
+  const changeChecks = Array.isArray(reread.changeChecks) ? reread.changeChecks.flatMap(item => record(item) ? [{
+    planItemId: string(item.planItemId) ? item.planItemId : '', assessment: string(item.assessment) ? item.assessment : '', reason: string(item.reason) ? item.reason : '',
+    risks: strings(item.risks), evidence: Array.isArray(item.evidence) ? structuredClone(item.evidence) : [],
+  }] : []) : [];
+  const introducedIssues = Array.isArray(reread.introducedIssues) ? reread.introducedIssues.flatMap(item => record(item) ? [{
+    id: string(item.id) ? item.id : '', type: string(item.claimType) ? item.claimType : '', observation: string(item.observation) ? item.observation : '',
+    limitations: strings(item.limitations), evidence: Array.isArray(item.evidence) ? structuredClone(item.evidence) : [],
+  }] : []) : [];
+  return { summary: string(reread.summary) ? reread.summary : '', introducedIssueCount: introducedIssues.length,
+    unsupportedChangeCount: changeChecks.filter(item => ['partly_supported', 'not_supported', 'uncertain'].includes(item.assessment)).length,
+    changeChecks, introducedIssues };
+}
+
 function readAgentTrace(value: unknown): AgentDecisionTrace[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.flatMap((item): AgentDecisionTrace[] => {
@@ -65,23 +107,26 @@ function readReadingObservations(value: unknown): ReadingObservation[] | undefin
 }
 
 function readResult(value: unknown): RuntimeResult | undefined {
-  if (!record(value) || !string(value.title) || !record(value.review) || !string(value.review.summary)) return undefined;
+  if (!record(value) || !string(value.title)) return undefined;
+  const wholeRevision = record(value.wholeRevision) ? structuredClone(value.wholeRevision) : undefined;
+  if (!wholeRevision && (!record(value.review) || !string(value.review.summary))) return undefined;
   const content = chapters(value.chapters);
   if (!content?.length) return undefined;
-  const rawReview = value.review;
+  const rawReview = record(value.review) && string(value.review.summary) ? value.review : {summary: ''};
   const observations = readReadingObservations(rawReview.readingObservations);
   const reviewMetadata = Object.fromEntries(['readerType', 'readScope', 'phase', 'manuscriptSha256'].filter(key => string(rawReview[key])).map(key => [key, rawReview[key]]));
   const binding = value.reviewAdjudicationBinding;
   const validBinding = record(binding) && ['missing', 'invalid', 'unsupported', 'unverified', 'stale', 'bound'].includes(String(binding.status)) && Array.isArray(binding.diagnostics) && binding.diagnostics.every(string) && string(binding.manuscriptSha256) && /^[a-f0-9]{64}$/.test(binding.manuscriptSha256);
   return { title: value.title, chapters: content,
-    reviewOriginal: structuredClone(record(value.reviewOriginal) ? value.reviewOriginal : rawReview),
-    review: { summary: value.review.summary, issues: Array.isArray(value.review.issues) ? value.review.issues : [], limitations: Array.isArray(value.review.limitations) ? value.review.limitations : [], ...reviewMetadata,
-      ...(Array.isArray(value.review.strengths) && value.review.strengths.every(string) ? { strengths: [...value.review.strengths] } : {}),
-      ...(observations ? { readingObservations: observations } : value.review.readingObservations !== undefined || value.review.readingObservationsInvalid === true ? { readingObservationsInvalid: true } : {}) },
+    ...(record(value.review) ? {reviewOriginal: structuredClone(record(value.reviewOriginal) ? value.reviewOriginal : rawReview)} : {}),
+    review: { summary: rawReview.summary as string, issues: Array.isArray(rawReview.issues) ? rawReview.issues : [], limitations: Array.isArray(rawReview.limitations) ? rawReview.limitations : [], ...reviewMetadata,
+      ...(Array.isArray(rawReview.strengths) && rawReview.strengths.every(string) ? { strengths: [...rawReview.strengths] } : {}),
+      ...(observations ? { readingObservations: observations } : rawReview.readingObservations !== undefined || rawReview.readingObservationsInvalid === true ? { readingObservationsInvalid: true } : {}) },
     ...(Object.hasOwn(value, 'reviewAdjudication') ? { reviewAdjudication: structuredClone(value.reviewAdjudication) } : {}),
     ...(Array.isArray(value.adjudicationHistory) ? { adjudicationHistory: structuredClone(value.adjudicationHistory) } : {}),
     ...(validBinding ? { reviewAdjudicationBinding: { status: binding.status as NonNullable<RuntimeResult['reviewAdjudicationBinding']>['status'], diagnostics: [...binding.diagnostics as string[]], manuscriptSha256: binding.manuscriptSha256 as string, ...(string(binding.adjudicationSha256) && /^[a-f0-9]{64}$/.test(binding.adjudicationSha256) ? { adjudicationSha256: binding.adjudicationSha256 } : {}) } } : {}),
     checks: record(value.checks) ? value.checks : {}, knowledge: record(value.knowledge) ? value.knowledge : {}, warnings: strings(value.warnings),
+    ...(wholeRevision ? { wholeRevision } : {}),
     ...(record(value.activeKnowledge) ? { activeKnowledge: value.activeKnowledge } : {}),
     ...(record(value.followupRetrieval) ? { followupRetrieval: value.followupRetrieval } : value.followupRetrieval !== undefined ? { followupRetrievalInvalid: true } : {}),
     agentTrace: readAgentTrace(value.agentTrace) };
@@ -99,7 +144,7 @@ export function readRuntimeTask(value: unknown): RuntimeTask | undefined {
   if (!supportedEngine(value.engine)) return undefined;
   return { id: value.id, projectId: value.projectId, requestId: value.requestId, baseRevision: value.baseRevision,
     engine: value.engine === 'ai-sdk' ? 'ai-sdk' : 'fixed', engineVersion: string(value.engineVersion) ? value.engineVersion : '',
-    kind: value.kind as RuntimeTask['kind'], status: value.status as RuntimeTaskStatus, stage: string(value.stage) ? value.stage : '',
+    kind: value.kind as RuntimeTask['kind'], ...(value.revisionMode === 'whole-manuscript-v1' ? { revisionMode: value.revisionMode } : {}), status: value.status as RuntimeTaskStatus, stage: string(value.stage) ? value.stage : '',
     createdAt: string(value.createdAt) ? value.createdAt : '', updatedAt: string(value.updatedAt) ? value.updatedAt : '',
     error: value.status !== 'needs_input' && string(value.error) ? value.error : undefined,
     failure: value.status !== 'needs_input' ? readTaskFailure(value.failure) : undefined,
@@ -111,6 +156,7 @@ export function readRuntimeTask(value: unknown): RuntimeTask | undefined {
 export function readRuntimeBinding(value: unknown, projectId: string): RuntimeBinding | undefined {
   if (!record(value) || !record(value.request) || !record(value.baseManuscript)) return undefined;
   const request = value.request;
+  if (request.revisionMode !== undefined && request.revisionMode !== 'whole-manuscript-v1') return undefined;
   const baseChapters = chapters(value.baseManuscript.chapters);
   const inputChapters = chapters(request.chapters);
   if (request.projectId !== projectId || !string(request.requestId) || !string(request.baseRevision) || !string(request.idea) || !['create', 'revise'].includes(String(request.kind)) || !baseChapters || !inputChapters || !string(value.baseManuscript.title)) return undefined;
@@ -119,18 +165,18 @@ export function readRuntimeBinding(value: unknown, projectId: string): RuntimeBi
   if (request.quoteSource !== undefined && !quoteSource) return undefined;
   const style = record(request.style) ? request.style : null;
   const task = readRuntimeTask(value.task);
-  if (task && (task.projectId !== projectId || task.requestId !== request.requestId || task.baseRevision !== request.baseRevision || task.kind !== request.kind)) return undefined;
+  if (task && (task.projectId !== projectId || task.requestId !== request.requestId || task.baseRevision !== request.baseRevision || task.kind !== request.kind || task.revisionMode !== request.revisionMode)) return undefined;
   return { request: { projectId, requestId: request.requestId, baseRevision: request.baseRevision, kind: request.kind as RuntimeRequest['kind'], idea: request.idea,
     ...(string(request.projectTitle) ? { projectTitle: request.projectTitle } : {}),
     context: { character: string(context.character) ? context.character : '', world: string(context.world) ? context.world : '', plot: string(context.plot) ? context.plot : '', theme: string(context.theme) ? context.theme : '' },
     materials: Array.isArray(request.materials) ? request.materials.filter(record).filter(item => string(item.id) && string(item.title) && string(item.content)).map(item => ({ id: item.id as string, title: item.title as string, content: item.content as string })) : [],
     style: style ? { name: string(style.name) ? style.name : '', description: string(style.description) ? style.description : '', rules: string(style.rules) ? style.rules : '', traits: strings(style.traits) } : null,
-    chapters: inputChapters, instruction: string(request.instruction) ? request.instruction : '', quote: string(request.quote) ? request.quote : '', ...(quoteSource ? { quoteSource } : {}) },
+    chapters: inputChapters, instruction: string(request.instruction) ? request.instruction : '', quote: string(request.quote) ? request.quote : '', ...(request.revisionMode === 'whole-manuscript-v1' ? { revisionMode: request.revisionMode } : {}), ...(quoteSource ? { quoteSource } : {}) },
     baseManuscript: { title: value.baseManuscript.title, chapters: baseChapters }, task,
     submitting: false,
     connectionError: string(value.connectionError) ? value.connectionError : undefined,
     handledTaskId: string(value.handledTaskId) && value.handledTaskId === task?.id ? value.handledTaskId : undefined,
-    resultDisposition: ['applied', 'proposals', 'held'].includes(String(value.resultDisposition)) ? value.resultDisposition as RuntimeBinding['resultDisposition'] : undefined,
+    resultDisposition: ['applied', 'proposals', 'held', 'whole-revision-candidate', 'declined'].includes(String(value.resultDisposition)) ? value.resultDisposition as RuntimeBinding['resultDisposition'] : undefined,
     message: string(value.message) ? value.message : undefined };
 }
 
@@ -152,13 +198,22 @@ export function makeRuntimeRequest(project: Project, state: AppState, requestId:
     chapters: structuredClone(project.chapters), instruction, quote, ...(quote && state.quoteSource ? { quoteSource: structuredClone(state.quoteSource) } : {}), baseRevision: manuscriptRevision(project) };
 }
 
+export function makeWholeRevisionRequest(project: Project, state: AppState, requestId: string, instruction: string): RuntimeRequest {
+  const request = makeRuntimeRequest(project, state, requestId, instruction, '');
+  if (request.kind !== 'revise') throw new Error('整稿修订需要已有完整稿件。');
+  delete request.quoteSource;
+  request.quote = '';
+  request.revisionMode = 'whole-manuscript-v1';
+  return request;
+}
+
 export function taskActive(task?: RuntimeTask): boolean { return task?.status === 'queued' || task?.status === 'running'; }
 export function runtimeBusy(project?: Project): boolean { return Boolean(project?.runtime?.submitting || taskActive(project?.runtime?.task)); }
 
 export function runtimeTaskPhase(task?: RuntimeTask): RuntimeTaskFailure['phase'] {
   if (task?.failure?.phase) return task.failure.phase;
   const stage = task?.stage ?? '';
-  if (stage === 'continuity-review' || stage === 'review' || stage === 'revisionReview' || stage === 'agent:reviewManuscript'
+  if (stage === 'continuity-review' || stage === 'continuity-chain-review' || stage === 'review' || stage === 'revisionReview' || stage === 'agent:reviewManuscript'
     || stage.startsWith('review-adjudication') || stage.startsWith('reviewAdjudication') || stage.startsWith('agent:review')) return 'review';
   if (/^(draft|revision):/.test(stage) || stage.startsWith('agent:reviseChapter:') || ['write', 'writing', 'manuscript', 'revise', 'revision'].includes(stage)) return 'writing';
   if (['checks', 'validation', 'result', 'delivery'].includes(stage)) return 'check';
@@ -167,6 +222,7 @@ export function runtimeTaskPhase(task?: RuntimeTask): RuntimeTaskFailure['phase'
 
 export function runtimeProgressDetail(task?: RuntimeTask): string {
   const phase = runtimeTaskPhase(task);
+  if (taskActive(task) && task?.revisionMode === 'whole-manuscript-v1') return '正在阅读全文、形成方案并修改关联场景。候选不会覆盖当前稿件；独立复读状态会如实保留。';
   if (taskActive(task)) return phase === 'writing' ? '正在生成或修改正文。已完成章节会随任务检查点保存。'
     : phase === 'review' ? '正文已经生成，正在审阅当前稿件。'
       : phase === 'check' ? '正文已经生成，正在核对交付条件。' : '正在准备本次任务。';
@@ -193,11 +249,14 @@ export function runtimeResumeMessage(task?: RuntimeTask): string {
 }
 
 const stageNames: Record<string, string> = { queued: '等待开始', requirements: '整理创作要求', request: '整理创作要求', requestSpec: '整理创作要求', request_spec: '整理创作要求', knowledge: '准备参考材料', plan: '规划故事', planning: '规划故事', write: '撰写正文', writing: '撰写正文', manuscript: '撰写正文', revise: '准备修改建议', revision: '准备修改建议', requestedRevision: '整理修改要求', review: '审阅稿件', revisionReview: '审阅修改结果', checks: '检查交付结果', validation: '检查交付结果', result: '保存稿件与报告', delivery: '保存稿件与报告', completed: '任务完成', failed: '任务未完成', interrupted: '任务已中断', cancelled: '任务已取消' };
+stageNames['planning:material-decisions'] = '正在判断补查材料';
+stageNames['continuity-chain-review'] = '正在核对时间与状态连续性';
 stageNames['agent:plan'] = 'Agent 正在判断创作方案';
 stageNames['agent:review'] = 'Agent 正在判断修订方案';
 stageNames['requirements:repair'] = '正在校正创作规格';
 stageNames.needs_input = '补充创作要求';
 export function runtimeStage(task: RuntimeTask): string {
+  if (task.status === 'completed' && task.stage === '稿件已生成，部分检查未完成') return task.stage;
   if (!taskActive(task)) return stageNames[task.status] || '任务状态待确认';
   if (task.stage === 'review-adjudication' || task.stage.startsWith('review-adjudication:') || task.stage === 'reviewAdjudication' || task.stage.startsWith('reviewAdjudication:')) return '核对审稿证据与争议';
   if (task.stage.startsWith('followup:')) return '查找补充参考';

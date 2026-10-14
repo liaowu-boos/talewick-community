@@ -80,7 +80,9 @@ export function decodeImport(body) {
 }
 
 /** Missing peer module is an explicit unavailable state; import/startup bugs still surface. */
-export async function loadLibraryService({ rootDir, model, processingConcurrency = 2, moduleURL = new URL('../../../data/runtime/library.mjs', import.meta.url), relevanceModuleURL = new URL('./relevance.mjs', moduleURL) }) {
+export async function loadLibraryService({ rootDir, model, processingConcurrency = 2, narrativeObservationProjector,
+  moduleURL = new URL('../../../data/runtime/library.mjs', import.meta.url), relevanceModuleURL = new URL('./relevance.mjs', moduleURL) }) {
+  if (narrativeObservationProjector !== undefined && typeof narrativeObservationProjector !== 'function') throw new TypeError('Data narrative observation projector must be a function');
   try { await access(moduleURL); } catch (error) { if (error.code === 'ENOENT') return { library: null, available: false }; throw error; }
   const { createLibraryService } = await import(moduleURL.href || moduleURL);
   if (typeof createLibraryService !== 'function') throw new TypeError('Data library must export createLibraryService');
@@ -88,7 +90,8 @@ export async function loadLibraryService({ rootDir, model, processingConcurrency
   if (typeof createRelevanceAssessor !== 'function') throw new TypeError('Data relevance must export createRelevanceAssessor');
   const assessRelevance = createRelevanceAssessor({ model });
   if (typeof assessRelevance !== 'function') throw new TypeError('Data relevance assessor must be a function');
-  const library = await createLibraryService({ rootDir, model, assessRelevance, processingConcurrency });
+  const library = await createLibraryService({ rootDir, model, assessRelevance, processingConcurrency,
+    ...(narrativeObservationProjector ? { narrativeObservationProjector } : {}) });
   for (const method of ['importSource', 'list', 'get', 'readSource', 'retry', 'cancel', 'retrieve', 'close']) {
     if (typeof library?.[method] !== 'function') throw new TypeError(`Data library missing ${method}`);
   }

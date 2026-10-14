@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { TaskService, CREATE_STATE_REVIEW_MODE } from './tasks.mjs';
+import { TaskService, CREATE_STATE_REVIEW_MODE, FOLLOWUP_CONTINUITY_MODEL_POLICY } from './tasks.mjs';
 import { engineBinding } from './engines.mjs';
 
 const request = (kind = 'create', suffix = randomUUID()) => ({ projectId: `project-${suffix}`, requestId: `request-${suffix}`, kind, idea: '合成接线任务', context: {}, materials: [], style: null, chapters: kind === 'revise' ? [{ id: 'ch-1', title: '旧章', body: '旧正文。' }] : [], instruction: kind === 'revise' ? '核对旧正文。' : '', quote: '', baseRevision: 'base' });
@@ -19,21 +19,23 @@ async function seed(root, { mode, kind = 'create' } = {}) {
   return { id, artifacts };
 }
 async function fixture(t, seeded) {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'talewick-create-state-product-')), seen = [];
+  const root = await mkdtemp(path.join(os.tmpdir(), 'talewick-create-state-product-')), seen = [], modelPolicies = [];
   if (seeded) await seeded(root);
-  const service = await new TaskService({ runsDir: root, engine: 'ai-sdk', model: { complete: async () => assert.fail('model belongs to workflow fixture') }, workflow: async args => {
+  const service = await new TaskService({ runsDir: root, engine: 'ai-sdk', model: { complete: async args => { modelPolicies.push(args.modelPolicy); return '{}'; } }, workflow: async args => {
     seen.push(args.createStateReviewMode);
+    await args.model.complete({ stage: 'continuity-chain-review', system: 'fixture', user: 'fixture' });
     if (!args.artifacts.requestSpec) await args.checkpoint('requestSpec', { runtimeVersion: 'fixture', ...(args.createStateReviewMode ? { createStateReviewMode: args.createStateReviewMode } : {}) });
     return structuredClone(output);
   } }).init();
   t.after(async () => { await service.close(); await rm(root, { recursive: true, force: true }); });
-  return { root, service, seen };
+  return { root, service, seen, modelPolicies };
 }
 
-test('new ai-sdk create binds create-state-review-v1 and persists it in requestSpec', async t => {
+test('new ai-sdk create binds create-state-review-v3 and persists its policy boundary', async t => {
   const f = await fixture(t), submitted = await f.service.create(request('create'));
   assert.equal((await settled(f.service, submitted.id)).status, 'completed');
   assert.deepEqual(f.seen, [CREATE_STATE_REVIEW_MODE]);
+  assert.deepEqual(f.modelPolicies, [FOLLOWUP_CONTINUITY_MODEL_POLICY]);
   const artifacts = JSON.parse(await readFile(path.join(f.root, submitted.id, 'artifacts.json'), 'utf8'));
   const task = JSON.parse(await readFile(path.join(f.root, submitted.id, 'task.json'), 'utf8'));
   assert.equal(artifacts.requestSpec.createStateReviewMode, CREATE_STATE_REVIEW_MODE);
@@ -44,17 +46,34 @@ test('legacy create resume with requestSpec but no mode stays on the old path', 
   let seeded; const f = await fixture(t, async root => { seeded = await seed(root); });
   await f.service.resume(seeded.id); assert.equal((await settled(f.service, seeded.id)).status, 'completed');
   assert.deepEqual(f.seen, [undefined]);
+  assert.deepEqual(f.modelPolicies, [undefined]);
   assert.equal(JSON.parse(await readFile(path.join(f.root, seeded.id, 'artifacts.json'), 'utf8')).requestSpec.createStateReviewMode, undefined);
 });
 
-test('new-mode create resume follows the mode saved in requestSpec', async t => {
+test('legacy v1 create resume follows its saved mode without followup policy', async t => {
+  let seeded; const f = await fixture(t, async root => { seeded = await seed(root, { mode: 'create-state-review-v1' }); });
+  await f.service.resume(seeded.id); assert.equal((await settled(f.service, seeded.id)).status, 'completed');
+  assert.deepEqual(f.seen, ['create-state-review-v1']);
+  assert.deepEqual(f.modelPolicies, [undefined]);
+});
+
+test('legacy v2 create resume retains its saved mode and followup policy', async t => {
+  let seeded; const f = await fixture(t, async root => { seeded = await seed(root, { mode: 'create-state-review-v2' }); });
+  await f.service.resume(seeded.id); assert.equal((await settled(f.service, seeded.id)).status, 'completed');
+  assert.deepEqual(f.seen, ['create-state-review-v2']);
+  assert.deepEqual(f.modelPolicies, [FOLLOWUP_CONTINUITY_MODEL_POLICY]);
+});
+
+test('v3 create resume follows the mode saved in requestSpec', async t => {
   let seeded; const f = await fixture(t, async root => { seeded = await seed(root, { mode: CREATE_STATE_REVIEW_MODE }); });
   await f.service.resume(seeded.id); assert.equal((await settled(f.service, seeded.id)).status, 'completed');
   assert.deepEqual(f.seen, [CREATE_STATE_REVIEW_MODE]);
+  assert.deepEqual(f.modelPolicies, [FOLLOWUP_CONTINUITY_MODEL_POLICY]);
 });
 
 test('new revise task never receives create state review mode', async t => {
   const f = await fixture(t), submitted = await f.service.create(request('revise'));
   assert.equal((await settled(f.service, submitted.id)).status, 'completed');
   assert.deepEqual(f.seen, [undefined]);
+  assert.deepEqual(f.modelPolicies, [undefined]);
 });

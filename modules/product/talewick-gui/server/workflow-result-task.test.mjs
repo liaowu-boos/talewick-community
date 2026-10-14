@@ -41,11 +41,45 @@ test('valid bound no-must-fix result completes without requiring a change', asyn
     return { chapters, review, reviewAdjudication, revisionApplied: false };
   });
   assert.equal(run.task.status,'completed'); assert.equal(run.task.result.revisionApplied,false);
+  assert.equal(run.task.stage,'创作完成');
   assert.equal(run.task.result.reviewAdjudicationBinding.status,'bound');
+});
+test('explicit incomplete quality check keeps the manuscript usable and reports the partial completion stage', async t => {
+  const continuityChainFailure = {
+    status: 'failed',
+    code: 'CONTINUITY_FORMAT_CASE_FIELDS',
+    message: '事件链检查返回了不符合契约的字段。'
+  };
+  const review = { manuscriptSha256: manuscriptFingerprint(chapters), issues: [], summary: '一般问题已独立审阅', continuityChainFailure };
+  const reviewAdjudication = await adjudicateReview({ input: createAdjudicationInput({chapters,review}) });
+  const warning = '稿件已生成；事件链检查未完成，本次没有据此宣称全部检查通过。';
+  const result = { title: '测试', chapters, review, reviewAdjudication, qualityCheckStatus: 'incomplete', warnings: [warning] };
+  const run = await execute(t, async ({checkpoint}) => {
+    await checkpoint('requestSpec', { reviewPolicyVersion: ADJUDICATION_VERSION });
+    return structuredClone(result);
+  });
+  assert.equal(run.task.status,'completed');
+  assert.equal(run.task.stage,'稿件已生成，部分检查未完成');
+  assert.equal(run.task.result.qualityCheckStatus,'incomplete');
+  assert.deepEqual(run.task.result.review.continuityChainFailure,continuityChainFailure);
+  assert.deepEqual(run.task.result.warnings,[warning]);
+  const savedResult = JSON.parse(await readFile(path.join(run.runsDir, run.task.id, 'result.json')));
+  assert.equal(savedResult.qualityCheckStatus,'incomplete');
+  assert.deepEqual(savedResult.review.continuityChainFailure,continuityChainFailure);
+  assert.deepEqual(savedResult.warnings,[warning]);
+  assert.ok((await readFile(path.join(run.runsDir, run.task.id, 'manuscript.txt'),'utf8')).includes(chapters[0].body));
 });
 test('legacy unversioned workflow retains existing completion behavior', async t => {
   const run = await execute(t, async()=>({ chapters }));
-  assert.equal(run.task.status,'completed'); assert.equal(run.task.result.reviewAdjudicationBinding.status,'missing');
+  assert.equal(run.task.status,'completed'); assert.equal(run.task.stage,'创作完成'); assert.equal(run.task.result.reviewAdjudicationBinding.status,'missing');
+});
+test('workflow and network failures remain failed and are not converted into partial completion', async t => {
+  const run = await execute(t, async()=>{ const error = new Error('网络失败'); error.code = 'ECONNRESET'; throw error; });
+  assert.equal(run.task.status,'failed');
+  assert.equal(run.task.result,undefined);
+  assert.equal(run.task.failure.kind,'network');
+  assert.match(run.task.error,/未完成/);
+  await assert.rejects(readFile(path.join(run.runsDir, run.task.id, 'result.json')),{ code:'ENOENT' });
 });
 
 test('failed result projection preserves returned revised text rather than an older initial draft', () => {

@@ -27,13 +27,28 @@ export function runChecks({ chapters = [], requirements = {} } = {}) {
   if (Number.isInteger(requirements.targetChapterCount) && chapters.length !== requirements.targetChapterCount) {
     issues.push({ code: 'CHAPTER_COUNT_DIFFERS', severity: 'warning', message: `实际 ${chapters.length} 章，本次规划目标为 ${requirements.targetChapterCount} 章。` });
   }
+  const lengthStatus = min === null && max === null ? 'NOT_EVALUATED'
+    : min !== null && bodyHanCount < min ? 'BELOW_MINIMUM'
+      : max !== null && bodyHanCount > max ? 'ABOVE_MAXIMUM' : 'MET';
+  const chapterCountStatus = Number.isInteger(requirements.targetChapterCount)
+    ? chapters.length === requirements.targetChapterCount ? 'MET' : 'DIFFERS' : 'NOT_EVALUATED';
+  const evaluatedStatuses = [lengthStatus, chapterCountStatus].filter(status => status !== 'NOT_EVALUATED');
+  const requestConformance = {
+    status: !evaluatedStatuses.length ? 'NOT_EVALUATED' : evaluatedStatuses.every(status => status === 'MET') ? 'MET' : 'NOT_MET',
+    length: { status: lengthStatus, actualHan: bodyHanCount, min, max,
+      belowMinimumBy: min === null ? null : Math.max(0, min - bodyHanCount),
+      aboveMaximumBy: max === null ? null : Math.max(0, bodyHanCount - max) },
+    chapterCount: { status: chapterCountStatus, actual: chapters.length,
+      requested: Number.isInteger(requirements.targetChapterCount) ? requirements.targetChapterCount : null },
+    meaning: '只判定本次明确篇幅与章数要求；不代表文学质量、语义完整性或 Full15 通过。',
+  };
   return {
     schemaVersion: 1,
     status: issues.some((issue) => issue.severity === 'error') ? 'MECHANICAL_ISSUES' : issues.length ? 'MECHANICAL_WARNINGS' : 'MECHANICAL_CHECKS_OK',
     manuscriptSha256: manuscriptFingerprint(chapters),
     bodyHanCount, bodyNonWhitespaceCount, chapterCount: chapters.length,
     countScope: '仅章节正文；不含书名和章节标题；汉字为 Unicode Script=Han，另列非空白 Unicode 码点数。',
-    requestedBounds: { min, max },
+    requestedBounds: { min, max }, requestConformance,
     chapters: measuredChapters, issues,
     literaryQuality: 'NOT_ASSESSED', methodGain: 'UNPROVEN', systemGo: false,
     full15: {

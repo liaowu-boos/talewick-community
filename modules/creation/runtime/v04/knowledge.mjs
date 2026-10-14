@@ -1,5 +1,6 @@
 import { validateReferenceIntent, referenceNeedView } from './reference-intent.mjs';
 import { validateRelevanceReview } from '../../../data/runtime/relevance.mjs';
+import { validateMaterialNarrativeObservations } from '../../../data/runtime/narrative-observations.mjs';
 import { createHash } from 'node:crypto';
 
 export const CONTRACT_VERSION = 'v04-contract-1';
@@ -77,12 +78,15 @@ export function filterAuthorKnowledge(view, materialDecisions, decisionMaterials
 
 export function knowledgeForAuthor(knowledge, { materialDecisions, decisionMaterials = knowledge.materials,
   requireAdoptDecision = false } = {}) {
-  return filterAuthorKnowledge({ materials: knowledge.materials.map(({ id, title, content, kind, sha256, use, evidence_status, references, selectionReason, limitations }) => ({
-    id, title, content, kind, sha256, use, evidence_status, references, selectionReason, limitations,
-    applicability: use === 'raw_reference' ? '仅原文及客观范围参考；不能把自行解释当已复核知识。'
-      : use === 'reviewed_analysis' ? '携带逐来源复核记录；仍须判断对新作的适用性，不证明文学效果。'
-      : '材料用途未核验；不能自动视为已复核分析。',
-  })), style: knowledge.style, limits: knowledge.limits,
+  return filterAuthorKnowledge({ materials: knowledge.materials.map(material => {
+    validateMaterialNarrativeObservations(material);
+    const { id, title, content, kind, sha256, use, evidence_status, references, selectionReason, limitations, narrativeObservations } = material;
+    return {id, title, content, kind, sha256, use, evidence_status, references, selectionReason, limitations,
+      ...(narrativeObservations !== undefined ? {narrativeObservations: structuredClone(narrativeObservations)} : {}),
+      applicability: use === 'raw_reference' ? '仅原文及客观范围参考；不能把自行解释当已复核知识。'
+        : use === 'reviewed_analysis' ? '携带逐来源复核记录；仍须判断对新作的适用性，不证明文学效果。'
+        : '材料用途未核验；不能自动视为已复核分析。'};
+  }), style: knowledge.style, limits: knowledge.limits,
     ...(knowledge.retrieval?.query?.recall !== undefined ? { recall: structuredClone(knowledge.retrieval.query.recall) } : {}),
   }, materialDecisions, decisionMaterials, { requireAdoptDecision });
 }

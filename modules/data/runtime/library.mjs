@@ -7,6 +7,7 @@ import { INDEX_VERSION, buildRetrievalIndex, compatibleIndex, rankCandidates, ra
 import { inspectAnalysisCandidate } from './analysis-candidate.mjs';
 import { analysisReviewPrompt, inspectAnalysisReview } from './analysis-review.mjs';
 import { analysisBudget, ANALYSIS_BUDGET_VERSION, REVIEW_MAX_TOKENS, REVISION_MAX_TOKENS } from './analysis-budget.mjs';
+import {MATERIAL_NARRATIVE_OBSERVATION_LIMITS, validateMaterialNarrativeObservations} from './narrative-observations.mjs';
 
 export const projectProcessingStage = row => !row.activeRevisionId && ['queued', 'running'].includes(row.status) && row.nextStage === 'index' ? 'index' : undefined;
 
@@ -47,13 +48,15 @@ export async function createLibraryService(options = {}) {
   try { return await createLibraryServiceImpl(options); }
   catch (error) { if (error?.[publicError]) throw error; throw fail('STORAGE_FAILED', '存储初始化失败，请检查服务存储后重试。', true); }
 }
-async function createLibraryServiceImpl({ rootDir, model, reviewCandidates, reviewAnalysis, assessRelevance, processingConcurrency = 1, analysisBudgetVersion = ANALYSIS_BUDGET_VERSION } = {}) {
+async function createLibraryServiceImpl({ rootDir, model, reviewCandidates, reviewAnalysis, assessRelevance, narrativeObservationProjector,
+  processingConcurrency = 1, analysisBudgetVersion = ANALYSIS_BUDGET_VERSION } = {}) {
   // Explicit v1 is for replaying legacy signed requests; new imports default to v2.
   let firstAnalysisBudget;
   try { firstAnalysisBudget = analysisBudget(analysisBudgetVersion); }
   catch { throw fail('INVALID_INPUT', '未知的分析预算策略。'); }
   if (![1, 2, 4].includes(processingConcurrency)) throw fail('INVALID_INPUT', 'processingConcurrency仅支持1、2或4。');
   if ((assessRelevance != null && typeof assessRelevance !== 'function') || (typeof assessRelevance === 'function' && typeof reviewCandidates === 'function')) throw fail('INVALID_INPUT', 'assessRelevance 与 reviewCandidates 不可同时配置，且须为函数。');
+  if (narrativeObservationProjector !== undefined && typeof narrativeObservationProjector !== 'function') throw fail('INVALID_INPUT', '叙事观察投影器须为函数。');
   if (typeof rootDir !== 'string' || !rootDir) throw fail('INVALID_INPUT', '必须指定存储目录。');
   const root = resolve(rootDir);
   await mkdir(root, { recursive: true });
@@ -66,7 +69,7 @@ async function createLibraryServiceImpl({ rootDir, model, reviewCandidates, revi
     catch (err) {
       if (err.code !== 'ESRCH') throw fail('STORE_BUSY', '存储目录已被占用或锁无法验证。', true);
       await unlink(lockPath);
-      return createLibraryService({ rootDir, model, reviewCandidates, reviewAnalysis, assessRelevance, processingConcurrency, analysisBudgetVersion });
+      return createLibraryService({ rootDir, model, reviewCandidates, reviewAnalysis, assessRelevance, narrativeObservationProjector, processingConcurrency, analysisBudgetVersion });
     }
     throw fail('STORE_BUSY', '存储目录已被其他服务占用。', true);
   }
@@ -829,7 +832,36 @@ async function createLibraryServiceImpl({ rootDir, model, reviewCandidates, revi
           result.relevanceReview = relevanceSummary(relevanceReceipt); result.status = 'unavailable'; result.limits.push('最终材料与送审完整窗口不一致，未供应。'); return result;
         }
       }
-      result.materials = organized.materials; result.usedChars = organized.usedChars; result.limits.push(...organized.limits);
+      let finalMaterials = organized.materials;
+      if (narrativeObservationProjector && finalMaterials.length) {
+        try {
+          const projected = await cancellable(() => narrativeObservationProjector({query: query.query,
+            materials: structuredClone(finalMaterials), signal}), signal);
+          if (!projected || !Array.isArray(projected.materials) || projected.materials.length !== finalMaterials.length || !projected.summary) throw Error('invalid projection result');
+          let observationItems = 0, observationChars = 0; const observationIds = new Set();
+          for (let index = 0; index < finalMaterials.length; index++) {
+            const before = finalMaterials[index], after = projected.materials[index];
+            for (const key of ['id', 'content', 'sha256', 'use', 'references']) if (!isDeepStrictEqual(after?.[key], before[key])) throw Error('material identity changed');
+            validateMaterialNarrativeObservations(after);
+            for (const item of after.narrativeObservations?.items ?? []) {
+              if (observationIds.has(item.id)) throw Error('duplicate observation projection');
+              observationIds.add(item.id); observationItems++; observationChars += item.chargedChars;
+            }
+          }
+          if (observationItems > MATERIAL_NARRATIVE_OBSERVATION_LIMITS.maxItems || observationChars > MATERIAL_NARRATIVE_OBSERVATION_LIMITS.maxChars
+            || projected.summary.attachedItemCount !== observationItems || projected.summary.usedChars !== observationChars) throw Error('observation projection budget changed');
+          finalMaterials = structuredClone(projected.materials);
+          result.narrativeObservationProjection = structuredClone(projected.summary);
+          result.limits.push(...(projected.summary.limits ?? []));
+        } catch (error) {
+          abort(signal);
+          result.narrativeObservationProjection = {contractVersion: 'material-narrative-observations-1', status: 'unavailable',
+            reason: error?.code === 'NARRATIVE_OBSERVATION_SNAPSHOT_STALE' ? 'snapshot_stale' : 'projection_rejected', attachedItemCount: 0, usedChars: 0,
+            limits: ['叙事观察陈旧、错绑或投影无效；已拒绝观察并保留原材料供给。']};
+          result.limits.push('叙事观察未能严格绑定本次材料；已回退原材料，不改变检索命中或正文引用。');
+        }
+      }
+      result.materials = finalMaterials; result.usedChars = organized.usedChars; result.limits.push(...organized.limits);
       if (assessRelevance && selected.length && !result.materials.length) { relevanceUncertain = true; result.limits.push('适用候选未能在完整片段预算内供应，不能据此断言来源未覆盖。'); }
       abort(signal);
       result.status = result.materials.length ? 'matched' : unavailable || relevanceUncertain ? 'unavailable' : 'uncovered';

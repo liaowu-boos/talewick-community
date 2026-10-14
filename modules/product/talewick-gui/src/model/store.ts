@@ -55,7 +55,7 @@ function readChapters(value: unknown): Chapter[] {
 
 function readVersions(value: unknown): Version[] {
   return list(value).filter(record).filter(item => text(item.id) && Array.isArray(item.chapters))
-    .map(item => ({ id: text(item.id), label: text(item.label, '保存稿件'), date: text(item.date, now()), chapters: readChapters(item.chapters) }));
+    .map(item => ({ id: text(item.id), label: text(item.label, '保存稿件'), date: text(item.date, now()), ...(text(item.title) ? { title: text(item.title) } : {}), chapters: readChapters(item.chapters) }));
 }
 
 function readEdits(value: unknown): PendingEdit[] {
@@ -183,7 +183,7 @@ export function saveState(state: AppState, storage = browserStorage()): SaveResu
  */
 export function snapshotProject(project: Project, label: string): Version | null {
   if (!project.chapters.length) return null;
-  const version: Version = { id: createId('version'), label: label.trim() || '保存稿件', date: now(), chapters: clone(project.chapters) };
+  const version: Version = { id: createId('version'), label: label.trim() || '保存稿件', date: now(), title: project.title, chapters: clone(project.chapters) };
   project.versions.push(version);
   project.updatedAt = version.date;
   return version;
@@ -194,6 +194,7 @@ export function restoreVersion(project: Project, versionId: string): boolean {
   if (!selected) return false;
   const restored = clone(selected.chapters);
   snapshotProject(project, '恢复历史前的稿件');
+  if (selected.title) project.title = selected.title;
   project.chapters = restored;
   snapshotProject(project, `恢复：${selected.label}`);
   project.pendingEdits = [];
@@ -245,7 +246,7 @@ export function beginRuntimeTask(project: Project, request: RuntimeRequest): voi
 
 /** Bind tool-created tasks to the exact manuscript the conversation submitted. */
 export function attachConversationTask(project: Project, turnId: string, request: RuntimeRequest, task: RuntimeTask): void {
-  if (request.projectId !== project.id || task.projectId !== project.id || request.requestId !== task.requestId || request.baseRevision !== task.baseRevision || request.kind !== task.kind) return;
+  if (request.projectId !== project.id || task.projectId !== project.id || request.requestId !== task.requestId || request.baseRevision !== task.baseRevision || request.kind !== task.kind || request.revisionMode !== task.revisionMode) return;
   const message = project.messages.find(item => item.turnId === turnId && item.role === 'assistant');
   if (message) message.taskId = task.id;
   const historical = project.runtimeHistory?.find(item => item.id === task.id);
@@ -290,7 +291,7 @@ export function applyConversationTurn(project: Project, turn: ConversationTurn):
 /** Result identity and the exact submitted manuscript must both match before applying anything. */
 export function applyRuntimeTask(project: Project, task: RuntimeTask): boolean {
   const binding = project.runtime;
-  if (!binding || task.projectId !== project.id || task.requestId !== binding.request.requestId || task.baseRevision !== binding.request.baseRevision || task.kind !== binding.request.kind || (binding.task && binding.task.id !== task.id)) {
+  if (!binding || task.projectId !== project.id || task.requestId !== binding.request.requestId || task.baseRevision !== binding.request.baseRevision || task.kind !== binding.request.kind || task.revisionMode !== binding.request.revisionMode || (binding.task && binding.task.id !== task.id)) {
     if (binding) {
       binding.submitting = false;
       binding.connectionError = '任务身份或稿件版本不匹配，返回结果尚未应用。';
@@ -324,6 +325,19 @@ export function applyRuntimeTask(project: Project, task: RuntimeTask): boolean {
     project.docMode = 'read';
     binding.resultDisposition = 'applied';
     binding.message = '初稿已保存，可以阅读、编辑和导出。检查范围及未覆盖项见本次结果。';
+  } else if (binding.request.revisionMode === 'whole-manuscript-v1') {
+    const structurallyBound = task.revisionMode === 'whole-manuscript-v1' && Boolean(result.wholeRevision) && result.chapters.length === project.chapters.length && result.chapters.every((chapter, index) => chapter.id === project.chapters[index]?.id);
+    if (!structurallyBound || pendingEdits(project).length) {
+      binding.message = '整稿候选与任务起点的章节结构不一致，或当前仍有待处理建议。结果已保留，当前正文未被覆盖。';
+      return true;
+    }
+    if (result.wholeRevision?.status === 'no_change') {
+      binding.resultDisposition = 'declined';
+      binding.message = '整稿诊断与方案决定保留原稿，没有形成需要采纳的修改；诊断、证据和复读记录仍可查看。';
+    } else {
+    binding.resultDisposition = 'whole-revision-candidate';
+    binding.message = '整稿修订候选已生成。方案、证据、未解决项和独立复读状态可展开查看；明确整体采纳前，当前正文保持原样。';
+    }
   } else {
     if (pendingEdits(project).length || result.chapters.length !== project.chapters.length || result.chapters.some((chapter, index) => chapter.id !== project.chapters[index]?.id) || project.chapters.some(chapter => !chapter.body)) {
       binding.message = '本次结果包含章节结构变化，或当前仍有待处理建议。完整结果已保留，请查看后决定如何修改。';
@@ -344,6 +358,37 @@ export function applyRuntimeTask(project: Project, task: RuntimeTask): boolean {
   }
   if (!project.docClosedByUser) project.docOpen = true; else project.docUpdated = true;
   project.messages.push({ id: createId('message'), role: 'assistant', date: now(), artifact: Boolean(project.chapters.length), text: binding.message });
+  return true;
+}
+
+export function canAdoptWholeRevisionCandidate(project: Project): boolean {
+  const binding = project.runtime;
+  const task = binding?.task;
+  if (!binding || binding.request.revisionMode !== 'whole-manuscript-v1' || task?.status !== 'completed' || task.revisionMode !== 'whole-manuscript-v1' || !task.result?.wholeRevision || task.result.wholeRevision.status === 'no_change' || binding.resultDisposition !== 'whole-revision-candidate') return false;
+  return manuscriptRevision(project) === binding.request.baseRevision && JSON.stringify({ title: project.title, chapters: project.chapters }) === JSON.stringify(binding.baseManuscript)
+    && task.result.chapters.length === project.chapters.length && task.result.chapters.every((chapter, index) => chapter.id === project.chapters[index]?.id);
+}
+
+export function acceptWholeRevisionCandidate(project: Project): boolean {
+  if (!canAdoptWholeRevisionCandidate(project)) return false;
+  const binding = project.runtime!;
+  const result = binding.task!.result!;
+  snapshotProject(project, '采纳整稿修订前');
+  project.title = result.title || project.title;
+  project.chapters = clone(result.chapters);
+  snapshotProject(project, '整稿修订候选');
+  binding.resultDisposition = 'applied';
+  binding.message = '已整体采纳整稿修订候选；采纳前原稿已保存在版本记录。';
+  project.docMode = 'read'; project.compare = 'after'; project.updatedAt = now();
+  return true;
+}
+
+export function declineWholeRevisionCandidate(project: Project): boolean {
+  const binding = project.runtime;
+  if (!binding || binding.request.revisionMode !== 'whole-manuscript-v1' || binding.resultDisposition !== 'whole-revision-candidate') return false;
+  binding.resultDisposition = 'declined';
+  binding.message = '已保留原稿。整稿修订候选仍留在任务结果中，可继续查看。';
+  project.updatedAt = now();
   return true;
 }
 

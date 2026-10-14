@@ -6,10 +6,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig, publicConfig, appRoot } from './config.mjs';
 import { createModel } from './model.mjs';
-import { TaskService } from './tasks.mjs';
+import { TaskService, PLANNING_FOLLOWUP_DECISION_MODE } from './tasks.mjs';
 import { ConversationService } from './conversations.mjs';
 import { createWorkflowRouter } from './workflow-engine.mjs';
 import { loadLibraryService, createLibraryRouter, createRetrieveKnowledge } from './library.mjs';
+import {loadNarrativeObservationProjection, unavailableNarrativeObservationProjection} from './narrative-observation-runtime.mjs';
 import {createLibraryBatchService} from './library-batch-service.mjs';
 import {createLibraryBatchRouter} from './library-batch-router.mjs';
 import { Full15Service, createFull15Router, productManuscriptRevision } from './full15-service.mjs';
@@ -28,14 +29,22 @@ async function bodyJSON(req) {
 }
 
 /** Bind only loopback; the browser sees status/results and never receives the model key. */
-export async function createRuntime({ config, model = createModel(config), workflow, agentModel, conversationModel, library: injectedLibrary, publicationFeedback: injectedFeedback, full15Adapter, full15Analyze, full15InputForManuscript, distDir = path.join(appRoot, 'dist') }) {
+export async function createRuntime({ config, model = createModel(config), workflow, agentModel, conversationModel, library: injectedLibrary,
+  narrativeObservation: injectedNarrativeObservation, publicationFeedback: injectedFeedback, full15Adapter, full15Analyze,
+  full15InputForManuscript, distDir = path.join(appRoot, 'dist') }) {
   const resolvedFull15Adapter = full15Adapter === undefined ? await import('../../../validation/runtime/full15-task.mjs').catch(() => null) : full15Adapter;
+  const libraryRoot = config.libraryDir || path.join(config.runsDir, 'library');
+  const narrativeObservation = injectedNarrativeObservation ?? (injectedLibrary === undefined
+    ? await loadNarrativeObservationProjection({libraryRoot})
+    : unavailableNarrativeObservationProjection('library_injected'));
   let library = injectedLibrary ?? null;
   const retrieveKnowledge = (query, options) => createRetrieveKnowledge(library)(query, options);
   let tasks, full15, releaseFull15;
   const full15Ready = new Promise(resolve => { releaseFull15 = resolve; });
   try {
-    tasks = await new TaskService({ runsDir: config.runsDir, model, engine: config.engine || 'fixed', workflow: workflow || createWorkflowRouter({ config, agentModel, retrieveKnowledge }), onCompleted: async (task, _request, artifacts) => {
+    tasks = await new TaskService({ runsDir: config.runsDir, model, engine: config.engine || 'fixed',
+      newPlanningFollowupDecisionMode: PLANNING_FOLLOWUP_DECISION_MODE,
+      workflow: workflow || createWorkflowRouter({ config, agentModel, retrieveKnowledge }), onCompleted: async (task, _request, artifacts) => {
       const service = await full15Ready;
       if (!service?.available() || task.kind !== 'create' || !task.result) return;
       await service.start({ projectId: task.projectId, requestId: `creation-${task.id}`, title: task.result.title, chapters: task.result.chapters, manuscriptRevision: productManuscriptRevision(task.result.title, task.result.chapters) }, { trigger: 'automatic', sourceTaskId: task.id, configuredInput: full15InputFromRequestSpec(artifacts?.requestSpec) });
@@ -49,7 +58,8 @@ export async function createRuntime({ config, model = createModel(config), workf
     await Promise.allSettled([tasks?.close(), full15?.close(), library?.close()]);
     throw error;
   }
-  try { if (injectedLibrary === undefined) library = (await loadLibraryService({ rootDir: config.libraryDir || path.join(config.runsDir, 'library'), model })).library; }
+  try { if (injectedLibrary === undefined) library = (await loadLibraryService({ rootDir: libraryRoot, model,
+    narrativeObservationProjector: narrativeObservation.projector })).library; }
   catch (error) { await tasks.close(); await full15.close(); throw error; }
   const libraryRouter = createLibraryRouter({ library, json, bodyJSON });
   let libraryBatches=null;
@@ -78,7 +88,7 @@ export async function createRuntime({ config, model = createModel(config), workf
       if (await feedbackRouter(req,res,url)) return;
       if (await batchRouter(req, res, url)) return;
       if (await libraryRouter(req, res, url)) return;
-      if (url.pathname === '/api/runtime' && req.method === 'GET') return json(res, 200, { ...publicConfig(config), library: { available: Boolean(library), batchesAvailable:Boolean(libraryBatches), contractVersion: 'v04-contract-1' }, full15: { available: full15.available(), contractVersion: 'full15-product-task-1' } });
+      if (url.pathname === '/api/runtime' && req.method === 'GET') return json(res, 200, { ...publicConfig(config), library: { available: Boolean(library), batchesAvailable:Boolean(libraryBatches), contractVersion: 'v04-contract-1', narrativeObservations: narrativeObservation.status }, full15: { available: full15.available(), contractVersion: 'full15-product-task-1' } });
       const chat = url.pathname.match(/^\/api\/conversations\/([\w-]{1,160})(?:\/turns(?:\/([\w-]{1,160})\/(stream|cancel))?)?$/);
       if (chat) {
         const [, projectId, turnId, action] = chat;

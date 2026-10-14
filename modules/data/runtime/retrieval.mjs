@@ -151,16 +151,44 @@ export function recallReason(origins) {
     : o.kind === 'variant' ? `补充查询${o.variantIndex + 1}「${o.query}」词法命中；补充词不是已复核分析`
     : '原查询词法命中').join('；');
 }
-/** A large reviewed star stays intact. At most two additional raw windows may
- * join a focus locator to an already-linked, physically adjacent locator.
- * No distant gaps, sentence clipping, linked analysis, or implicit new approval.
+/** Project an oversized reviewed candidate without rewriting its checked
+ * analysis. Keep the complete focus locator and at most one complete, directly
+ * related locator. The related unit is selected only from exact checked fields:
+ * near-best lexical matches prefer the nearest locator, so a remote generic hit
+ * cannot displace adjacent causal context. The relevance gate still decides
+ * whether this bounded evidence is sufficient.
+ */
+function boundedAnalysisProjection(c,terms,lines,limit,maxUnits){
+ const focus=c.row.analysis.units.find(u=>u.id===c.focusUnitId);
+ if(!focus||!reviewBound(c.row))return null;
+ const original=u=>{const out=[];for(let n=u.locator.lineStart;n<=u.locator.lineEnd;n++){if(!lines.has(n))return null;out.push(lines.get(n));}return out.join('\n');};
+ const unitScore=u=>{const text=fields.map(k=>u[k]).join('\n').toLowerCase();return terms.reduce((n,t)=>n+(text.includes(t.term)?t.weight:0),0);};
+ const distance=u=>Math.max(0,u.locator.lineStart-focus.locator.lineEnd-1,focus.locator.lineStart-u.locator.lineEnd-1);
+ const related=focus.relatedUnitIds.map((id,rank)=>c.row.analysis.units.find(u=>u.id===id)).filter(Boolean).map((unit,rank)=>({unit,rank,score:unitScore(unit)}));
+ const max=Math.max(0,...related.map(item=>item.score));
+ const chosen=related.filter(item=>item.score>0&&item.score>=max-1&&distance(item.unit)<=RETRIEVAL_LIMITS.contextLines).sort((a,b)=>distance(a.unit)-distance(b.unit)||b.score-a.score||a.rank-b.rank)[0]?.unit;
+ const build=units=>{
+  const originals=new Map();for(const unit of units){const text=original(unit);if(text===null)return null;originals.set(unit.id,text);}
+  const parts=mergeRanges(units.map(unit=>({...unit.locator,unitIds:[unit.id]})));
+  const focusAnalysis=`单元 ${focus.id}：${fields.map(k=>`${k}: ${focus[k]}`).join('\n')}`;
+  const raw=focusAnalysis+'\n'+parts.map(part=>{const text=[];for(let n=part.lineStart;n<=part.lineEnd;n++)text.push(lines.get(n));return `原文（${part.lineStart}–${part.lineEnd}）：\n${text.join('\n')}`;}).join('\n\n');
+  if(raw.length+'【经语义复核的分析及原文；文学效果未验证】\n'.length>limit)return null;
+  return {...c,raw,parts,unitIds:units.map(unit=>unit.id),focusSearchText:focusAnalysis+'\n'+originals.get(focus.id),searchText:focusAnalysis+'\n'+parts.map(part=>{const text=[];for(let n=part.lineStart;n<=part.lineEnd;n++)text.push(lines.get(n));return text.join('\n');}).join('\n\n'),analysisContextOrigin:{kind:'bounded_checked_unit_context',parentUnitIds:[...c.unitIds],includedUnitIds:units.map(unit=>unit.id),omittedUnitIds:c.unitIds.filter(id=>!units.some(unit=>unit.id===id))}};
+ };
+ if(!chosen||maxUnits<2)return null;
+ return build([focus,chosen]);
+}
+/** Oversized reviewed candidates get a bounded checked-unit projection before
+ * review. At most two additional raw windows retain the older adjacent fallback.
+ * No locator is clipped, no related analysis is synthesized, and no approval is inferred.
  */
 function adjacentRawSupplements(entries, ranked, query, cap) {
-  const terms=queryTerms(query.query), generated=new Map(), rawBySource=new Map();
-  const limit=Math.min(RETRIEVAL_LIMITS.maxRangeChars,query.budget?.maxChars??RETRIEVAL_LIMITS.maxChars);
-  const tooLarge=c=>c.use==='reviewed_analysis'&&(c.raw.length+'【经语义复核的分析及原文；文学效果未验证】\n'.length>Math.min(RETRIEVAL_LIMITS.maxSourceChars,query.budget?.maxChars??RETRIEVAL_LIMITS.maxChars)||c.unitIds.length>Math.min(RETRIEVAL_LIMITS.maxUnits,query.budget?.maxUnits??RETRIEVAL_LIMITS.maxUnits));
+  const terms=queryTerms(query.query), generated=new Map(), projected=new Map(), rawBySource=new Map();
+  const rawLimit=Math.min(RETRIEVAL_LIMITS.maxRangeChars,query.budget?.maxChars??RETRIEVAL_LIMITS.maxChars);
+  const analysisLimit=Math.min(RETRIEVAL_LIMITS.maxSourceChars,query.budget?.maxChars??RETRIEVAL_LIMITS.maxChars);
+  const maxUnits=Math.min(RETRIEVAL_LIMITS.maxUnits,query.budget?.maxUnits??RETRIEVAL_LIMITS.maxUnits);
+  const tooLarge=c=>c.use==='reviewed_analysis'&&(c.raw.length+'【经语义复核的分析及原文；文学效果未验证】\n'.length>analysisLimit||c.unitIds.length>maxUnits);
   for(const c of ranked.filter(tooLarge)) {
-    if(generated.size>=2)break;
     const focus=c.row.analysis.units.find(u=>u.id===c.focusUnitId);
     if(!focus||!reviewBound(c.row))continue;
     if(!rawBySource.has(c.row.sourceId)) {
@@ -168,7 +196,9 @@ function adjacentRawSupplements(entries, ranked, query, cap) {
       for(const r of entries.filter(e=>e.use==='raw_reference'&&e.row.sourceId===c.row.sourceId))split(r.raw).forEach((line,i)=>lines.set(r.lineStart+i,line));
       rawBySource.set(c.row.sourceId,lines);
     }
-    const lines=rawBySource.get(c.row.sourceId);
+    const lines=rawBySource.get(c.row.sourceId),projection=boundedAnalysisProjection(c,terms,lines,analysisLimit,maxUnits);
+    if(projection)projected.set(c.id,projection);
+    if(generated.size>=2)continue;
     const pairs=focus.relatedUnitIds.map(id=>c.row.analysis.units.find(u=>u.id===id)).filter(Boolean)
       .filter(u=>Math.max(u.locator.lineStart,focus.locator.lineStart)-Math.min(u.locator.lineEnd,focus.locator.lineEnd)<=RETRIEVAL_LIMITS.contextLines+1)
       .map(u=>({lineStart:Math.min(u.locator.lineStart,focus.locator.lineStart),lineEnd:Math.max(u.locator.lineEnd,focus.locator.lineEnd),unitIds:[focus.id,u.id]}));
@@ -177,7 +207,7 @@ function adjacentRawSupplements(entries, ranked, query, cap) {
       const original=[];for(let n=p.lineStart;n<=p.lineEnd;n++){if(!lines.has(n))break;original.push(lines.get(n));}
       if(original.length!==p.lineEnd-p.lineStart+1)continue;
       const raw=original.join('\n'),hits=terms.filter(t=>raw.toLowerCase().includes(t.term)).map(t=>t.term);
-      if(!hits.length||raw.length+'【原文参考；不作为已发布分析】\n'.length>limit)continue;
+      if(!hits.length||raw.length+'【原文参考；不作为已发布分析】\n'.length>rawLimit)continue;
       const id=`${c.row.sourceId}:raw:${p.lineStart}-${p.lineEnd}`;
       if(ranked.some(r=>r.id===id)||generated.has(id))continue;
       generated.set(id,{id,use:'raw_reference',lineStart:p.lineStart,lineEnd:p.lineEnd,raw,unitIds:[],row:c.row,score:0,hits,
@@ -185,7 +215,7 @@ function adjacentRawSupplements(entries, ranked, query, cap) {
     }
   }
   const out=[];
-  for(const c of ranked){out.push(c);for(const g of generated.values())if(g.contextOrigin.parentCandidateId===c.id)out.push(g);}
+  for(const c of ranked){out.push(projected.get(c.id)??c);for(const g of generated.values())if(g.contextOrigin.parentCandidateId===c.id)out.push(g);}
   return out.slice(0,cap);
 }
 export function rankWithRecall(entries, query, maxCandidates = 20, { explicitSourceIds } = {}) {
@@ -322,6 +352,10 @@ export async function organizeUsableMaterials(candidates,budget,readText,{signal
  const allocation=selectDiversePreparedMaterials(prepared,budget),selected=new Set(allocation.selectedCandidateIds);
  const fair=await packRankedMaterials(bounded.filter(c=>selected.has(c.id)),Object.fromEntries(['maxCandidates','maxUnits','maxChars'].map(k=>[k,Math.min(budget?.[k]??RETRIEVAL_LIMITS[k],RETRIEVAL_LIMITS[k])])),readText,cache,signal);
  const before=allocationMetrics(baseline.materials),after=allocationMetrics(fair.materials);
+ if(baseline.materials.some(m=>m.use==='reviewed_analysis')&&!fair.materials.some(m=>m.use==='reviewed_analysis')&&after.sources===before.sources&&after.materials===before.materials){
+  baseline.limits.push('语义可用材料的来源数和完整材料数没有增加；保留原包中已存在的分析路线，不仅为减少单元占用而把分析全部替换为原文。这不是文学质量排序。');
+  return baseline;
+ }
  if(!betterAllocation(after,before))return baseline;
  const beforeIds=new Set(baseline.materials.map(m=>m.id)),afterIds=new Set(fair.materials.map(m=>m.id));
  const added=[...afterIds].filter(id=>!beforeIds.has(id)),displaced=[...beforeIds].filter(id=>!afterIds.has(id));
@@ -355,6 +389,7 @@ async function packRankedMaterials(candidates,budget,readText,cache,signal){
   const content=`${c.use==='reviewed_analysis'?'【经语义复核的分析及原文；文学效果未验证】':'【原文参考；不作为已发布分析】'}\n${raw}`;
   const material={id:c.use==='raw_reference'?`${c.row.sourceId}:raw:${range.lineStart}-${range.lineEnd}`:c.id,title:c.row.title,content,kind:'retrieved',use:c.use,sha256:hash(content),references:parts.map(p=>({...baseRef(c),...p,...(c.use==='reviewed_analysis'?{reviewRecordId:c.reviewRecordId}:{})})),selectionReason:c.recallOrigins ? recallReason(uniqueOrigins([...c.recallOrigins,...merged.flatMap(i=>materials[i].recallOrigins??[])])) : `自身${c.use==='raw_reference'?'原文':'焦点分析或所携关联原文'}匹配词项；词法排序未验证心理机制适用。`,...(c.recallOrigins ? {recallOrigins:uniqueOrigins([...c.recallOrigins,...merged.flatMap(i=>materials[i].recallOrigins??[])])} : {}),limitations:[...(c.use==='reviewed_analysis'?[`仅含焦点单元 ${c.focusUnitId} 的分析；关联单元仅提供可词法检索的原文上下文，引用保留全部单元与版本。`]:[]),`用户声明范围：${c.row.completeness}；程序分析范围：${c.row.analysis.coverage.scope}`,'只取有界局部上下文，不保证全篇问题证据充分。']};
   material.limitations=[...new Set([...material.limitations,...analysisLimitations(c.row),...merged.flatMap(i=>materials[i].limitations)])];
+  if(c.analysisContextOrigin){material.selectionReason='完整分析上下文超过单来源或单元预算；保留焦点单元的已复核分析，并按本次查询从直接关联的已复核单元中选择至多一个完整原文定位范围送审。';material.limitations.push(`有界分析包仅供应完整单元 ${c.analysisContextOrigin.includedUnitIds.join('、')}；未供应关联单元 ${c.analysisContextOrigin.omittedUnitIds.join('、')||'无'}。选择是词法与位置路由，不证明因果链完整；语义筛选不足时必须拒绝，不得沿用完整候选的判断。`);}
   if(c.contextOrigin){material.selectionReason='完整分析上下文过大；以已有相邻关联单元定位有界原文，原文自身有词法命中；未认证所问关系。';material.limitations.push('本窗口仅为相邻定位范围的原文参考，不供应被省去的分析和远处关联；不得把缺失上下文当作已知，也不沿用其语义批准。');}
   const next=materials.filter((_,i)=>!merged.includes(i));next.push(material);
   if(!fits(next)){limits.push('材料或同书上下文超过预算，跳过完整候选，未裁句。');continue;}

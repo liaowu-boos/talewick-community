@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import {validateMaterialNarrativeObservations} from './narrative-observations.mjs';
 
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const text = (value) => typeof value === 'string' ? value.trim() : '';
@@ -38,6 +39,8 @@ export async function prepareKnowledge(request = {}, { retrievalResult } = {}) {
         if (item.use === 'reviewed_analysis' && !text(ref?.reviewRecordId)) throw new Error('已复核分析的每条来源须有 reviewRecordId。');
         if (!ref.sourceId || !ref.textVersion || !ref.analysisVersion || !ref.sourceSha256 || !Array.isArray(ref.unitIds) || !Number.isInteger(ref.lineStart) || !Number.isInteger(ref.lineEnd) || ref.lineStart < 1 || ref.lineEnd < ref.lineStart) throw new Error('检索来源定位无效。');
       }
+      try { validateMaterialNarrativeObservations(item); }
+      catch { throw new Error('检索材料附加的叙事观察绑定无效。'); }
       retrieved.push(structuredClone(item));
     }
     if (retrievalResult.usedChars !== retrieved.reduce((n, m) => n + m.content.length, 0)) throw new Error('检索材料计量不一致。');

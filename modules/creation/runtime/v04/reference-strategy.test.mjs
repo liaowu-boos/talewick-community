@@ -18,3 +18,19 @@ test('literal match is not a claim of correct mechanism selection',()=>{
  assert.doesNotThrow(()=>compileReferenceStrategy({...choice,mechanism:'setup_payoff'},request));
  assert.equal(compileReferenceStrategy(choice,request).selection.verification,'literal_quote_only_mechanism_fit_requires_review');
 });
+test('one-element basis array is normalized to the same persisted string',()=>{
+ const out=compileReferenceStrategy({...choice,basis:['/idea']},request);
+ assert.equal(out.selection.basis,'/idea');assert.deepEqual(out.referenceIntent.basis,['/idea']);
+ assert.deepEqual(out,compileReferenceStrategy(choice,request));
+});
+test('empty or multi-element basis arrays are type errors and fabricated quotes still fail the literal gate',()=>{
+ for(const basis of [[],['/idea','/instruction']])assert.throws(()=>compileReferenceStrategy({...choice,basis},request),TypeError);
+ assert.throws(()=>compileReferenceStrategy({...choice,basis:['/idea'],quote:'原指令中不存在的句子'},request),/quote is not current instruction/);
+});
+// Synthetic saved response: no captured provider data or private manuscript.
+test('a saved instruction selection normalizes without another model request',()=>{
+ const instruction='让后来的证据改变人物对搭档沉默的理解。';
+ const saved={status:'selected',mechanism:'reinterpret_past_action',basis:['/instruction'],quote:instruction,reason:'本次指令要求重新理解旧行动'};
+ const out=compileReferenceStrategy(JSON.parse(JSON.stringify(saved)),{...request,instruction});
+ assert.equal(out.selection.basis,'/instruction');assert.equal(out.selection.quote,instruction);
+});

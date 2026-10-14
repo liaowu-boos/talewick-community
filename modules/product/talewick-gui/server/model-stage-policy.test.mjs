@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createModel } from './model.mjs';
-import { isBusinessStage, outputTokenLimit } from './model-policy.mjs';
+import { isBusinessStage, isWholeRevisionStage, outputTokenLimit, WHOLE_REVISION_MODEL_POLICY, wholeRevisionReasoningEffort } from './model-policy.mjs';
 import { agentCallSettings } from './agent-ai-sdk.mjs';
 
 const config = { baseURL: 'https://api.deepseek.com', apiKey: 'synthetic-stage-private-key', model: 'deepseek-v4-flash', timeoutMs: 3000, idleTimeoutMs: 2500 };
@@ -30,6 +30,32 @@ test('business-stage recognition is exact and includes late chapters and real ag
   for (const stage of ['draft:chapter_10', 'revision:book-2', 'agent:reviseChapter:chapter_10']) assert.equal(isBusinessStage(stage), true, stage);
   for (const stage of [undefined, null, 10, {}, '', 'agent:controller', 'draft', 'draft:', 'draft:ch-6:extra', 'draft:ch-6/extra', 'revision: ch-6', 'agent:reviseChapter', 'agent:reviseChapter:', 'unknown-review-stage', 'review:ch-1', ' planning']) {
     assert.equal(isBusinessStage(stage), false, String(stage));
+  }
+});
+
+test('actual whole-revision format-repair stage names retain the whole-manuscript model policy', async () => {
+  const actualStages = ['diagnosis', 'plan', 'revision', 'reread'].map(name => `whole-revision:${name}:format-repair`);
+  for (const stage of actualStages) {
+    assert.equal(isWholeRevisionStage(stage), true, stage);
+    assert.equal(isBusinessStage(stage), true, stage);
+    assert.equal(wholeRevisionReasoningEffort(config, stage, WHOLE_REVISION_MODEL_POLICY), 'low', stage);
+    assert.equal(outputTokenLimit(config, 7000, stage, WHOLE_REVISION_MODEL_POLICY), 65536, stage);
+
+    const sent = [];
+    const model = createModel(config, async (_url, init) => {
+      sent.push(JSON.parse(init.body));
+      return response('{"ok":true}', 'stop', privateReasoning);
+    });
+    assert.equal(await model.complete({ ...input(stage, 7000), modelPolicy: WHOLE_REVISION_MODEL_POLICY }), '{"ok":true}');
+    assert.equal(sent.length, 1, stage);
+    assert.equal(sent[0].max_tokens, 65536, stage);
+    assert.deepEqual(sent[0].thinking, { type: 'enabled' }, stage);
+    assert.equal(sent[0].reasoning_effort, 'low', stage);
+    assert.deepEqual(sent[0].response_format, { type: 'json_object' }, stage);
+  }
+
+  for (const stage of ['diagnosis', 'plan', 'revision', 'reread'].map(name => `whole-revision:${name}:repair`)) {
+    assert.equal(isWholeRevisionStage(stage), true, `${stage} compatibility`);
   }
 });
 

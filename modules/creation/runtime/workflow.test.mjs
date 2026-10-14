@@ -424,10 +424,27 @@ test('mechanical checks use this request only and never imply literary or Full15
   assert.equal(checks.bodyHanCount, 2);
   assert.equal(checks.bodyNonWhitespaceCount, 4);
   assert.equal(checks.status, 'MECHANICAL_CHECKS_OK');
+  assert.deepEqual(checks.requestConformance, {
+    status: 'MET',
+    length: { status: 'MET', actualHan: 2, min: 2, max: 2, belowMinimumBy: 0, aboveMaximumBy: 0 },
+    chapterCount: { status: 'NOT_EVALUATED', actual: 1, requested: null },
+    meaning: '只判定本次明确篇幅与章数要求；不代表文学质量、语义完整性或 Full15 通过。',
+  });
   assert.equal(checks.literaryQuality, 'NOT_ASSESSED');
   assert.equal(checks.full15.status, 'NOT_EVALUATED');
   assert.equal(checks.systemGo, false);
   assert.equal(runChecks({ chapters }).issues.length, 0);
+  assert.equal(runChecks({ chapters }).requestConformance.status, 'NOT_EVALUATED');
+  const above = runChecks({ chapters, requirements: { targetHanMin: 1, targetHanMax: 1, targetChapterCount: 2 } });
+  assert.equal(above.requestConformance.status, 'NOT_MET');
+  assert.equal(above.requestConformance.length.status, 'ABOVE_MAXIMUM');
+  assert.equal(above.requestConformance.length.aboveMaximumBy, 1);
+  assert.equal(above.requestConformance.chapterCount.status, 'DIFFERS');
+  const below = runChecks({ chapters, requirements: { targetHanMin: 3, targetHanMax: 4, targetChapterCount: 1 } });
+  assert.equal(below.requestConformance.status, 'NOT_MET');
+  assert.equal(below.requestConformance.length.status, 'BELOW_MINIMUM');
+  assert.equal(below.requestConformance.length.belowMinimumBy, 1);
+  assert.equal(below.requestConformance.chapterCount.status, 'MET');
   assert.ok(runChecks({ chapters: [{ id: 'x', title: '空', body: '' }] }).issues.some(({ code }) => code === 'EMPTY_CHAPTER'));
 });
 

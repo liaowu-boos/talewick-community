@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import {validateMaterialNarrativeObservations} from './narrative-observations.mjs';
 
 export const FOLLOWUP_LIMITS = Object.freeze({ maxChargedChars: 30000, maxCandidates: 20, maxUnits: 6, maxChars: 12000, maxRangeChars: 2400, maxSourceChars: 4800, maxSourceMaterials: 3 });
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -40,6 +41,8 @@ function validateMaterial(item, code) {
       ensure(!units.has(key), code, '同一材料重复列出已复核单元。'); units.add(key);
     }
   }
+  try { validateMaterialNarrativeObservations(item); }
+  catch { throw error(code, '材料附加的叙事观察绑定无效。'); }
 }
 function validateResult(result) {
   const code = 'INVALID_RESULT';

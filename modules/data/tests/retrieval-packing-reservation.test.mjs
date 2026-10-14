@@ -34,16 +34,31 @@ test('raw-first starvation preserves earliest feasible complete analysis, not sh
  assert.deepEqual(f.candidates,before);assertBudget(out);
 });
 
-test('semantic-usable allocation gives later independent sources a fair budget opportunity',async()=>{
+test('semantic-usable allocation keeps an existing analysis route when source and material coverage tie',async()=>{
  const f=starvationFixture(),selected=[f.long.analysis,f.raws[0].raw,f.raws[1].raw];
  const before=await organizeMaterials(selected,budget,f.readText);
  assert.deepEqual(before.materials.map(m=>m.id),[f.long.analysis.id,f.raws[0].raw.id]);
  assert.equal(before.materials.reduce((n,m)=>n+Math.max(1,new Set(m.references.flatMap(r=>r.unitIds)).size),0),6);
  const after=await organizeUsableMaterials(selected,budget,f.readText);
- assert.deepEqual(after.materials.map(m=>m.id),[f.raws[0].raw.id,f.raws[1].raw.id]);
- assert.equal(after.materials.reduce((n,m)=>n+Math.max(1,new Set(m.references.flatMap(r=>r.unitIds)).size),0),2);
- assert.ok(after.limits.some(s=>s.includes('预算公平分配')&&s.includes(f.long.analysis.id)&&s.includes(f.raws[1].raw.id)));
+ assert.deepEqual(after.materials,before.materials);
+ assert.ok(after.limits.some(s=>s.includes('来源数和完整材料数没有增加')&&s.includes('保留原包中已存在的分析路线')));
  assertBudget(after);
+});
+
+test('oversized reviewed analysis projects to one checked related locator before relevance review',async()=>{
+ const b=book('bounded-analysis',{units:7}),unchanged=structuredClone(b.analysis);
+ const ranked=rankWithRecall(b.entries,{...query,query:'承担照护责任并继续值班'}),analysis=ranked.find(c=>c.id===b.analysis.id);
+ assert.ok(analysis.analysisContextOrigin);assert.equal(analysis.unitIds.length,2);
+ assert.equal(analysis.unitIds[0],'u0');assert.ok(analysis.unitIds[1].startsWith('u'));
+ assert.deepEqual(analysis.analysisContextOrigin.parentUnitIds,b.analysis.unitIds);
+ assert.ok(!analysis.raw.includes('未纳入证据的空隙'));
+ assert.ok(analysis.raw.startsWith(`单元 u0：title: ${b.row.analysis.units[0].title}`));
+ const single=await organizeMaterials([analysis],budget,async()=>b.text);
+ assert.equal(single.materials.length,1);assert.equal(single.materials[0].use,'reviewed_analysis');assertBudget(single);
+ const prepared=await prepareRelevance({...query,query:'承担照护责任并继续值班'},ranked,async()=>b.text);
+ const sent=prepared.input.candidates.find(c=>c.candidateId===analysis.id);
+ assert.ok(sent);assert.equal(sent.content,single.materials[0].content);assert.deepEqual(sent.references,single.materials[0].references);
+ assert.deepEqual(b.analysis,unchanged);
 });
 
 test('fair allocation does not drop coverage merely to save units or invent out-of-set candidates',async()=>{

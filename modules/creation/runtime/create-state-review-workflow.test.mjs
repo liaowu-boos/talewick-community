@@ -89,6 +89,43 @@ test('explicit create state review merges a candidate but independent rejection 
   assert.equal(worker.calls.length, count);
 });
 
+test('create-state-review-v1 production entry passes the actual-length operational floor to later drafting', async () => {
+  const constrainedRequirements = { ...requirements, targetHanMin: 900, targetHanMax: 1200, targetChapterCount: 3 };
+  const constrainedPlan = { ...plan, chapters: [
+    { ...plan.chapters[0], targetHanMin: 100, targetHan: 200, targetHanMax: 300 },
+    { ...plan.chapters[1], targetHanMin: 200, targetHan: 300, targetHanMax: 400 },
+    { ...plan.chapters[1], title: '场景3', targetHanMin: 500, targetHan: 700, targetHanMax: 900 },
+  ] };
+  const han = value => (value.match(/\p{Script=Han}/gu) ?? []).length;
+  const longFirst = `${first}${'甲'.repeat(500 - han(first))}`;
+  const worker = model();
+  const fallback = worker.complete;
+  worker.complete = async args => {
+    if (args.stage === 'requirements') { worker.calls.push(args); return JSON.stringify(constrainedRequirements); }
+    if (args.stage === 'planning') { worker.calls.push(args); return JSON.stringify(constrainedPlan); }
+    if (args.stage === 'draft:ch-1') { worker.calls.push(args); return longFirst; }
+    if (args.stage === 'draft:ch-2') {
+      worker.calls.push(args);
+      const input = JSON.parse(args.user);
+      assert.deepEqual(input.writingBudget.currentChapter,
+        { id: 'ch-2', min: 200, target: 300, max: 400 });
+      assert.deepEqual(input.writingBudget.operationalChapter, {
+        id: 'ch-2', min: 200, target: 200, max: 200, status: 'constrained_by_actual_prose', executable: true,
+        targetAllowance: 0, maxAllowance: 200, availableHan: 200, shortfallToPlannedMin: 0,
+        futureReserve: { chapterCount: 1, plannedMin: 500, plannedTarget: 700 },
+        nonTruncationRule: '控制展开尺度，不裁切模型返回正文；必要行动、因果交接和结局仍须完整。', fallbackAction: null,
+      });
+      return second;
+    }
+    if (args.stage === 'draft:ch-3') { worker.calls.push(args); return '她收起退信，保留未决。'; }
+    return fallback(args);
+  };
+  const result = await runWorkflow({ request, createStateReviewMode: 'create-state-review-v1', model: worker });
+  assert.equal(result.runtimeVersion, 'fixed-workflow-create-state-review-1');
+  assert.equal(result.chapters[0].body, longFirst);
+  assert.equal(result.chapters.length, 3);
+});
+
 function controller({ revise = false } = {}) {
   return { runtimeVersion: 'synthetic-controller-1',
     plan: async context => ({ plan: context.plan, trace: [] }),

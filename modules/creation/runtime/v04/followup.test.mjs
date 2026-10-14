@@ -18,25 +18,39 @@ function coinRevisionResponse(args, legacyResponse) {
 
 const planningNeed={question:'如何通过归还物品兑现承诺',reason:'方案缺少前后动作参考',basis:'insufficient_context',recall:{focus:'echo',queries:['归还物品']},target:{chapterNumber:2}};
 const reviewNeed={question:'如何交代支付物件的来源',reason:'本篇交接缺失',basis:'new_reference_need',recall:{focus:'scene',queries:['付钱之前取出钱币']},target:{chapterId:'ch-2',quote:'铜钱'}};
-const material=(line)=>({id:`m${line}`,title:'合成参考',kind:'retrieved',use:'raw_reference',content:`第${line}段合成正文。`,sha256:hash(`第${line}段合成正文。`),references:[{sourceId:'s',sourceSha256:hash('source'),textVersion:'t1',analysisVersion:'a1',unitIds:[],lineStart:line,lineEnd:line}],selectionReason:'工程替身',limitations:['非语义效果']});
+const materialContent=line=>`【原文参考；不作为已发布分析】\n第${line}段合成正文。`;
+const material=(line)=>({id:`m${line}`,title:'合成参考',kind:'retrieved',use:'raw_reference',content:materialContent(line),sha256:hash(materialContent(line)),references:[{sourceId:'s',sourceSha256:hash('source'),textVersion:'t1',analysisVersion:'a1',unitIds:[],lineStart:line,lineEnd:line}],selectionReason:'工程替身',limitations:['非语义效果']});
 const result=(q,n)=>({contractVersion:'v04-contract-1',packetId:`p${n}`,query:structuredClone(q),status:'matched',materials:[material(n)],candidates:[],usedChars:material(n).content.length,limits:['工程替身']});
-async function workflowFixture({engine='fixed',withNeeds=true,reviewDecision='revise',replan=false,artifacts={},failure,invalidNeed=false}={}){
+async function workflowFixture({engine='fixed',withNeeds=true,reviewDecision='revise',replan=false,artifacts={},failure,invalidNeed=false,
+ strictEvidence=false,explicitDecisionMode=false,followupDecision='adopt',checkpointFailure}={}){
  const models=makeAgentModels({reviewDecision,replan}),queries=[],calls=[],request={kind:'create',idea:'合成工程，不是真实创作：修钟',context:{},materials:[]};
+ let checkpointFailed=false;
  const model={complete:async args=>{
   calls.push({stage:args.stage,input:JSON.parse(args.user)});
   if(failure)await failure(args);
+  if(args.stage==='planning:material-decisions'){
+   const input=JSON.parse(args.user),materialId=input.addedMaterialIds[0];
+   if(followupDecision==='wrong-id')return JSON.stringify({materialDecisions:[{materialId:'m10',decision:'decline',reason:'越界旧材料',limitations:['不能覆盖已有决定']}]});
+   if(followupDecision==='bad-quote')return JSON.stringify({materialDecisions:[{materialId,decision:'adopt',reason:'尝试采用',limitations:['仅借结构'],mechanism:'以归还动作兑现承诺',sourceQuotes:['不存在的来源逐字短引'],target:{chapterNumber:2,sceneNumber:1}}]});
+   if(followupDecision==='decline')return JSON.stringify({materialDecisions:[{materialId,decision:'decline',reason:'与既定方案没有安全对应',limitations:['不迁移具体人物与物件']}]});
+   return JSON.stringify({materialDecisions:[{materialId,decision:'adopt',reason:'可服务既定归还场景',limitations:['只借动作与承诺的因果，不迁移人物身份'],mechanism:'以归还动作兑现承诺',sourceQuotes:['第20段合成正文。'],target:{chapterNumber:2,sceneNumber:1}}]});
+  }
   if(args.stage==='revision:ch-2')return coinRevisionResponse(args,'她把银币交给师傅。');
   const response=await models.model.complete(args);
+  if(args.stage==='requirements'&&strictEvidence){const value=JSON.parse(response);value.referenceQuestion='如何通过归还物品兑现承诺';value.referenceIntent={purpose:'expression',evidenceNeeds:['来源展示人物通过归还物品兑现承诺'],contextNeeds:[],basis:['/idea']};return JSON.stringify(value);}
   if(args.stage==='agent:reviseChapter:ch-2')return coinRevisionResponse(args,response);
   if(['planning','agent:replan','review'].includes(args.stage)){
    const value=JSON.parse(response);
    if(args.stage==='review')for(const i of value.issues)i.severity='must_fix';
-   if(withNeeds)value.referenceNeeds=invalidNeed?null:[args.stage==='review'?reviewNeed:{...planningNeed,question:args.stage==='agent:replan'?'最终方案如何交还旧物':planningNeed.question}];
+   if(strictEvidence&&args.stage!=='review')value.materialDecisions=[{materialId:'m10',decision:'decline',reason:'初始材料不适合既定方案',limitations:['不迁移具体人物与物件']}];
+   if(withNeeds&&(!strictEvidence||args.stage!=='review'))value.referenceNeeds=invalidNeed?null:[args.stage==='review'?reviewNeed:{...planningNeed,question:args.stage==='agent:replan'?'最终方案如何交还旧物':planningNeed.question}];
    return JSON.stringify(value);
   }return response;
  }};
  const router=createWorkflowRouter({config:configFor('/tmp/unused-followup'),agentModel:models.agentModel,retrieveKnowledge:async q=>{queries.push(structuredClone(q));return result(q,queries.length*10);}});
- const run=()=>router({request,engine,model,artifacts,checkpoint:async(k,v)=>{artifacts[k]=structuredClone(v);}});
+ const run=()=>router({request,engine,model,artifacts,...(strictEvidence||explicitDecisionMode?{planningFollowupDecisionMode:'planning-followup-decisions-1'}:{}),checkpoint:async(k,v)=>{
+  if(checkpointFailure===k&&!checkpointFailed){checkpointFailed=true;throw Error(`checkpoint failed: ${k}`);}artifacts[k]=structuredClone(v);
+ }});
  return {run,artifacts,queries,calls,models};
 }
 test('real fixed and SDK router use exactly two slots without additional model stages or changing controller decisions',async()=>{
@@ -62,6 +76,71 @@ test('SDK finish without revision does not consume initial review query slot',as
 });
 test('invalid need is rejected without plan format repair or new model calls',async()=>{
  const f=await workflowFixture({invalidNeed:true});const output=await f.run();assert.equal(f.queries.length,1);assert.equal(f.calls.filter(c=>c.stage==='planning').length,1);assert.ok(output.followupRetrieval.slots.every(s=>s.status==='rejected'));
+});
+test('non-expression create task may persist the explicit mode and completes without a decision call',async()=>{
+ const f=await workflowFixture({explicitDecisionMode:true});const output=await f.run();
+ assert.equal(f.artifacts.requestSpec.planningFollowupDecisionMode,'planning-followup-decisions-1');
+ assert.equal(f.artifacts.requestSpec.materialEvidencePolicyVersion,undefined);
+ assert.equal(f.calls.some(c=>c.stage==='planning:material-decisions'),false);
+ assert.equal(f.artifacts.planningFollowupDecisionStarted,undefined);assert.ok(output.chapters.length>0);
+});
+test('non-expression explicit mode remains a no-op across resume even when planning added material',async()=>{
+ const f=await workflowFixture({explicitDecisionMode:true});const first=await f.run(),queryCount=f.queries.length,callCount=f.calls.length;
+ assert.equal(first.followupRetrieval.slots[0].acceptedCount,1);assert.equal(f.calls.some(c=>c.stage==='planning:material-decisions'),false);
+ assert.deepEqual(await f.run(),first);assert.equal(f.queries.length,queryCount);assert.equal(f.calls.length,callCount);
+ assert.equal(f.artifacts.planningFollowupDecisionResponse,undefined);assert.equal(f.artifacts.planningFollowupDecisionCommit,undefined);
+});
+test('explicit planning followup decision adopts only the new material before chapter one without replanning',async()=>{
+ const f=await workflowFixture({strictEvidence:true});const output=await f.run();
+ assert.equal(f.artifacts.requestSpec.planningFollowupDecisionMode,'planning-followup-decisions-1');
+ assert.equal(f.artifacts.requestSpec.materialEvidencePolicyVersion,'source-use-evidence-1');
+ assert.equal(f.queries.length,2);assert.deepEqual(f.queries.map(q=>q.stage),['planning','writing']);
+ assert.equal(f.calls.filter(c=>c.stage==='planning:material-decisions').length,1);
+ const receipt=f.artifacts.planningFollowupDecisionResponse,commit=f.artifacts.planningFollowupDecisionCommit;
+ assert.deepEqual(receipt.input.addedMaterialIds,['m20']);assert.equal(receipt.input.activeSnapshotHash,output.followupRetrieval.activeSnapshotHash);
+ assert.deepEqual(commit.materialDecisions.map(item=>[item.materialId,item.decision]),[['m20','adopt']]);
+ assert.deepEqual(commit.plan.materialDecisions.map(item=>[item.materialId,item.decision]),[['m10','decline'],['m20','adopt']]);
+ const before=structuredClone(f.artifacts.plan),after=structuredClone(commit.plan);delete before.materialDecisions;delete after.materialDecisions;assert.deepEqual(after,before);
+ assert.deepEqual(f.calls.find(c=>c.stage==='draft:ch-1').input.knowledge.materials.map(item=>item.id),['m20']);
+});
+test('planning followup decline excludes the new material and no additions make no decision call',async()=>{
+ const declined=await workflowFixture({strictEvidence:true,followupDecision:'decline'});await declined.run();
+ assert.deepEqual(declined.artifacts.planningFollowupDecisionCommit.plan.materialDecisions.map(item=>item.decision),['decline','decline']);
+ assert.deepEqual(declined.calls.find(c=>c.stage==='draft:ch-1').input.knowledge.materials,[]);
+ const none=await workflowFixture({strictEvidence:true,withNeeds:false});await none.run();
+ assert.equal(none.calls.some(c=>c.stage==='planning:material-decisions'),false);assert.equal(none.artifacts.planningFollowupDecisionResponse,undefined);assert.equal(none.artifacts.planningFollowupDecisionCommit,undefined);
+});
+test('invalid planning followup evidence and cancellation stop before every chapter write',async()=>{
+ for(const followupDecision of ['bad-quote','wrong-id']){
+  const f=await workflowFixture({strictEvidence:true,followupDecision});await assert.rejects(f.run(),/材料|决定id/);
+  assert.ok(f.artifacts.planningFollowupDecisionResponse);assert.equal(f.artifacts.planningFollowupDecisionCommit,undefined);assert.equal(f.calls.some(c=>c.stage.startsWith('draft:')),false);
+ }
+ const cancelled=await workflowFixture({strictEvidence:true,failure:async args=>{if(args.stage==='planning:material-decisions')throw Object.assign(Error('cancelled'),{name:'AbortError'});}});
+ await assert.rejects(cancelled.run(),/cancelled/);assert.equal(cancelled.artifacts.planningFollowupDecisionResponse,undefined);assert.equal(cancelled.calls.some(c=>c.stage.startsWith('draft:')),false);
+ const cancelledResume=await workflowFixture({strictEvidence:true,artifacts:cancelled.artifacts});await assert.rejects(cancelledResume.run(),/不会重新询问或重新判断/);
+ assert.equal(cancelledResume.queries.length,0);assert.equal(cancelledResume.calls.some(c=>c.stage==='planning:material-decisions'||c.stage.startsWith('draft:')),false);
+});
+test('response checkpoint loss is terminal on resume and never rejudges the material',async()=>{
+ const f=await workflowFixture({strictEvidence:true,checkpointFailure:'planningFollowupDecisionResponse'});
+ await assert.rejects(f.run(),/checkpoint failed/);assert.ok(f.artifacts.planningFollowupDecisionStarted);assert.equal(f.artifacts.planningFollowupDecisionResponse,undefined);
+ assert.equal(f.calls.filter(c=>c.stage==='planning:material-decisions').length,1);assert.equal(f.calls.some(c=>c.stage.startsWith('draft:')),false);
+ await assert.rejects(f.run(),/不会重新询问或重新判断/);assert.equal(f.queries.length,2);assert.equal(f.calls.filter(c=>c.stage==='planning:material-decisions').length,1);
+});
+test('decision commit checkpoint resumes without retrieval or model rejudgment',async()=>{
+ const f=await workflowFixture({strictEvidence:true,checkpointFailure:'planningFollowupDecisionCommit'});
+ await assert.rejects(f.run(),/checkpoint failed/);assert.equal(f.queries.length,2);assert.equal(f.calls.filter(c=>c.stage==='planning:material-decisions').length,1);assert.equal(f.calls.some(c=>c.stage.startsWith('draft:')),false);
+ await f.run();assert.equal(f.queries.length,2);assert.equal(f.calls.filter(c=>c.stage==='planning:material-decisions').length,1);assert.ok(f.artifacts.planningFollowupDecisionCommit);
+});
+test('tampered decision receipt is rejected before resume can draft or requery',async()=>{
+ const complete=await workflowFixture({strictEvidence:true});await complete.run();const artifacts=structuredClone(complete.artifacts);
+ artifacts.planningFollowupDecisionResponse.inputHash='0'.repeat(64);
+ const resumed=await workflowFixture({strictEvidence:true,artifacts});await assert.rejects(resumed.run(),/响应保存点/);
+ assert.equal(resumed.queries.length,0);assert.equal(resumed.calls.some(c=>c.stage.startsWith('draft:')||c.stage==='planning:material-decisions'),false);
+});
+test('unknown create-state-review modes fail before a model call',async()=>{
+ const {runWorkflow}=await import('../workflow.mjs');let calls=0;
+ await assert.rejects(runWorkflow({request:{kind:'create',idea:'测试',context:{},materials:[]},createStateReviewMode:'create-state-review-v999',model:{complete:async()=>{calls++;return '{}';}}}),/未知新建创作/);
+ assert.equal(calls,0);
 });
 function stateFixture({saved={},retrieve,checkpoint,signal,knowledge}={}){
  const base=knowledge??{materials:[],style:null,limits:[]};

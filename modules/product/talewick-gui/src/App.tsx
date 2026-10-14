@@ -17,8 +17,8 @@ import { Home, inspirationNodes } from '@/features/Home';
 import { ManuscriptPanel } from '@/features/ManuscriptPanel';
 import { SecondaryPage, LoginPage, ProjectsDialog } from '@/features/SecondaryPages';
 import { createId, createProject } from '@/model/seed';
-import { applyConversationTurn, applyRuntimeTask, attachConversationTask, clearHomeContext, clearSubmittedConversationQuote, loadStateDetailed, pendingEdits, saveState } from '@/model/store';
-import { controlTask, findTask, getRuntime, getTask, runtimeBusy, runtimeEngineLabel, runtimeResumeMessage, runtimeStage, submitTask, taskActive } from '@/model/runtime';
+import { applyConversationTurn, applyRuntimeTask, attachConversationTask, beginRuntimeTask, clearHomeContext, clearSubmittedConversationQuote, loadStateDetailed, pendingEdits, saveState } from '@/model/store';
+import { controlTask, findTask, getRuntime, getTask, makeWholeRevisionRequest, runtimeBusy, runtimeEngineLabel, runtimeResumeMessage, runtimeStage, submitTask, taskActive } from '@/model/runtime';
 import { cancelConversation, ConversationError, CONVERSATION_MESSAGE_LIMIT, conversationBusy, conversationPreflightError, getConversation, makeConversationSubmission, streamConversation, submitConversation } from '@/model/conversation';
 import { installLinkedProject, loadLinkedProject, readProjectLink, selectLinkedProject, type RecoveredProject } from '@/model/project-link';
 import type { AppState, ConversationTurn, InspirationKey, Mode, Project, RuntimeInfo, RuntimeTask } from '@/model/types';
@@ -412,6 +412,21 @@ export default function App() {
     } catch (error) { recordError(p.id, binding.request.requestId, error); void checkConnection(); }
     finally { pendingRequests.current.delete(p.id); }
   };
+  const startWholeRevision = async (projectId: string, instruction: string) => {
+    const current = stateRef.current;
+    const p = current.projects.find(item => item.id === projectId);
+    if (!p || !p.chapters.length || runtimeBusy(p) || pendingEdits(p).length || pendingRequests.current.has(p.id)) return;
+    const request = makeWholeRevisionRequest(p, current, createId('whole-revision-request'), instruction);
+    pendingRequests.current.add(p.id);
+    update(s => {
+      const target = s.projects.find(item => item.id === p.id);
+      if (target) beginRuntimeTask(target, request);
+      s.quote = ''; s.quoteSource = undefined;
+    });
+    try { recordTask(await submitTask(request), p.id, request.requestId); }
+    catch (error) { recordError(p.id, request.requestId, error); void checkConnection(); }
+    finally { pendingRequests.current.delete(p.id); }
+  };
   const resizeFromPointer = (clientX: number) => { const rect = splitterRef.current?.parentElement?.getBoundingClientRect(); if (rect) setChatWidth(Math.max(32, Math.min(60, (clientX - rect.left) / rect.width * 100))); };
   return <MotionConfig reducedMotion={state.settings.reduceMotion ? 'always' : 'user'}><WorkspaceContext.Provider value={{ state, update, notify, openProject, startNew }}>
     <div className={cx('app-shell', state.page === 'create' && !project && 'is-home')}>
@@ -426,7 +441,7 @@ export default function App() {
         <main className="workspace">
           {state.page === 'publication-feedback' ? <PublicationFeedback /> : state.page !== 'create' ? <SecondaryPage /> : !project ? <Home composer={<Composer onSend={() => { void send(); }} serviceMessage={serviceMessage} onCheck={() => { void checkConnection(); }} />} onContext={key => { setContextKey(key); setContextDraft(state.context[key]); }} /> : <div className={cx('creation-workspace', hasDoc && 'has-document', project.docExpanded && 'document-expanded')} style={{ '--chat-width': `${chatWidth}%` } as CSSProperties}>
             <Chat project={project} onStop={() => { void stopReply(); }} onSend={() => { void send(); }} onHistory={() => setHistoryOpen(true)} serviceMessage={[serviceMessage, toolsBlocked(project, state)].filter(Boolean).join(' · ')} onCheck={() => { void checkConnection(); }} onTaskAction={action => { void actOnTask(action); }} onResult={setInspectedTask} />
-            {hasDoc && <><div ref={splitterRef} className="workspace-splitter" role="separator" tabIndex={0} aria-label="调整对话和文稿宽度" aria-orientation="vertical" aria-valuemin={32} aria-valuemax={60} aria-valuenow={Math.round(chatWidth)} onKeyDown={e => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); setChatWidth(w => Math.max(32, Math.min(60, w + (e.key === 'ArrowRight' ? 2 : -2)))); } }} onPointerDown={e => { e.currentTarget.setPointerCapture(e.pointerId); resizeFromPointer(e.clientX); }} onPointerMove={e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) resizeFromPointer(e.clientX); }} onPointerUp={e => e.currentTarget.releasePointerCapture(e.pointerId)} /><ManuscriptPanel projectId={project.id} onQuote={(text, source) => update(s => { s.quote = text; s.quoteSource = source; const p = s.projects.find(p => p.id === project.id)!; p.docExpanded = false; if (window.matchMedia('(max-width: 900px)').matches) { p.docOpen = false; p.docClosedByUser = true; } })} /></>}
+            {hasDoc && <><div ref={splitterRef} className="workspace-splitter" role="separator" tabIndex={0} aria-label="调整对话和文稿宽度" aria-orientation="vertical" aria-valuemin={32} aria-valuemax={60} aria-valuenow={Math.round(chatWidth)} onKeyDown={e => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); setChatWidth(w => Math.max(32, Math.min(60, w + (e.key === 'ArrowRight' ? 2 : -2)))); } }} onPointerDown={e => { e.currentTarget.setPointerCapture(e.pointerId); resizeFromPointer(e.clientX); }} onPointerMove={e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) resizeFromPointer(e.clientX); }} onPointerUp={e => e.currentTarget.releasePointerCapture(e.pointerId)} /><ManuscriptPanel projectId={project.id} onWholeRevision={instruction => { void startWholeRevision(project.id, instruction); }} onQuote={(text, source) => update(s => { s.quote = text; s.quoteSource = source; const p = s.projects.find(p => p.id === project.id)!; p.docExpanded = false; if (window.matchMedia('(max-width: 900px)').matches) { p.docOpen = false; p.docClosedByUser = true; } })} /></>}
             {!hasDoc && project.chapters.length > 0 && <Button variant="secondary" leadingIcon={RiBookOpenLine} className="reopen-document" onClick={() => update(s => { const p = s.projects.find(p => p.id === project.id)!; p.docOpen = true; p.docClosedByUser = false; p.docUpdated = false; })}>{project.docUpdated ? '查看更新的文稿' : '打开文稿'}</Button>}
           </div>}
         </main><ProjectsDialog open={historyOpen} onClose={() => setHistoryOpen(false)} />
@@ -442,9 +457,9 @@ export default function App() {
     <DialogShell title={inspectedTask?.result?.title || '本次任务结果'} description="这里保留该任务返回的稿件和审阅说明。查看结果不会修改当前正文。" open={Boolean(inspectedTask?.result)} onClose={() => setInspectedTask(null)} footer={<Button onClick={() => setInspectedTask(null)}>关闭</Button>}>
       {inspectedTask?.result && <div className="flex flex-col gap-4">
         <p className="text-caption-1-regular text-text-secondary">本次执行：{runtimeEngineLabel(inspectedTask.engine)}{inspectedTask.engineVersion && ` · ${inspectedTask.engineVersion}`}</p>
-        <ReviewAdjudication key={`adjudication-${inspectedTask.id}`} result={inspectedTask.result} currentChapters={inspectedProject?.chapters} />
+        {!inspectedTask.result.wholeRevision && <ReviewAdjudication key={`adjudication-${inspectedTask.id}`} result={inspectedTask.result} currentChapters={inspectedProject?.chapters} />}
         <MaterialResults key={inspectedTask.id} result={inspectedTask.result} />
-        <ReadingObservations key={`reading-${inspectedTask.id}`} result={inspectedTask.result} />
+        {!inspectedTask.result.wholeRevision && <ReadingObservations key={`reading-${inspectedTask.id}`} result={inspectedTask.result} />}
         {Boolean(inspectedTask.result.agentTrace?.length) && <section className="flex flex-col gap-3" aria-label="Agent 决策摘要">
           <p className="text-body-medium">Agent 决策摘要</p>
           {inspectedTask.result.agentTrace!.map((decision, index) => {
@@ -461,7 +476,7 @@ export default function App() {
         {typeof inspectedTask.result.checks.bodyHanCount === 'number' && typeof inspectedTask.result.checks.chapterCount === 'number' && <p className="text-body-medium">正文 {inspectedTask.result.checks.bodyHanCount} 汉字 · {inspectedTask.result.checks.chapterCount} 章</p>}
         {Array.isArray(inspectedTask.result.checks.issues) && inspectedTask.result.checks.issues.map((issue, index) => issue && typeof issue === 'object' && typeof issue.message === 'string' ? <p key={`check-${index}`} className="text-body-regular text-text-secondary">{issue.message}</p> : null)}
         {inspectedTask.result.checks.full15 && typeof inspectedTask.result.checks.full15 === 'object' && (inspectedTask.result.checks.full15 as Record<string, unknown>).status === 'NOT_EVALUATED' ? <p className="text-body-regular text-text-secondary">Full15 本次未运行，以上为现有基础检查与创作审阅结果。</p> : null}
-        {[...inspectedTask.result.warnings, ...(inspectedTask.result.review.limitations ?? [])].filter((item): item is string => typeof item === 'string').map((item, index) => <p key={index} className="text-body-regular text-text-secondary">{item}</p>)}
+        {[...inspectedTask.result.warnings, ...(!inspectedTask.result.wholeRevision ? inspectedTask.result.review.limitations ?? [] : [])].filter((item): item is string => typeof item === 'string').map((item, index) => <p key={index} className="text-body-regular text-text-secondary">{item}</p>)}
         <p className="text-caption-1-regular text-text-secondary">检查报告用于说明本次覆盖范围，不等同于作品质量保证。</p>
         {inspectedTask.result.chapters.map(chapter => <section key={chapter.id} className="flex flex-col gap-2"><p className="text-title-3-medium">{chapter.title}</p><p className="whitespace-pre-wrap font-story text-headline-regular">{chapter.body}</p></section>)}
       </div>}

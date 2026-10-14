@@ -33,3 +33,9 @@ coverageGaps是“被拒新材料请求的范围中，当前active引用尚未�
 这是纯内存合并器，无存储、网络、模型或密钥访问。所有输入均被视作调用方提供的完整状态；它能发现收到的active/retained不一致，不能凭空发现调用方遗漏了整个历史项或同时改写全部状态后重算哈希。调用方必须从可信checkpoint保留并回传完整账本。它不认证来源登记、不证明额外原文真实，也不代替validateRetrieval绑定实际query；测试通过现有创作validateRetrieval构造合法包，再执行合并。
 
 输出active、retained各份深拷贝，与输入及彼此没有可变共享引用。返回packetId/resultStatus保留实际检索事实；accepted只表示材料进入active上下文，不是创作采用，也不证明补查足够。缺口及拒绝应由创作/UI解释，不能伪造更改检索matched/unavailable状态。
+
+## 附加叙事观察
+
+若检索材料含 `narrativeObservations`，合并器调用 DATA 的材料观察校验器，确认投影哈希、字符计量、历史 AI 状态、逐字证据和 material/ref 行窗绑定。非法新包按 `INVALID_RESULT` 拒绝，损坏历史按 `INVALID_HISTORY` 停止。合法元数据作为整份材料冻结身份的一部分进入 active/retained；材料 ID、正文 SHA、原文引用及累计正文计费均不改变。
+
+补查接受仍不产生 `adopted` 状态。规划后新增 ID 即使携带观察，也必须由 CREATION 的显式材料决定采用后才可进入作者上下文；DATA 不按观察内容自动采用、改写或合并材料。

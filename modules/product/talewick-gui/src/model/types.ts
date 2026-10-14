@@ -10,7 +10,7 @@ export type InspirationKey = 'character' | 'world' | 'plot' | 'theme';
 export type InspirationContext = Record<InspirationKey, string>;
 
 export interface Chapter { id: string; title: string; body: string }
-export interface Version { id: string; label: string; date: string; chapters: Chapter[] }
+export interface Version { id: string; label: string; date: string; title?: string; chapters: Chapter[] }
 /** UTF-16 offset, matching textarea selectionStart and string.slice. */
 export interface QuoteSource { chapterId: string; start: number }
 export interface PendingEdit {
@@ -123,6 +123,7 @@ export interface RuntimeRequest {
   projectId: string;
   requestId: string;
   kind: 'create' | 'revise';
+  revisionMode?: 'whole-manuscript-v1';
   idea: string;
   context: InspirationContext;
   materials: { id: string; title: string; content: string }[];
@@ -194,6 +195,8 @@ export interface RuntimeResult {
   followupRetrievalInvalid?: boolean;
   warnings: string[];
   agentTrace?: AgentDecisionTrace[];
+  /** Creation owns the internal schema; product preserves and presents its public fields. */
+  wholeRevision?: Record<string, unknown>;
 }
 export interface PartialDraft {
   status: 'unreviewed_partial';
@@ -206,6 +209,7 @@ export interface RuntimeTask {
   projectId: string;
   requestId: string;
   kind: 'create' | 'revise';
+  revisionMode?: 'whole-manuscript-v1';
   status: RuntimeTaskStatus;
   stage: string;
   createdAt: string;
@@ -228,7 +232,7 @@ export interface RuntimeBinding {
   submitting?: boolean;
   connectionError?: string;
   handledTaskId?: string;
-  resultDisposition?: 'applied' | 'proposals' | 'held';
+  resultDisposition?: 'applied' | 'proposals' | 'held' | 'whole-revision-candidate' | 'declined';
   message?: string;
 }
 

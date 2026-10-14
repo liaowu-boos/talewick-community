@@ -89,8 +89,11 @@ test('dynamic integration detects only missing module and passes model/storage t
     assert.deepEqual(await loadLibraryService({ moduleURL }), { library: null, available: false });
     await writeFile(moduleURL, 'export async function createLibraryService(options) { return { options, ' + ['importSource', 'list', 'get', 'readSource', 'retry', 'cancel', 'retrieve', 'close'].map(method => `${method}() {}`).join(', ') + ' }; }');
     await writeFile(new URL('./relevance.mjs', moduleURL), 'export function createRelevanceAssessor({model}) { return (input, options) => model.complete({...input, ...options}); }');
-    const model = { complete() {} }; const loaded = await loadLibraryService({ moduleURL, rootDir: dir, model });
+    const projector = async value => value;
+    const model = { complete() {} }; const loaded = await loadLibraryService({ moduleURL, rootDir: dir, model, narrativeObservationProjector: projector });
     assert.equal(loaded.available, true); assert.equal(loaded.library.options.model, model); assert.equal(loaded.library.options.rootDir, dir); assert.equal(typeof loaded.library.options.assessRelevance, 'function');
+    assert.equal(loaded.library.options.narrativeObservationProjector, projector);
+    await assert.rejects(loadLibraryService({ moduleURL, rootDir: dir, model, narrativeObservationProjector: {} }), /must be a function/);
     const broken = pathToFileURL(join(dir, 'broken.mjs')); await writeFile(broken, 'import "./missing-dependency.mjs";');
     await assert.rejects(loadLibraryService({ moduleURL: broken }), { code: 'ERR_MODULE_NOT_FOUND' });
   } finally { await rm(dir, { recursive: true, force: true }); }

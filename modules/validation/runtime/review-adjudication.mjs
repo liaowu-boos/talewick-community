@@ -8,6 +8,10 @@ export const ADJUDICATION_REPAIR_STAGE='review-adjudication:repair';
 export const ADJUDICATION_REPAIR_VERSION='review-adjudication-repair-1';
 export const ADJUDICATION_RELIABILITY_VERSION='review-adjudication-3';
 export const ADJUDICATION_RELIABILITY_REPAIR_VERSION='review-adjudication-repair-2';
+export const ADJUDICATION_CONTINUITY_VERSION='review-adjudication-4';
+export const ADJUDICATION_CONTINUITY_REPAIR_VERSION='review-adjudication-repair-3';
+export const ADJUDICATION_CONTINUITY_STAGE='review-adjudication:continuity-v4';
+export const ADJUDICATION_CONTINUITY_REPAIR_STAGE='review-adjudication:repair:continuity-v4';
 export const ADJUDICATION_LIMITS=Object.freeze({maxChapters:64,maxBodyChars:160000,maxReviewChars:80000,maxIssues:24,maxUserChars:220000,maxResponseChars:120000,maxEvidencePerList:12,maxQuoteChars:1600,maxReasonChars:4000,maxTokens:10000});
 const hash=s=>createHash('sha256').update(s).digest('hex');
 const object=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
@@ -104,14 +108,82 @@ const reliabilitySystem=String.raw`可靠性协议v3：以下规则补充原裁�
 输出是重新构造的裁定对象，不是把输入issue对象扩展后原样输出。assessment对象恰好assessment和reason，assessmentNote即使null也非法；decision不含issue、issueIndex、originalQuotePresent、revisionEligible等输入/主机字段。不能以空值占位加入字段。格式失败必须由你重新返回完整合法响应，主机不会替你删除字段。
 quote按JSON解码后的字符串与章节body精确比较：JSON文本中的\n解码为换行；\\n解码为反斜杠加n。请从正文重取逐字引用并正确编码，不把转义字符当正文，不进行模糊匹配。若正文确实包含反斜杠与n则原样引用，不盲目把所有\n替换成换行。
 判定前对每项依次核对同一人物/物件、所指事件、事实发生时间、谁通过什么来源知道、先前状态与后续状态。尤其检查争议段之后的正文：早先“没打开”而后文“掀开盖”可并存，不能截断后文推出“始终没打开”。未交代不等于未发生；内外两笔账、计划改期与实际执行、私下知情与公开坦白都需区分。不能为恢复格式成功把uncertain换成confirm。对有效重复、沉默、心理留白只可提出有具体事实根据的必修，不强制补全心理或达成和解。把实际核对所得写入既有reason/counterEvidence/alternativeExplanation/characterKnowledge，不增加新字段。`;
+const continuityAdjudicationSystem=String.raw`连续性裁定协议v4：本版本只供显式continuity-chain-review-2合并结果使用。sourceReview.continuityChain是主机保留的链式证据边界，不是模型结论或通过票。
+带continuityCaseId的issue必须重新核对其完整正文事件链，而不是复述合并说明。时间问题至少引用两个可比较锚点，并检查共同基准、明确改期、非连续日期跳转、插叙/回忆与人物话语误差；不能为每次“第二天/明天”任意重置起点。交接问题须同时核对签署性质、钥匙及访问权、场地当时状态、遗留物是否被明确接受以及后续进入安排；后续搬空不能倒推签署时已空，明确临时交钥匙或保留使用权也不能被误判为正式交接冲突。
+confirm必须至少给两处不同位置的正文supportingEvidence，并用正文排除合理替代解释。证据不足、事件关系不明或仍可由改期/插叙/保留访问权/明确遗留物条款解释时保持uncertain或reject。sourceReview.continuityChain.retainedDisputes是重大unknown；不得把它们改成confirm，也不得因本轮没有对应decision、摘要声称完成或issues为空而宣称它们已解除。`;
+const continuityAdjudicationSystemV3=continuityAdjudicationSystem.replace(
+ '本版本只供显式continuity-chain-review-2合并结果使用。',
+ '本版本供显式continuity-chain-review-3合并结果使用；裁定门槛与v2相同。');
+const continuityFailureAdjudicationSystem=String.raw`连续性裁定协议v4：sourceReview.continuityChainFailure明确表示continuity-chain-review-3检查未完成，不是链式结论、通过票或修订授权。不得采用其中历史观察的assessment或reason裁定正文，不得为它新增decision或continuityCaseId issue，也不得因一般审稿issues为空而宣称连续性通过。只独立裁定sourceReview中原有的一般审稿must_fix issues；continuityChainFailure必须原样保留，semanticAcceptance=false且automaticRevisionEligible=false。`;
 const responseContract=Object.freeze({
  root:['inputHash','manuscriptSha256','sourceReviewSha256','checkedChapterIds','decisions'],
  decision:['issueId','issueSha256','decision','reason','scope','supportingEvidence','counterEvidence','alternativeExplanation','characterKnowledge'],
  assessment:['assessment','reason'],citation:['chapterId','quote','role','actor','relevance'],citationOptional:['start'],
  hostRepairsResponse:false,quoteMatch:'exact decoded substring; UTF16; never fuzzy',maxCorrectionCalls:1
 });
-const isReliability=input=>input.schemaVersion===ADJUDICATION_RELIABILITY_VERSION;
-const repairVersion=input=>isReliability(input)?ADJUDICATION_RELIABILITY_REPAIR_VERSION:ADJUDICATION_REPAIR_VERSION;
+const isReliabilityVersion=version=>[ADJUDICATION_RELIABILITY_VERSION,ADJUDICATION_CONTINUITY_VERSION].includes(version);
+const isReliability=input=>isReliabilityVersion(input.schemaVersion);
+const repairVersion=input=>input.schemaVersion===ADJUDICATION_CONTINUITY_VERSION?ADJUDICATION_CONTINUITY_REPAIR_VERSION:isReliability(input)?ADJUDICATION_RELIABILITY_REPAIR_VERSION:ADJUDICATION_REPAIR_VERSION;
+function protocolSystem(version,chainVersion,chainStatus){
+ const reliability=version===ADJUDICATION_VERSION?'':"\n\n"+reliabilitySystem;
+ const continuity=chainStatus==='failure'?continuityFailureAdjudicationSystem:
+  chainVersion==='continuity-chain-review-3'?continuityAdjudicationSystemV3:continuityAdjudicationSystem;
+ return ADJUDICATION_SYSTEM+reliability+(version===ADJUDICATION_CONTINUITY_VERSION?"\n\n"+continuity:'');
+}
+const protocolStage=input=>input.schemaVersion===ADJUDICATION_CONTINUITY_VERSION?ADJUDICATION_CONTINUITY_STAGE:ADJUDICATION_STAGE;
+const protocolRepairStage=input=>input.schemaVersion===ADJUDICATION_CONTINUITY_VERSION?ADJUDICATION_CONTINUITY_REPAIR_STAGE:ADJUDICATION_REPAIR_STAGE;
+function validateContinuityEnvelope(review){
+ const hasSuccess=Object.hasOwn(review,'continuityChain'),hasFailure=Object.hasOwn(review,'continuityChainFailure');
+ requireThat(hasSuccess!==hasFailure,'CONTINUITY_ENVELOPE_REQUIRED');
+ if(hasFailure){
+  const failed=review.continuityChainFailure;
+  requireThat(object(failed),'CONTINUITY_FAILURE_ENVELOPE');
+  exact(failed,['schemaVersion','chainSchemaVersion','status','inputHash','manuscriptSha256','reportSha256',
+   'primaryRequestSha256','primaryResponseSha256','repairSchemaVersion','repairRequestSha256','repairResponseSha256',
+   'failureCode','repairAttempted','semanticAcceptance','automaticRevisionEligible','historicalObservations']);
+  requireThat(failed.schemaVersion==='continuity-chain-failure-1'&&failed.chainSchemaVersion==='continuity-chain-review-3'&&
+   failed.status==='continuity_chain_incomplete'&&failed.repairSchemaVersion==='continuity-chain-format-repair-1','CONTINUITY_FAILURE_ENVELOPE');
+  for(const key of ['inputHash','manuscriptSha256','reportSha256','primaryRequestSha256','primaryResponseSha256','repairRequestSha256','repairResponseSha256'])
+   requireThat(typeof failed[key]==='string'&&/^[0-9a-f]{64}$/.test(failed[key]),'CONTINUITY_FAILURE_BINDING');
+  requireThat(nonempty(failed.failureCode)&&failed.repairAttempted===true&&failed.semanticAcceptance===false&&failed.automaticRevisionEligible===false,'CONTINUITY_FAILURE_FIELDS');
+  requireThat(Array.isArray(failed.historicalObservations),'CONTINUITY_FAILURE_HISTORY');
+  const historicalIds=new Set();
+  for(const item of failed.historicalObservations){
+   exact(item,['schemaVersion','sourceProtocolVersion','sourceInputHash','sourceManuscriptSha256','sourceRequestSha256','sourceResponseSha256','failureCode','case','status','semanticValidity','revisionEligible','explicitlyClosed']);
+   exact(item.case,['id','kind','subject','impact','reportedAssessment','reportedReason']);
+   requireThat(item.schemaVersion==='continuity-chain-unverified-observation-1'&&item.sourceProtocolVersion===failed.chainSchemaVersion&&
+    item.sourceInputHash===failed.inputHash&&item.sourceManuscriptSha256===failed.manuscriptSha256&&
+    item.sourceRequestSha256===failed.primaryRequestSha256&&item.sourceResponseSha256===failed.repairResponseSha256&&
+    item.failureCode===failed.failureCode&&item.status==='protocol_failed_unverified_historical_observation'&&
+    item.semanticValidity==='unverified'&&item.revisionEligible===false&&item.explicitlyClosed===false,'CONTINUITY_FAILURE_HISTORY');
+   requireThat(nonempty(item.case.id)&&!historicalIds.has(item.case.id)&&item.case.impact==='major'&&['unknown','contradiction'].includes(item.case.reportedAssessment)&&
+    ['timeline','object_custody','site_availability','handover'].includes(item.case.kind)&&nonempty(item.case.subject)&&nonempty(item.case.reportedReason),'CONTINUITY_FAILURE_HISTORY');
+   historicalIds.add(item.case.id);
+  }
+  requireThat(review.issues.every(issue=>!Object.hasOwn(issue,'continuityCaseId')),'CONTINUITY_FAILURE_ISSUES');
+  return 'failure';
+ }
+ const value=review.continuityChain;
+ requireThat(object(value),'CONTINUITY_ENVELOPE_REQUIRED');
+ exact(value,['schemaVersion','inputHash','responseSha256','candidateCaseIds','retainedDisputes','semanticValidity','summaryDoesNotResolveDisputes','mergeVersion','adjudicationProtocolVersion']);
+ requireThat(['continuity-chain-review-2','continuity-chain-review-3'].includes(value.schemaVersion)&&value.mergeVersion==='continuity-chain-adjudication-merge-1'&&value.adjudicationProtocolVersion===ADJUDICATION_CONTINUITY_VERSION,'CONTINUITY_ENVELOPE_VERSION');
+ requireThat(nonempty(value.inputHash)&&nonempty(value.responseSha256)&&value.semanticValidity==='not_programmatically_verified'&&value.summaryDoesNotResolveDisputes===true,'CONTINUITY_ENVELOPE_FIELDS');
+ requireThat(Array.isArray(value.candidateCaseIds)&&new Set(value.candidateCaseIds).size===value.candidateCaseIds.length&&value.candidateCaseIds.every(nonempty),'CONTINUITY_CANDIDATE_IDS');
+ requireThat(Array.isArray(value.retainedDisputes),'CONTINUITY_RETAINED_DISPUTES');
+ const retained=new Set();
+ for(const item of value.retainedDisputes){
+  exact(item,['caseId','kind','subject','impact','reason','anchorIds','transitionIds','status']);
+  requireThat(nonempty(item.caseId)&&!retained.has(item.caseId)&&item.impact==='major'&&['retained_unknown_not_revision_eligible','retained_contradiction_requires_cross_chapter_revision','retained_contradiction_requires_independent_reread'].includes(item.status),'CONTINUITY_RETAINED_DISPUTES');
+  requireThat(['timeline','object_custody','site_availability','handover'].includes(item.kind)&&nonempty(item.subject)&&nonempty(item.reason),'CONTINUITY_RETAINED_DISPUTES');
+  requireThat(Array.isArray(item.anchorIds)&&item.anchorIds.length>=2&&new Set(item.anchorIds).size===item.anchorIds.length&&item.anchorIds.every(nonempty),'CONTINUITY_RETAINED_DISPUTES');
+  requireThat(Array.isArray(item.transitionIds)&&item.transitionIds.length>=1&&new Set(item.transitionIds).size===item.transitionIds.length&&item.transitionIds.every(nonempty),'CONTINUITY_RETAINED_DISPUTES');
+  retained.add(item.caseId);
+ }
+ const linked=review.issues.filter(issue=>Object.hasOwn(issue,'continuityCaseId'));
+ requireThat(linked.length===value.candidateCaseIds.length&&new Set(linked.map(i=>i.continuityCaseId)).size===linked.length,'CONTINUITY_CANDIDATE_IDS');
+ for(const issue of linked)requireThat(value.candidateCaseIds.includes(issue.continuityCaseId)&&issue.severity==='must_fix'&&issue.continuityInputHash===value.inputHash&&!retained.has(issue.continuityCaseId),'CONTINUITY_CANDIDATE_IDS');
+ return 'success';
+}
 function reliabilityDiagnostics(errors,parsed){
  const locate=path=>{let value=parsed;for(const part of path.slice(1).match(/[^.\[\]]+/g)??[])value=value?.[part];return value;};
  for(const e of errors){
@@ -132,7 +204,7 @@ function reliabilityDiagnostics(errors,parsed){
 /** Trust boundary: supply the complete saved chapter set and the exact original review. */
 export function createAdjudicationInput(args){
  exact(args,['chapters','review'],['requirements','protocolVersion']);
- const version=args.protocolVersion??ADJUDICATION_VERSION;requireThat([ADJUDICATION_VERSION,ADJUDICATION_RELIABILITY_VERSION].includes(version),'ADJUDICATION_PROTOCOL_VERSION');
+ const version=args.protocolVersion??ADJUDICATION_VERSION;requireThat([ADJUDICATION_VERSION,ADJUDICATION_RELIABILITY_VERSION,ADJUDICATION_CONTINUITY_VERSION].includes(version),'ADJUDICATION_PROTOCOL_VERSION');
  const chapters=jsonCopy(args.chapters),review=jsonCopy(args.review);
  requireThat(Array.isArray(chapters)&&chapters.length>0&&chapters.length<=ADJUDICATION_LIMITS.maxChapters,'CHAPTER_COUNT');
  const ids=new Set();let bodyChars=0;
@@ -143,8 +215,14 @@ export function createAdjudicationInput(args){
  requireThat(bodyChars<=ADJUDICATION_LIMITS.maxBodyChars,'FULL_MANUSCRIPT_TOO_LARGE');
  requireThat(object(review)&&Array.isArray(review.issues)&&review.issues.length<=128,'REVIEW_ISSUES');
  requireThat(JSON.stringify(review).length<=ADJUDICATION_LIMITS.maxReviewChars,'REVIEW_TOO_LARGE');
+ const continuityStatus=version===ADJUDICATION_CONTINUITY_VERSION?validateContinuityEnvelope(review):undefined;
  const manuscriptSha256=manuscriptFingerprint(chapters);
  requireThat(review.manuscriptSha256===manuscriptSha256,'REVIEW_MANUSCRIPT_MISMATCH');
+ if(continuityStatus==='failure'){
+  requireThat(review.continuityChainFailure.manuscriptSha256===manuscriptSha256,'CONTINUITY_FAILURE_BINDING');
+  const originalReview=jsonCopy(review);delete originalReview.continuityChainFailure;
+  requireThat(review.continuityChainFailure.reportSha256===adjudicationFingerprint(originalReview),'CONTINUITY_FAILURE_BINDING');
+ }
  for(const issue of review.issues){
   requireThat(object(issue)&&ids.has(issue.chapterId),'ISSUE_CHAPTER');
   requireThat(['must_fix','optional'].includes(issue.severity),'ISSUE_SEVERITY');
@@ -164,10 +242,12 @@ export function createAdjudicationInput(args){
   else requireThat(Array.isArray(value)&&value.length<=128&&value.every(v=>nonempty(v)&&v.length<=2000),'REQUIREMENT_LIST');
  }
  requireThat(JSON.stringify(requirements).length<=16000,'REQUIREMENTS_TOO_LARGE');
- const modelInput={schemaVersion:version,manuscriptSha256,sourceReviewSha256,chapters,requirements,issues,...(version===ADJUDICATION_RELIABILITY_VERSION?{responseContract:jsonCopy(responseContract)}:{})};
+ const modelInput={schemaVersion:version,manuscriptSha256,sourceReviewSha256,chapters,requirements,issues,...(isReliabilityVersion(version)?{responseContract:jsonCopy(responseContract)}:{})};
  const inputHash=adjudicationFingerprint(modelInput),user=JSON.stringify({inputHash,...modelInput});
  requireThat(user.length<=ADJUDICATION_LIMITS.maxUserChars,'ADJUDICATION_INPUT_BUDGET');
- return {schemaVersion:version,inputHash,manuscriptSha256,sourceReviewSha256,sourceReview:review,modelInput,system:ADJUDICATION_SYSTEM+(version===ADJUDICATION_RELIABILITY_VERSION?"\n\n"+reliabilitySystem:""),user};
+ const chainVersion=review.continuityChain?.schemaVersion??review.continuityChainFailure?.chainSchemaVersion;
+ return {schemaVersion:version,inputHash,manuscriptSha256,sourceReviewSha256,sourceReview:review,modelInput,
+  system:protocolSystem(version,chainVersion,continuityStatus),user};
 }
 function inspectInput(input){
  exact(input,['schemaVersion','inputHash','manuscriptSha256','sourceReviewSha256','sourceReview','modelInput','system','user']);
@@ -216,6 +296,10 @@ function normalizeDecision(d,input,path){
    requireThat(supportingEvidence.some(e=>e.role!=='inference'),'CONFIRM_INFERENCE_ONLY');
    at(`${path}.alternativeExplanation`,()=>requireThat(alternativeExplanation.assessment==='ruled_out','CONFIRM_WITH_UNRESOLVED_COUNTEREXPLANATION'));
    at(`${path}.characterKnowledge`,()=>requireThat(['respected','not_applicable'].includes(characterKnowledge.assessment),'CONFIRM_WITH_CHARACTER_KNOWLEDGE_OVERREACH'));
+   if(input.schemaVersion===ADJUDICATION_CONTINUITY_VERSION&&original.issue.continuityCaseId){
+    requireThat(supportingEvidence.length>=2&&new Set(supportingEvidence.map(e=>JSON.stringify([e.chapterId,e.start,e.end]))).size>=2,'CONTINUITY_CONFIRM_NEEDS_EVENT_CHAIN');
+    requireThat(supportingEvidence.some(e=>e.chapterId===original.issue.chapterId&&e.quote.includes(original.issue.quote)),'CONTINUITY_CONFIRM_MISSING_ANCHOR');
+   }
   }
   if(d.decision==='reject')requireThat(supportingEvidence.length+counterEvidence.length>0,'REJECT_WITHOUT_TEXT_EVIDENCE');
   return {issueId:d.issueId,issueIndex:original.issueIndex,issueSha256:original.issueSha256,decision:d.decision,reason:d.reason,scope:d.scope,
@@ -255,7 +339,8 @@ function notRequired(input){return {schemaVersion:input.schemaVersion,status:'no
 const repairableCodes=new Set(['INVALID_FIELDS','INVALID_OBJECT','INVALID_DECISION','INVALID_SCOPE','INVALID_ASSESSMENT','ASSESSMENT_REASON','DECISION_REASON',
  'CITATION_QUOTE','CITATION_ACTOR','CITATION_RELEVANCE','CITATION_ROLE','CITATION_CHAPTER','CITATION_MISSING_OR_AMBIGUOUS','CITATION_LOCATION',
  'EVIDENCE_LIMIT','DUPLICATE_EVIDENCE','FULL_TEXT_SCOPE_DECLARATION','EXTERNAL_VERIFICATION_NOT_PERFORMED','CONFIRM_WITHOUT_SOURCE_EVIDENCE',
- 'CONFIRM_INFERENCE_ONLY','CONFIRM_WITH_UNRESOLVED_COUNTEREXPLANATION','CONFIRM_WITH_CHARACTER_KNOWLEDGE_OVERREACH','REJECT_WITHOUT_TEXT_EVIDENCE']);
+ 'CONFIRM_INFERENCE_ONLY','CONFIRM_WITH_UNRESOLVED_COUNTEREXPLANATION','CONFIRM_WITH_CHARACTER_KNOWLEDGE_OVERREACH','REJECT_WITHOUT_TEXT_EVIDENCE',
+ 'CONTINUITY_CONFIRM_NEEDS_EVENT_CHAIN','CONTINUITY_CONFIRM_MISSING_ANCHOR']);
 
 /** Deterministic validation diagnostics only; never guesses/replaces quotes or chooses a verdict. */
 export function diagnoseAdjudicationResponse(response,input){
@@ -298,7 +383,7 @@ export function createAdjudicationRepairInput(input,invalidResponse){
  const system=`${verified.system}\n\n${ADJUDICATION_REPAIR_SYSTEM}`;
  const user=JSON.stringify({repairVersion:repairVersion(verified),originalInput:JSON.parse(verified.user),invalidResponse,errors:diagnostics.errors});
  requireThat(user.length<=ADJUDICATION_LIMITS.maxUserChars,'REPAIR_INPUT_BUDGET');
- const stage=ADJUDICATION_REPAIR_STAGE,repairInputHash=adjudicationFingerprint({stage,system,user});
+ const stage=protocolRepairStage(verified),repairInputHash=adjudicationFingerprint({stage,system,user});
  return {stage,system,user,repairInputHash,diagnostics};
 }
 function repairRecord(input,originalResponse){
@@ -365,10 +450,10 @@ async function executeAdjudication({model,input,signal,repairOnly=false,invalidR
   return response;
  };
  try{
-  const original=repairOnly?invalidResponse:await complete({stage:ADJUDICATION_STAGE,system:snapshot.system,user:snapshot.user});
+  const original=repairOnly?invalidResponse:await complete({stage:protocolStage(snapshot),system:snapshot.system,user:snapshot.user});
   if(repairOnly){
    // Explicit recovery of a persisted failed response: no new initial call.
-   attemptRecords.push({stage:ADJUDICATION_STAGE,inputHash:snapshot.inputHash,rawResponse:typeof original==='string'?original:null,reused:true});
+   attemptRecords.push({stage:protocolStage(snapshot),inputHash:snapshot.inputHash,rawResponse:typeof original==='string'?original:null,reused:true});
    response=original;
    requireThat(diagnoseAdjudicationResponse(original,snapshot).repairable,'RESPONSE_NOT_REPAIRABLE');
   }

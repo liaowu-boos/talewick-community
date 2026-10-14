@@ -99,6 +99,13 @@ test('dynamic budget counts only actual prose Han and retains the next chapter a
   assert.equal(budget.written.hanCount, runChecks({ chapters: previousChapters }).bodyHanCount);
   assert.deepEqual(budget.written.chapters, [{ id: 'ch-1', hanCount: 3 }]);
   assert.deepEqual(budget.currentChapter, { id: 'ch-2', min: 500, target: 700, max: 900 });
+  assert.deepEqual(budget.operationalChapter, {
+    id: 'ch-2', min: 500, target: 700, max: 900, status: 'planned_range_available', executable: true,
+    targetAllowance: 1097, maxAllowance: 1097, availableHan: 1097, shortfallToPlannedMin: 0,
+    futureReserve: { chapterCount: 0, plannedMin: 0, plannedTarget: 0 },
+    nonTruncationRule: '控制展开尺度，不裁切模型返回正文；必要行动、因果交接和结局仍须完整。',
+    fallbackAction: null,
+  });
   assert.deepEqual(budget.remaining, { includesCurrentChapter: true, chapterCount: 1, min: 897, max: 1097, plannedMin: 500, plannedTarget: 700, plannedMax: 900 });
   assert.equal(budget.projectedTotalHan, 703);
   assert.equal(budget.overrunHan, 0);
@@ -114,9 +121,49 @@ test('budget exposes shortage and overrun without creating negative limits or re
   assert.equal(budget.rangeConflict, true);
   assert.equal(budget.projectedTotalHan, 1900);
   assert.deepEqual(budget.currentChapter, { id: 'ch-2', min: 500, target: 700, max: 900 });
+  assert.deepEqual(budget.operationalChapter, {
+    id: 'ch-2', min: null, target: null, max: null, status: 'no_safe_headroom', executable: false,
+    targetAllowance: 0, maxAllowance: 0, availableHan: 0, shortfallToPlannedMin: 500,
+    futureReserve: { chapterCount: 0, plannedMin: 0, plannedTarget: 0 },
+    nonTruncationRule: '控制展开尺度，不裁切模型返回正文；必要行动、因果交接和结局仍须完整。',
+    fallbackAction: '没有满足计划最低容量的可执行范围；按批准计划完整写完必要行动，终检依据实际完成正文判定篇幅是否满足。',
+  });
   const underCapacity = chapterWritingBudget({ ...state, previousChapters: [], plan: { ...normalizedPlan(), chapters: [plannedChapters[1]] }, chapterIndex: 0, requirements: { targetHanMin: 1000, targetHanMax: 1200 } });
   assert.equal(underCapacity.rangeConflict, true);
   assert.equal(underCapacity.currentChapter.target, 700);
+});
+
+test('actual cumulative overage contracts the next target while preserving the approved plan and future capacity', () => {
+  const threeChapterPlan = { ...normalizedPlan(), chapters: [
+    { ...plannedChapters[0], id: 'ch-1' },
+    { ...plannedChapters[0], id: 'ch-2' },
+    { ...plannedChapters[1], id: 'ch-3' },
+  ] };
+  const state = {
+    requirements: { targetHanMin: 900, targetHanMax: 1200 }, threeChapterPlan,
+    plan: threeChapterPlan, chapterIndex: 1,
+    previousChapters: [{ id: 'ch-1', body: '甲'.repeat(500) }],
+  };
+  const before = clone(state);
+  const budget = chapterWritingBudget(state);
+  assert.deepEqual(budget.currentChapter, { id: 'ch-2', min: 200, target: 300, max: 400 });
+  assert.deepEqual(budget.operationalChapter, {
+    id: 'ch-2', min: 200, target: 200, max: 200, status: 'constrained_by_actual_prose', executable: true,
+    targetAllowance: 0, maxAllowance: 200, availableHan: 200, shortfallToPlannedMin: 0,
+    futureReserve: { chapterCount: 1, plannedMin: 500, plannedTarget: 700 },
+    nonTruncationRule: '控制展开尺度，不裁切模型返回正文；必要行动、因果交接和结局仍须完整。',
+    fallbackAction: null,
+  });
+  assert.deepEqual(state, before, 'dynamic guidance must not rewrite the approved plan or prior prose');
+
+  const recoverable = chapterWritingBudget({ ...state, requirements: { targetHanMin: 900, targetHanMax: 1500 } });
+  assert.deepEqual(recoverable.operationalChapter, {
+    id: 'ch-2', min: 200, target: 300, max: 400, status: 'planned_range_available', executable: true,
+    targetAllowance: 300, maxAllowance: 500, availableHan: 500, shortfallToPlannedMin: 0,
+    futureReserve: { chapterCount: 1, plannedMin: 500, plannedTarget: 700 },
+    nonTruncationRule: '控制展开尺度，不裁切模型返回正文；必要行动、因果交接和结局仍须完整。',
+    fallbackAction: null,
+  });
 });
 
 test('legacy unknown ranges remain unknown rather than becoming equal shares or inferred promises', () => {
@@ -265,10 +312,23 @@ test('over-budget existing prose does not suppress or mechanically shrink the fi
   const endingInput = JSON.parse(model.calls.find(call => call.stage === 'draft:ch-2').user);
   assert.equal(endingInput.writingBudget.remaining.max, 0);
   assert.equal(endingInput.writingBudget.overrunHan, 100);
+  assert.deepEqual(endingInput.writingBudget.operationalChapter, {
+    id: 'ch-2', min: null, target: null, max: null, status: 'no_safe_headroom', executable: false,
+    targetAllowance: 0, maxAllowance: 0, availableHan: 0, shortfallToPlannedMin: 500,
+    futureReserve: { chapterCount: 0, plannedMin: 0, plannedTarget: 0 },
+    nonTruncationRule: '控制展开尺度，不裁切模型返回正文；必要行动、因果交接和结局仍须完整。',
+    fallbackAction: '没有满足计划最低容量的可执行范围；按批准计划完整写完必要行动，终检依据实际完成正文判定篇幅是否满足。',
+  });
   assert.equal(endingInput.currentChapter.targetHan, 700);
   assert.equal(endingInput.currentChapter.goal, plannedChapters[1].goal);
   assert.equal(endingInput.plan.ending, plan.ending);
   assert.equal(result.chapters[0].body, first);
   assert.equal(result.chapters[1].body, prose['draft:ch-2']);
   assert.ok(result.checks.issues.some(issue => issue.code === 'ABOVE_REQUESTED_LENGTH'));
+  assert.equal(result.checks.requestConformance.status, 'NOT_MET');
+  assert.deepEqual(result.requestConformance, result.checks.requestConformance);
+  assert.deepEqual(result.checks.requestConformance.length, {
+    status: 'ABOVE_MAXIMUM', actualHan: han(first) + han(prose['draft:ch-2']), min: 900, max: 1100,
+    belowMinimumBy: 0, aboveMaximumBy: han(first) + han(prose['draft:ch-2']) - 1100,
+  });
 });

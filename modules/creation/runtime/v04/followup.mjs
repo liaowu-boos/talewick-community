@@ -3,6 +3,7 @@ import { knowledgeForAuthor, validateRetrieval, validateRelevanceSummary } from 
 import { FOLLOWUP_POLICY, selectNeed } from './reference-needs.mjs';
 import { mergeFollowupMaterials } from '../../../data/runtime/followup-materials.mjs';
 import { MATERIAL_USE_EVIDENCE_POLICY } from './material-use-evidence.mjs';
+import { PLANNING_FOLLOWUP_DECISION_POLICY } from './planning-followup-decisions.mjs';
 const canonical=v=>v&&typeof v==='object'?Array.isArray(v)?v.map(canonical):Object.fromEntries(Object.keys(v).sort().map(k=>[k,canonical(v[k])])):v;
 export const followupHash=v=>createHash('sha256').update(JSON.stringify(canonical(v))).digest('hex');
 const copy=structuredClone;
@@ -15,6 +16,7 @@ const key=(s,k)=>`followup:${s}:${k}`;
 const noQueryStatuses=['not_requested','rejected','deferred_no_consumer','duplicate_need','skipped_budget','not_connected'];
 export function createFollowup({request,requestSpec,knowledge,saved,persist,retrieveKnowledge,signal}) {
  ensure(requestSpec.authorMaterialPolicyVersion===undefined||requestSpec.authorMaterialPolicyVersion===AUTHOR_MATERIAL_POLICY,'未知作者材料政策');
+ ensure(requestSpec.planningFollowupDecisionMode===undefined||requestSpec.planningFollowupDecisionMode===PLANNING_FOLLOWUP_DECISION_POLICY,'未知规划补查材料决定政策');
  const authorPolicyEnabled=requestSpec.authorMaterialPolicyVersion===AUTHOR_MATERIAL_POLICY;
  const stopOnFailure=requestSpec.retrievalFailurePolicyVersion==='stop-on-retrieval-failure-1';
  const failScreen=()=>{throw Object.assign(Error('补充材料筛选服务未完成或返回结果不兼容，后续写作或修订已停止；已有稿件和筛选记录已保留，请检查服务后重试。'),{code:'RETRIEVAL_UNAVAILABLE'});};
@@ -35,7 +37,9 @@ export function createFollowup({request,requestSpec,knowledge,saved,persist,retr
   {materialDecisions:authorPolicyEnabled?materialDecisions:undefined,decisionMaterials:s.retainedMaterials,
    requireAdoptDecision:evidencePolicyEnabled&&!forPlanning});
  // 使用本次实际输入中的方案决定重算作者视图；旧任务没有显式标记，保留原视图。
- const decisionsFor=(stage,input)=>stage==='planning'||stage==='agent:replan'?input.previousPlan?.materialDecisions
+ const planningStages=['planning','agent:replan','planning:material-decisions'];
+ const decisionsFor=(stage,input)=>stage==='planning:material-decisions'?input.plan?.materialDecisions
+  :stage==='planning'||stage==='agent:replan'?input.previousPlan?.materialDecisions
   :stage.startsWith('draft:')?input.plan?.materialDecisions:input.materialDecisions;
  function queryFor(slot,need,c,parent){
   const target=slot==='planning'?{...need.target,goal:c.plan.chapters[need.target.chapterNumber-1].goal.slice(0,600)}:need.target;
@@ -74,6 +78,12 @@ export function createFollowup({request,requestSpec,knowledge,saved,persist,retr
    ensure(input.request&&input.requirements&&input.knowledge&&!input.currentChapter&&!input.chapters,'规划输入无效');
    if(stage==='agent:replan')ensure(input.previousPlan!==undefined&&input.feedback!==undefined,'重规划输入无效');return 'author';
   }
+  if(stage==='planning:material-decisions'){
+   ensure(request.kind==='create'&&requestSpec.planningFollowupDecisionMode===PLANNING_FOLLOWUP_DECISION_POLICY
+    &&input.policyVersion===PLANNING_FOLLOWUP_DECISION_POLICY&&input.plan&&Array.isArray(input.plan.materialDecisions)
+    &&input.knowledge&&Array.isArray(input.knowledge.materials)&&Array.isArray(input.addedMaterialIds)&&input.addedMaterialIds.length>0
+    &&typeof input.activeSnapshotHash==='string'&&/^[a-f0-9]{64}$/.test(input.activeSnapshotHash)&&!input.currentChapter&&!input.chapters,'规划补查材料决定输入无效');return 'author';
+  }
   if(stage==='requestedRevision'){
    ensure(request.kind==='revise'&&Array.isArray(input.chapters)&&typeof input.instruction==='string'&&Array.isArray(input.selectedMaterials),'指定修订输入无效');return 'author';
   }
@@ -91,8 +101,9 @@ export function createFollowup({request,requestSpec,knowledge,saved,persist,retr
    ensure(v.neutralReview===(kind==='neutral')&&(kind==='neutral'?v.snapshotHash===null:v.snapshotHash!==null),'调用中立标记/快照类型变化');
    const actualInput=v.input.originalInput??v.input;
    if(v.snapshotHash!==null){const s=known.get(v.snapshotHash);ensure(s,'调用引用未知快照');
+    if(v.stage==='planning:material-decisions')ensure(actualInput.activeSnapshotHash===v.snapshotHash,'决定输入与active快照不符');
     if(actualInput.knowledge)ensure(same(actualInput.knowledge,viewFor(s,decisionsFor(v.stage,actualInput),
-     {forPlanning:['planning','agent:replan'].includes(v.stage)})),'作者输入与快照不符');
+     {forPlanning:planningStages.includes(v.stage)})),'作者输入与快照不符');
     else ensure(same(actualInput.selectedMaterials,s.materials)&&same(actualInput.style,knowledge.style),'选中材料输入与快照不符');
    }else ensure(!actualInput.knowledge&&!actualInput.selectedMaterials,'无快照却有材料输入');
    const returned=saved[`knowledge-returned:${id}`];if(returned)ensure(returned.useHash===followupHash(v),'调用返回与输入绑定变化');
