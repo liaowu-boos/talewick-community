@@ -12,14 +12,14 @@ The project separates the writing interface, source material management, writing
 
 ![Talewick workspace](examples/workspace.png)
 
-## Latest update · 2026-10-14
+## Latest update · 2026-10-16
 
-- **Whole-manuscript revision**: diagnose the full draft, prepare a revision plan, change affected scenes, and perform an independent reread. Review the candidate, differences, and risks before accepting it or keeping the original.
-- **Cross-chapter continuity**: bind dates, object custody, and handover events to evidence and counterevidence. Incomplete checks remain visible while the manuscript can still be saved, edited, and exported. Missing evidence does not automatically establish a contradiction.
-- **Explicit reference decisions**: accept or reject each reference retrieved after planning. Narrative observations must bind to the supplied source windows and pass scope, version, and budget checks. Processing code is included; users supply their own library and analysis data.
-- **Length and recovery**: adjust remaining chapter budgets using saved prose and report whether requested length and chapter counts were met. Resume saved stages and protect manual edits from older revision candidates.
+- **Independent manuscript reading**: request two isolated readings from the manuscript view, inspect complete opinions and history, and follow exact quotations into the frozen draft. Reports indicate whether they match the current version.
+- **Blind revision comparison**: four single-draft readings, two comparisons in reversed order, and one goal audit. Disagreements, stage evidence, and failures remain visible; adoption is the author's decision.
+- **Whole-manuscript quality revision**: prioritize major issues, inspect evidence and counterevidence, assess material applicability and editing scope, then revise and reread. Grouped adoption and original preservation protect manual edits from stale candidates.
+- **Materials and recovery**: narrative observation windows participate in retrieval, with separate direct-fit, mechanism-only, inapplicable, and insufficient-context decisions. Final-text material references are checked. Cloud-only iCloud files produce a waiting state instead of blocking startup.
 
-These features produce candidates and diagnostics for review, without promising better literary quality. Separate C01–C06 checks remain available; the complete Full15 platform is unfinished. Independent fact-check units are developer interfaces and do not yet gate product adoption. The six earlier [reading examples](examples/README.md) remain unchanged, with no private samples added. See the [verification record](VERIFICATION.md) for checks actually run on this public edition.
+The workflow and evidence chain are connected, but live development runs still showed inconsistent diagnoses and unchanged candidates. **Literary quality improvement has not been demonstrated.** Full15 remains limited to C01–C06 assistance; completion, zero findings, or model preferences do not certify literary quality. Private source libraries, analysis samples, and captured provider responses are excluded. The six existing [reading examples](examples/README.md) remain available. See the [verification record](VERIFICATION.md) for the checks actually run.
 
 ## What you can do
 

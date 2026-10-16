@@ -545,8 +545,11 @@ export async function runWorkflow({ request, model, artifacts = {}, checkpoint =
       ...(previousManuscriptSha256 ? {previousManuscriptSha256} : {})});
     if (!stateReviewEnabled) return step(key, readGeneral);
     const general = await step(`${key}:general`, readGeneral);
+    const stateRejectedResponses=Object.entries(saved).filter(([name])=>name.startsWith(`${key}:state:rejected:`)).map(([,value])=>value);
+    const coverageFormatRetryReserved=stateRejectedResponses.some(value=>value?.formatRetryReserved===true
+      || value?.formatRetryReserved===undefined&&value?.error==='状态专审达到记录上限');
     const state = await step(`${key}:state`, () => reviewStates({chapters:current, requirements, model, signal, transitionHintsEnabled,
-      formatRetryAllowed: !Object.keys(saved).some(name => name.startsWith(`${key}:state:rejected:`)),
+      formatRetryAllowed: !coverageFormatRetryReserved,
       onRejectedResponse: response => persist(`${key}:state:rejected:${Object.keys(saved).filter(name => name.startsWith(`${key}:state:rejected:`)).length + 1}:${response.responseSha256}`, response)}));
     if (continuityChainEnabled) {
       const chainReview = inheritContinuityDisputes(mergeStateReview(general, state), previousReview, continuityProtocolHistory);

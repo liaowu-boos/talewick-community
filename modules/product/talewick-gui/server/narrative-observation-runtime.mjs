@@ -5,6 +5,7 @@ export const NARRATIVE_OBSERVATION_RUNTIME_VERSION = 'narrative-observation-runt
 
 const unavailable = reason => Object.freeze({
   projector: undefined,
+  query: undefined,
   status: Object.freeze({
     available: false,
     reason,
@@ -63,9 +64,10 @@ export async function loadNarrativeObservationProjection({
   try {
     const active = await resolvePackage({libraryRoot, expectedSourceCount});
     const service = await openService({libraryRoot, sidecarRoot: active.packageRoot});
-    if (typeof service?.projectMaterials !== 'function') throw new TypeError('Narrative observation service missing projectMaterials');
+    if (typeof service?.projectMaterials !== 'function' || typeof service?.query !== 'function') throw new TypeError('Narrative observation service missing projectMaterials or query');
     return Object.freeze({
       projector: service.projectMaterials.bind(service),
+      query: service.query.bind(service),
       status: Object.freeze({
         available: true,
         reason: null,
@@ -75,7 +77,7 @@ export async function loadNarrativeObservationProjection({
       }),
     });
   } catch (error) {
-    if (error instanceof TypeError && /missing projectMaterials/.test(error.message)) throw error;
+    if (error instanceof TypeError && /missing projectMaterials or query/.test(error.message)) throw error;
     return unavailable(reasonFor(error) ?? 'invalid_active_package');
   }
 }

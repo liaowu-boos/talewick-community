@@ -16,6 +16,7 @@ const sources = [material('raw'), material('analysis', analysis, 'reviewed_analy
 const chapters = [{ id:'ch-1', scenes:['核对票根', '写下约定'] }];
 const base = { characterArcs:[{character:'她',experience:'看到票根',belief:'父亲忘约',desire:'了解真相',fear:'被忽视',change:'承认有新解释',expression:'写回约定'}],
   emotionalScenes:[{experience:'核对票根',cognition:'先前看错',action:'写回约定',expression:'短句',development:'近写证据',echo:'回到旧约'}],
+  choiceCausality:[{id:'choice-1',chapterNumber:1,character:'她',pressure:'想查清旧约又怕证实自己被忽视',choice:'核对票根后把约定写回本子',immediateConsequence:'她承认旧判断有缺口但没有答应原谅',carryForward:'后续来往须面对仍未解决的失约',unresolvedBoundary:'是否继续来往未定'}],
   psychologyLimitations:['是否继续来往未定'] };
 const adopt = { materialId:'raw',decision:'adopt',reason:'借用旧理解被票根改变的次序，放进核对票根一场',
   limitations:['不迁入父女身份和原谅结局'],mechanism:'旧理解—可见票根—有限改口',

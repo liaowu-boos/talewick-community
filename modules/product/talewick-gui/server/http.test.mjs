@@ -31,7 +31,7 @@ function modelStub() {
       });
       if (args.stage === 'planning') {
         await pause(40);
-        return JSON.stringify({ characterArcs: [{ character: '小禾', experience: '旧钟停摆', belief: '亲手修复', desire: '钟声恢复', fear: '无法修好', change: '担忧到行动', expression: '修理动作' }], emotionalScenes: Array.from({length:2},()=>({experience:'修钟',cognition:'发现问题',action:'修理',expression:'动作',development:'展开现场',echo:'钟声回应'})), materialDecisions: [], psychologyLimitations: ['明确新版测试替身'], title: '旧钟', premise: '旧钟停摆', ending: '修好了钟', constraints: [], chapters: [
+        return JSON.stringify({ choiceCausality: [{ id: 'choice-1', chapterNumber: 1, character: '小禾', pressure: '旧钟停摆而维修要花钱', choice: '亲手修钟并留钱付酬', immediateConsequence: '开始拆检齿轮', carryForward: '修好后支付最后一枚钱币', unresolvedBoundary: '未来维修仍需筹钱' }], characterArcs: [{ character: '小禾', experience: '旧钟停摆', belief: '亲手修复', desire: '钟声恢复', fear: '无法修好', change: '担忧到行动', expression: '修理动作' }], emotionalScenes: Array.from({length:2},()=>({experience:'修钟',cognition:'发现问题',action:'修理',expression:'动作',development:'展开现场',echo:'钟声回应'})), materialDecisions: [], psychologyLimitations: ['明确新版测试替身'], title: '旧钟', premise: '旧钟停摆', ending: '修好了钟', constraints: [], chapters: [
           { title: '停钟', goal: '发现齿轮松脱，决定修钟', scenes: ['检查齿轮并决定修理'], continuity: '下一章落实修理', targetHanMin: 80, targetHan: 100, targetHanMax: 120 },
           { title: '钟声', goal: '修好钟并付出最后的铜钱', scenes: ['装好齿轮并交付铜钱'], continuity: '承接修理决定，钟响后收束', targetHanMin: 80, targetHan: 100, targetHanMax: 120 },
         ] });

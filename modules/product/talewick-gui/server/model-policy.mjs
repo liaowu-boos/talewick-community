@@ -2,6 +2,8 @@ export const isLibraryStage = stage => stage === 'library-relevance' || stage ==
 export const isFull15Stage = stage => stage === 'full15-cold-read' || stage === 'full15-check';
 export const FOLLOWUP_CONTINUITY_MODEL_POLICY = 'followup-continuity-json-1';
 export const WHOLE_REVISION_MODEL_POLICY = 'whole-manuscript-json-1';
+export const WHOLE_QUALITY_MODEL_POLICY = 'whole-manuscript-quality-json-1';
+export const INDEPENDENT_REVIEW_MODEL_POLICY = 'independent-review-json-1';
 const FOLLOWUP_CONTINUITY_STAGES = new Set([
   'planning:material-decisions',
   'continuity-chain-review',
@@ -16,6 +18,10 @@ const WHOLE_REVISION_STAGES = new Set([
   'whole-revision:reread', 'whole-revision:reread:format-repair', 'whole-revision:reread:repair',
 ]);
 export const isWholeRevisionStage = stage => WHOLE_REVISION_STAGES.has(stage);
+const WHOLE_QUALITY_STAGES = new Set(['reading', 'applicability', 'plan', 'feasibility', 'revision', 'reread', 'material-evidence'].flatMap(name => [`whole-quality:${name}`, `whole-quality:${name}:format-repair`]));
+export const isWholeQualityStage = stage => WHOLE_QUALITY_STAGES.has(stage);
+const INDEPENDENT_REVIEW_STAGES = new Set(['independent-reading', 'blind-pair', 'goal-audit'].map(name => `independent-review:${name}`));
+export const isIndependentReviewStage = stage => INDEPENDENT_REVIEW_STAGES.has(stage);
 export const agentProviderFor = config => config.agentProvider || (new URL(config.baseURL).hostname === 'api.deepseek.com' ? 'deepseek' : 'openai-compatible');
 
 // Current Flash and legacy V4 aliases share the thinking/streaming contract.
@@ -23,7 +29,7 @@ export const usesDeepSeekThinking = config => agentProviderFor(config) === 'deep
   (config.model === 'deepseek-flash' || /^deepseek-v4-(?:flash(?:-vision-exp)?|pro)$/.test(config.model ?? ''));
 
 const BUSINESS_STAGES = new Set(['requirements', 'requirements:repair', 'planning', 'planning:material-decisions', 'agent:replan', 'review', 'agent:reviewManuscript', 'revisionReview', 'review-adjudication', 'review-adjudication:repair', 'review-adjudication:continuity-v4', 'review-adjudication:repair:continuity-v4', 'requestedRevision', 'continuity-review', 'continuity-chain-review', ...WHOLE_REVISION_STAGES]);
-export const isBusinessStage = stage => typeof stage === 'string' && (BUSINESS_STAGES.has(stage) || /^(draft|revision|agent:reviseChapter):[\w-]+$/.test(stage));
+export const isBusinessStage = stage => typeof stage === 'string' && (BUSINESS_STAGES.has(stage) || isWholeQualityStage(stage) || isIndependentReviewStage(stage) || /^(draft|revision|agent:reviseChapter):[\w-]+$/.test(stage));
 
 export function outputTextLimit(requestedTokens, ceiling = 16000) {
   if (!Number.isFinite(requestedTokens) || requestedTokens <= 0) throw new Error('模型输出预算必须是正数。');
@@ -48,6 +54,14 @@ export function wholeRevisionReasoningEffort(config, stage, modelPolicy) {
   return modelPolicy === WHOLE_REVISION_MODEL_POLICY && usesDeepSeekThinking(config) && isWholeRevisionStage(stage) ? 'low' : undefined;
 }
 
+export function wholeQualityReasoningEffort(config, stage, modelPolicy) {
+  return modelPolicy === WHOLE_QUALITY_MODEL_POLICY && usesDeepSeekThinking(config) && isWholeQualityStage(stage) ? 'low' : undefined;
+}
+
+export function independentReviewReasoningEffort(config, stage, modelPolicy) {
+  return modelPolicy === INDEPENDENT_REVIEW_MODEL_POLICY && usesDeepSeekThinking(config) && isIndependentReviewStage(stage) ? 'low' : undefined;
+}
+
 /** A complete structured plan can exceed the legacy 6K text hint. This changes
  * only the existing no-thinking recovery, never its count or shared deadline. */
 export function recoveryTextLimit(stage, requestedTokens) {
@@ -62,13 +76,16 @@ export function outputTokenLimit(config, requestedTokens = 6000, stage, modelPol
   const thinkingV4 = usesDeepSeekThinking(config);
   // Relevance requests 6000 text tokens; native thinking shares one 32768 total limit.
   if (stage === 'library-relevance') return thinkingV4 ? 32768 : outputTextLimit(requestedTokens, 6000);
-  if (!thinkingV4) return modelPolicy === WHOLE_REVISION_MODEL_POLICY && isWholeRevisionStage(stage)
+  if (!thinkingV4) return (modelPolicy === WHOLE_REVISION_MODEL_POLICY && isWholeRevisionStage(stage))
+    || (modelPolicy === WHOLE_QUALITY_MODEL_POLICY && isWholeQualityStage(stage))
     ? outputTextLimit(requestedTokens, 32768) : Math.min(16000, Math.max(512, Math.ceil(requestedTokens)));
   // Full15 packets need a larger shared thinking + JSON allowance, without
   // changing the budgets of ordinary review, creation or library stages.
   if (isFull15Stage(stage)) return 65536;
   if (modelPolicy === FOLLOWUP_CONTINUITY_MODEL_POLICY && isFollowupContinuityStage(stage)) return 65536;
   if (modelPolicy === WHOLE_REVISION_MODEL_POLICY && isWholeRevisionStage(stage)) return 65536;
+  if (modelPolicy === WHOLE_QUALITY_MODEL_POLICY && isWholeQualityStage(stage)) return 65536;
+  if (modelPolicy === INDEPENDENT_REVIEW_MODEL_POLICY && isIndependentReviewStage(stage)) return 65536;
   // Explicit opt-in for large continuity JSON: shared thinking + text allowance,
   // not a guarantee of complete output. Recovery keeps the requested text cap.
   if (stage === 'continuity-review') return 65536;

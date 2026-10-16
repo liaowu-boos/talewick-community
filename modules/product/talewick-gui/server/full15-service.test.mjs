@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
@@ -104,4 +104,29 @@ test('a queued persisted run resumes through adapter instead of restarting cold 
  await writeFile(path.join(rootDir,`${id}.json`),JSON.stringify(saved));let starts=0,resumes=0;const adapter={getFull15Versions:()=>({rulesVersion:'rules-1',toolVersion:'tool-1'}),startFull15Review:async()=>{starts++;throw Error('must not start');},resumeFull15Review:async args=>{resumes++;return result({...args,runRoot:path.dirname(path.dirname(runDir))});}};
  const service=await new Full15Service({rootDir,adapter,analyze:async()=>{},inputForManuscript:async()=>({})}).init();t.after(async()=>{await service.close();await rm(rootDir,{recursive:true,force:true});});
  await settled(service,id);assert.equal(starts,0);assert.equal(resumes,1);
+});
+
+test('manual checks pass a validated source task and adoption selection to the requirements and references provider', async t => {
+  const f = await fixture(t); let received;
+  f.service.inputForManuscript = async value => { received = value; return { requirements: { min_body_length: 9000, c05_applicable: false }, references: { sources: [{ id: 'reference-1', scope: 'excerpt' }] }, profile: 'standard' }; };
+  const task = await f.service.start({ ...input, requestId: 'linked-manual', sourceTaskId: 'whole-quality-task-1', selection: ['group-2'] });
+  await settled(f.service, task.id);
+  assert.equal(received.sourceTaskId, 'whole-quality-task-1'); assert.deepEqual(received.selection, ['group-2']); assert.equal(f.calls[0].profile, 'standard'); assert.equal(f.calls[0].references.sources[0].id, 'reference-1');
+  assert.equal(f.service.get(task.id).linkedSourceTaskId, 'whole-quality-task-1'); assert.deepEqual(f.service.get(task.id).linkedSelection, ['group-2']);
+});
+
+test('dataless Full15 index is not opened or overwritten and hydrates before new work', async t => {
+  const rootDir = await realpath(await mkdtemp(path.join(os.tmpdir(), 'talewick-full15-cloud-'))), id = crypto.randomUUID(), file = path.join(rootDir, `${id}.json`);
+  const saved = { id, projectId: input.projectId, requestId: 'cloud-request', trigger: 'manual', status: 'complete', manuscriptRevision: input.manuscriptRevision,
+    manuscriptSha256: 'a'.repeat(64), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), progress: { phase: 'complete', completedChunks: 2, totalChunks: 2, completedStages: 2 }, report: null, error: null,
+    frozen: { manuscript: { text: manuscriptText(input.title,input.chapters), sha256: 'a'.repeat(64) }, requirements: {}, references: { sources: [] }, profile: 'no_corpus' } };
+  await writeFile(file, JSON.stringify(saved)); const blocked = new Set([file]), reads = [];
+  const adapter = { getFull15Versions:()=>({}), startFull15Review:async args=>result(args), resumeFull15Review:async()=>assert.fail('not expected') };
+  const service = await new Full15Service({ rootDir, adapter, analyze:async()=>{}, inputForManuscript:async()=>({requirements:{},references:{sources:[]},profile:'no_corpus'}),
+    taskFileState: async value => blocked.has(value) ? { available:false, reason:'dataless' } : { available:true }, taskFileRead: async (...args) => { reads.push(args[0]); return readFile(...args); } }).init();
+  t.after(async()=>{await service.close();await rm(rootDir,{recursive:true,force:true});});
+  assert.deepEqual(service.list(),[]); assert.equal(reads.includes(file),false);
+  await assert.rejects(service.start({ ...input, requestId:'new-while-waiting' }), error => error.code === 'LOCAL_FILE_WAIT');
+  blocked.clear(); const next = await service.start({ ...input, projectId:'project-2', requestId:'new-after-hydration' }); await settled(service,next.id);
+  assert.equal(service.get(id).status,'complete'); assert.equal(service.get(next.id).status,'complete');
 });

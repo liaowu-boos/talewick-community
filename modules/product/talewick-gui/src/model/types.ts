@@ -117,13 +117,14 @@ export interface RuntimeTaskFailure {
   phase: 'writing' | 'review' | 'check' | 'step';
   retryScope: RuntimeRetryScope;
   message: string;
+  recoverable?: boolean;
 }
 export interface RuntimeRequest {
   projectTitle?: string;
   projectId: string;
   requestId: string;
   kind: 'create' | 'revise';
-  revisionMode?: 'whole-manuscript-v1';
+  revisionMode?: 'whole-manuscript-v1' | 'whole-manuscript-v2';
   idea: string;
   context: InspirationContext;
   materials: { id: string; title: string; content: string }[];
@@ -175,6 +176,9 @@ export interface RuntimeReview {
 export interface RuntimeResult {
   title: string;
   chapters: Chapter[];
+  baseRevision?: string;
+  revisionApplied?: boolean;
+  qualityCheckStatus?: 'incomplete';
   review: RuntimeReview;
   /** Exact server review, retained before view normalization for fingerprint checks. */
   reviewOriginal?: Record<string, unknown>;
@@ -209,7 +213,7 @@ export interface RuntimeTask {
   projectId: string;
   requestId: string;
   kind: 'create' | 'revise';
-  revisionMode?: 'whole-manuscript-v1';
+  revisionMode?: 'whole-manuscript-v1' | 'whole-manuscript-v2';
   status: RuntimeTaskStatus;
   stage: string;
   createdAt: string;
@@ -232,7 +236,13 @@ export interface RuntimeBinding {
   submitting?: boolean;
   connectionError?: string;
   handledTaskId?: string;
-  resultDisposition?: 'applied' | 'proposals' | 'held' | 'whole-revision-candidate' | 'declined';
+  resultDisposition?: 'applied' | 'partially-applied' | 'proposals' | 'held' | 'whole-revision-candidate' | 'whole-quality-groups' | 'declined';
+  qualityAdoption?: {
+    selectedGroupIds: string[];
+    declinedGroupIds: string[];
+    fullCandidateRereadInherited: boolean;
+    rereadScope: 'full-candidate' | 'selected-groups-unchecked';
+  };
   message?: string;
 }
 

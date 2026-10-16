@@ -1,6 +1,6 @@
 import { ADJUDICATION_VERSION, ADJUDICATION_RELIABILITY_VERSION, ADJUDICATION_CONTINUITY_VERSION } from '../../../validation/runtime/review-adjudication.mjs';
 import { projectReviewAdjudication } from './service-public.mjs';
-import { WHOLE_MANUSCRIPT_REVISION_MODE } from './workflow-engine.mjs';
+import { WHOLE_MANUSCRIPT_QUALITY_MODE, WHOLE_MANUSCRIPT_REVISION_MODE } from './workflow-engine.mjs';
 
 const supportedPolicies = new Set([ADJUDICATION_VERSION, ADJUDICATION_RELIABILITY_VERSION, ADJUDICATION_CONTINUITY_VERSION]);
 const currentFailureWarning = '事件链检查未完成；已保留原始与唯一纠正响应的绑定失败状态，这不是检查通过，也未授权自动修订。';
@@ -21,8 +21,21 @@ const loadWholeRevisionAssert = async () => {
   if (typeof runtime.assertWholeRevisionResult !== 'function') throw new Error('整稿修订运行时未提供结果门禁。');
   return runtime.assertWholeRevisionResult;
 };
+const loadWholeQualityAssert = async () => {
+  const runtime = await import('../../../creation/runtime/whole-manuscript-quality.mjs');
+  if (typeof runtime.assertWholeQualityResult !== 'function') throw new Error('整稿质量运行时未提供结果门禁。');
+  return runtime.assertWholeQualityResult;
+};
 
-export function assertWorkflowResultReady(result, requestSpec, request, wholeRevisionAssert) {
+export function assertWorkflowResultReady(result, requestSpec, request, wholeRevisionAssert, wholeQualityAssert) {
+  const qualityRequest = request?.revisionMode === WHOLE_MANUSCRIPT_QUALITY_MODE;
+  const qualitySpec = requestSpec?.revisionMode === WHOLE_MANUSCRIPT_QUALITY_MODE;
+  if (qualityRequest || qualitySpec) {
+    if (!qualityRequest || !qualitySpec) throw rejection();
+    return Promise.resolve(wholeQualityAssert ?? loadWholeQualityAssert()).then(assertResult => {
+      assertResult(result, requestSpec);
+    }).catch(() => { throw rejection(); });
+  }
   const wholeRequest = request?.revisionMode === WHOLE_MANUSCRIPT_REVISION_MODE;
   const wholeSpec = requestSpec?.revisionMode === WHOLE_MANUSCRIPT_REVISION_MODE;
   if (wholeRequest || wholeSpec) {

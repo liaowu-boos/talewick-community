@@ -1,0 +1,175 @@
+openapi: 3.1.0
+info:
+  title: Talewick Independent Reviews API
+  version: 1.0.0
+  description: >-
+    Local-only durable tasks for isolated whole-manuscript reading and trusted
+    baseline/candidate comparison. Completion means records were saved; it is
+    not a literary, publication, or automatic adoption decision.
+servers:
+  - url: http://127.0.0.1:4326
+paths:
+  /api/independent-reviews:
+    get:
+      summary: List review attempts for a project
+      parameters:
+        - in: query
+          name: projectId
+          schema: { type: string, pattern: '^[\w-]{1,160}$' }
+      responses:
+        '200':
+          description: Service capability and newest-first task history
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [available, tasks]
+                properties:
+                  available: { type: boolean }
+                  versions: { type: [object, 'null'], additionalProperties: true }
+                  tasks: { type: array, items: { $ref: '#/components/schemas/ReviewTask' } }
+    post:
+      summary: Create or idempotently recover an independent review
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateReview' }
+      responses:
+        '202':
+          description: Accepted or existing identical task
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [task]
+                properties: { task: { $ref: '#/components/schemas/ReviewTask' } }
+        '400': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/independent-reviews/{id}:
+    get:
+      summary: Read one public task snapshot
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      responses:
+        '200':
+          description: Task snapshot without local paths, frozen private bindings, or provider result internals
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [task]
+                properties: { task: { $ref: '#/components/schemas/ReviewTask' } }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/independent-reviews/{id}/cancel:
+    post:
+      summary: Cancel active work while retaining sealed records
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, additionalProperties: false } } }
+      responses:
+        '200':
+          description: Cancelled or already terminal task
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [task]
+                properties: { task: { $ref: '#/components/schemas/ReviewTask' } }
+  /api/independent-reviews/{id}/retry:
+    post:
+      summary: Resume a sealed interrupted run or create a linked attempt
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, additionalProperties: false } } }
+      responses:
+        '202':
+          description: Resumed task or new linked attempt
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [task]
+                properties: { task: { $ref: '#/components/schemas/ReviewTask' } }
+        '409': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+components:
+  parameters:
+    TaskId:
+      in: path
+      name: id
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    Error:
+      description: Request rejected without changing the manuscript
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties: { error: { type: string } }
+  schemas:
+    Chapter:
+      type: object
+      additionalProperties: false
+      required: [id, title, body]
+      properties:
+        id: { type: string, minLength: 1 }
+        title: { type: string }
+        body: { type: string, minLength: 1, maxLength: 100000 }
+    CreateReview:
+      type: object
+      additionalProperties: false
+      required: [projectId, requestId, manuscriptRevision, title, chapters, mode]
+      properties:
+        projectId: { type: string, pattern: '^[\w-]{1,160}$' }
+        requestId: { type: string, pattern: '^[\w-]{1,160}$' }
+        caseId: { type: string, pattern: '^[\w-]{1,160}$' }
+        manuscriptRevision: { type: string, maxLength: 256 }
+        title: { type: string, maxLength: 2000 }
+        chapters: { type: array, minItems: 1, maxItems: 30, items: { $ref: '#/components/schemas/Chapter' } }
+        mode: { type: string, enum: [single, compare] }
+        sourceTaskId:
+          type: string
+          description: Required for compare; identifies a server-saved whole-manuscript-v2 result. Candidate text and goals are never accepted from the browser.
+        selection:
+          type: array
+          maxItems: 100
+          uniqueItems: true
+          items: { type: string, pattern: '^[\w-]{1,160}$' }
+    Progress:
+      type: object
+      required: [phase, completedStages, totalStages]
+      properties:
+        phase: { type: string }
+        completedStages: { type: integer, minimum: 0 }
+        totalStages: { type: integer, minimum: 0 }
+    ReviewTask:
+      type: object
+      required: [id, projectId, requestId, caseId, mode, status, manuscriptRevision, createdAt, updatedAt, progress, report, error]
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string }
+        requestId: { type: string }
+        caseId: { type: string }
+        mode: { type: string, enum: [single, compare] }
+        sourceTaskId: { type: string }
+        linkedAttemptId: { type: string, format: uuid }
+        status: { type: string, enum: [queued, running, complete, interrupted, cancelled, needs_attention, stale] }
+        manuscriptRevision: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        progress: { $ref: '#/components/schemas/Progress' }
+        report:
+          description: Validation adapter's JSON-serializable public report. It never authorizes automatic adoption.
+          type: [object, 'null']
+          additionalProperties: true
+        error:
+          type: [object, 'null']
+          properties:
+            code: { type: string }
+            message: { type: string }
+            recoverable: { type: boolean }

@@ -37,16 +37,25 @@ export async function reviewStates({chapters,requirements,model,signal,transitio
   const retryUser=attempt===2 ? JSON.stringify({inputHash,...modelInput,formatFeedback:feedback,invalidResponse:rejected.rawResponse,fieldError:rejected.error}) : user;
   if(signal?.aborted)throw signal.reason instanceof Error ? signal.reason : new Error('任务已取消。');
   const rawResponse=await model.complete({stage:'continuity-review',system,user:retryUser,maxTokens:6000,signal});
-  if(typeof rawResponse!=='string'||rawResponse.length>60000)fail('状态专审响应超限');
-  let value;try{value=JSON.parse(rawResponse);}catch{fail('状态专审JSON无效');}
+  let failurePhase='response';
   try{
+   if(typeof rawResponse!=='string'||rawResponse.length>60000)fail('状态专审响应超限');
+   failurePhase='json';
+   let value;
+   try{value=JSON.parse(rawResponse);}catch(parseError){const error=Object.assign(new Error('状态专审JSON无效'),{code:'STATE_REVIEW_REJECTED',causeMessage:String(parseError?.message||parseError)});throw error;}
+   failurePhase='validation';
    const parsed=validateStateReview(value,{chapters,inputHash,locations,hints});
    return {schemaVersion,inputHash,...(hints ? {transitionHints:hints} : {}),manuscriptSha256:locations.manuscriptSha256,rawResponse,responseSha256:adjudicationFingerprint(rawResponse),...(rejected ? {rejectedResponses:[rejected]} : {}),...parsed,semanticAcceptance:false};
   }catch(error){
-   // Binding and semantic evidence failures are never corrected by a format retry.
-   if(error.code!=='STATE_REVIEW_REJECTED'||error.message!=='状态专审达到记录上限')throw error;
-   const invalid={attempt,inputHash,manuscriptSha256:locations.manuscriptSha256,rawResponse,responseSha256:adjudicationFingerprint(rawResponse),error:error.message};
+   const coverageRepair=error.code==='STATE_REVIEW_REJECTED'&&error.message==='状态专审达到记录上限';
+   const invalid={schemaVersion:'creation-state-review-rejected-response-1',attempt,inputHash,manuscriptSha256:locations.manuscriptSha256,
+    rawResponse,responseSha256:adjudicationFingerprint(rawResponse),failurePhase,errorCode:String(error?.code||'STATE_REVIEW_ERROR'),
+    errorName:String(error?.name||'Error'),error:String(error?.message||error),...(error?.causeMessage ? {causeMessage:error.causeMessage} : {}),
+    formatRetryClass:coverageRepair?'coverage_limit':'not_format_retryable',formatRetryReserved:coverageRepair&&attempt===1&&formatRetryAllowed,
+    recovery:coverageRepair?'resume_without_another_coverage_format_retry':'resume_unfinished_state_review_with_fresh_response'};
    await onRejectedResponse?.(invalid);
+   // Binding, JSON and semantic evidence failures are archived but never corrected by a format retry.
+   if(!coverageRepair)throw error;
    if(attempt===2||!formatRetryAllowed)throw error;
    rejected=invalid;
   }

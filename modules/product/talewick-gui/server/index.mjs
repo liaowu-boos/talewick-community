@@ -16,6 +16,9 @@ import {createLibraryBatchRouter} from './library-batch-router.mjs';
 import { Full15Service, createFull15Router, productManuscriptRevision } from './full15-service.mjs';
 import { createFull15Analyze } from './full15-analyze.mjs';
 import { defaultFull15Input, full15InputFromRequestSpec } from './full15-input.mjs';
+import { IndependentReviewService, createIndependentReviewRouter } from './independent-review-service.mjs';
+import { createIndependentReviewAnalyze } from './independent-review-analyze.mjs';
+import { full15InputFromWholeQuality } from './whole-quality-data-bridge.mjs';
 
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.woff2': 'font/woff2', '.ico': 'image/x-icon' };
 const json = (res, status, data) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); res.end(JSON.stringify(data)); };
@@ -31,52 +34,82 @@ async function bodyJSON(req) {
 /** Bind only loopback; the browser sees status/results and never receives the model key. */
 export async function createRuntime({ config, model = createModel(config), workflow, agentModel, conversationModel, library: injectedLibrary,
   narrativeObservation: injectedNarrativeObservation, publicationFeedback: injectedFeedback, full15Adapter, full15Analyze,
-  full15InputForManuscript, distDir = path.join(appRoot, 'dist') }) {
+  full15InputForManuscript, independentReviewAdapter, independentReviewAnalyze, independentReviewHandoff,
+  distDir = path.join(appRoot, 'dist') }) {
   const resolvedFull15Adapter = full15Adapter === undefined ? await import('../../../validation/runtime/full15-task.mjs').catch(() => null) : full15Adapter;
+  const resolvedIndependentReviewAdapter = independentReviewAdapter === undefined ? await import('../../../validation/runtime/independent-review-task.mjs').catch(() => null) : independentReviewAdapter;
+  const resolvedIndependentReviewHandoff = independentReviewHandoff === undefined ? await import('../../../creation/runtime/independent-review-handoff.mjs').catch(() => null) : independentReviewHandoff;
   const libraryRoot = config.libraryDir || path.join(config.runsDir, 'library');
   const narrativeObservation = injectedNarrativeObservation ?? (injectedLibrary === undefined
     ? await loadNarrativeObservationProjection({libraryRoot})
     : unavailableNarrativeObservationProjection('library_injected'));
   let library = injectedLibrary ?? null;
   const retrieveKnowledge = (query, options) => createRetrieveKnowledge(library)(query, options);
-  let tasks, full15, releaseFull15;
+  let tasks, full15, independentReviews, releaseFull15;
   const full15Ready = new Promise(resolve => { releaseFull15 = resolve; });
   try {
     tasks = await new TaskService({ runsDir: config.runsDir, model, engine: config.engine || 'fixed',
       newPlanningFollowupDecisionMode: PLANNING_FOLLOWUP_DECISION_MODE,
-      workflow: workflow || createWorkflowRouter({ config, agentModel, retrieveKnowledge }), onCompleted: async (task, _request, artifacts) => {
+      workflow: workflow || createWorkflowRouter({ config, agentModel, retrieveKnowledge, queryNarrativeObservations: narrativeObservation.query }), onCompleted: async (task, _request, artifacts) => {
       const service = await full15Ready;
       if (!service?.available() || task.kind !== 'create' || !task.result) return;
       await service.start({ projectId: task.projectId, requestId: `creation-${task.id}`, title: task.result.title, chapters: task.result.chapters, manuscriptRevision: productManuscriptRevision(task.result.title, task.result.chapters) }, { trigger: 'automatic', sourceTaskId: task.id, configuredInput: full15InputFromRequestSpec(artifacts?.requestSpec) });
     } }).init();
     // Full15 initialization may rewrite interrupted queue records, so it starts
     // only after TaskService has acquired the shared runsDir ownership marker.
-    full15 = await new Full15Service({ rootDir: path.join(config.runsDir, 'full15-product'), adapter: resolvedFull15Adapter, analyze: full15Analyze ?? createFull15Analyze({ model }), inputForManuscript: full15InputForManuscript ?? (async () => defaultFull15Input()) }).init();
+    const resolveFull15Input = full15InputForManuscript ?? (async input => {
+      if (!input.sourceTaskId) return defaultFull15Input();
+      const source = tasks.get(input.sourceTaskId), artifacts = tasks.artifacts.get(input.sourceTaskId), sourceRequest = tasks.requests.get(input.sourceTaskId);
+      if (source.projectId !== input.projectId || !artifacts || !sourceRequest) throw fail('关联创作任务与当前项目不一致，未沿用检查要求。', 409);
+      const baseInput = full15InputFromRequestSpec(artifacts.requestSpec);
+      if (source.revisionMode !== 'whole-manuscript-v2') return baseInput;
+      if (source.status !== 'completed' || !source.result?.wholeRevision || !resolvedIndependentReviewHandoff?.buildIndependentReviewRequest) throw fail('关联整稿修订没有可核对的实际版本。', 409);
+      const handoff = resolvedIndependentReviewHandoff.buildIndependentReviewRequest({ caseId: `full15-${input.sourceTaskId}`,
+        request: structuredClone(sourceRequest), result: structuredClone(source.result), selection: input.selection });
+      const candidate = handoff.request.candidate?.mode === 'no_change' ? handoff.request.baselineChapters : handoff.request.candidate?.chapters;
+      if (!Array.isArray(candidate) || JSON.stringify(candidate) !== JSON.stringify(input.chapters)) throw fail('当前正文不是关联整稿修订实际采纳的版本，未沿用其参考清单。', 409);
+      return full15InputFromWholeQuality({ baseInput, quality: source.result.wholeRevision.quality, selection: input.selection });
+    });
+    full15 = await new Full15Service({ rootDir: path.join(config.runsDir, 'full15-product'), adapter: resolvedFull15Adapter, analyze: full15Analyze ?? createFull15Analyze({ model }), inputForManuscript: resolveFull15Input }).init();
+    independentReviews = await new IndependentReviewService({ rootDir: path.join(config.runsDir, 'independent-reviews'),
+      adapter: resolvedIndependentReviewAdapter, analyze: independentReviewAnalyze ?? createIndependentReviewAnalyze({ model }),
+      prepareRequest: async input => {
+        if (input.mode === 'single') return { request: { caseId: input.caseId, mode: 'single', baselineChapters: structuredClone(input.chapters) },
+          provenance: { role: 'source', manuscriptRevision: input.manuscriptRevision } };
+        if (!resolvedIndependentReviewHandoff || typeof resolvedIndependentReviewHandoff.buildIndependentReviewRequest !== 'function') throw fail('候选比较交接尚未接通。单稿独立评阅仍可使用。', 503);
+        const source = tasks.get(input.sourceTaskId);
+        const sourceRequest = tasks.requests.get(input.sourceTaskId);
+        if (source.projectId !== input.projectId || source.status !== 'completed' || source.revisionMode !== 'whole-manuscript-v2' || !sourceRequest || !source.result) throw fail('关联整稿修订任务不可用于独立比较。', 409);
+        if (productManuscriptRevision(sourceRequest.projectTitle ?? input.title, sourceRequest.chapters) !== input.manuscriptRevision
+          || JSON.stringify(sourceRequest.chapters) !== JSON.stringify(input.chapters)) throw fail('当前稿件不是关联修订任务冻结的原稿。请对当前版本发起单稿评阅。', 409);
+        return resolvedIndependentReviewHandoff.buildIndependentReviewRequest({ caseId: input.caseId, request: structuredClone(sourceRequest), result: structuredClone(source.result), selection: input.selection });
+      } }).init();
     releaseFull15(full15);
   } catch (error) {
     releaseFull15(null);
-    await Promise.allSettled([tasks?.close(), full15?.close(), library?.close()]);
+    await Promise.allSettled([tasks?.close(), full15?.close(), independentReviews?.close(), library?.close()]);
     throw error;
   }
   try { if (injectedLibrary === undefined) library = (await loadLibraryService({ rootDir: libraryRoot, model,
     narrativeObservationProjector: narrativeObservation.projector })).library; }
-  catch (error) { await tasks.close(); await full15.close(); throw error; }
+  catch (error) { await tasks.close(); await full15.close(); await independentReviews.close(); throw error; }
   const libraryRouter = createLibraryRouter({ library, json, bodyJSON });
   let libraryBatches=null;
   try {
     if(library&&['registerSource','startSource','waitSource','verifyIndexBinding'].every(key=>typeof library[key]==='function'))libraryBatches=await createLibraryBatchService({library,rootDir:path.join(await realpath(config.runsDir),'library-batches'),concurrency:2,ownsLibrary:false});
-  }catch(error){await tasks.close();await full15.close();await library?.close();throw error;}
+  }catch(error){await tasks.close();await full15.close();await independentReviews.close();await library?.close();throw error;}
   const batchRouter=createLibraryBatchRouter({service:libraryBatches,json,bodyJSON,canRun:()=>publicConfig(config).configured});
   let conversations;
   try { conversations = await new ConversationService({ runsDir: config.runsDir, tasks, config, conversationModel }).init(); }
-  catch (error) { await libraryBatches?.close(); await tasks.close(); await full15.close(); await library?.close(); throw error; }
+  catch (error) { await libraryBatches?.close(); await tasks.close(); await full15.close(); await independentReviews.close(); await library?.close(); throw error; }
   let publicationFeedback;
   try { publicationFeedback=injectedFeedback??await createPublicationFeedbackService({rootDir:path.join(config.runsDir,'publication-feedback'),model,configured:()=>publicConfig(config).configured}); }
-  catch(error){await Promise.allSettled([conversations.close(),libraryBatches?.close(),tasks.close(),full15.close(),library?.close()]);throw error;}
+  catch(error){await Promise.allSettled([conversations.close(),libraryBatches?.close(),tasks.close(),full15.close(),independentReviews.close(),library?.close()]);throw error;}
   const feedbackRouter=createPublicationFeedbackRouter({service:publicationFeedback,json,bodyJSON});
   const full15Router=createFull15Router({service:full15,json,bodyJSON});
+  const independentReviewRouter=createIndependentReviewRouter({service:independentReviews,json,bodyJSON});
   const sockets = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, perMessageDeflate: false });
-  const close = async () => { for (const socket of sockets.clients) socket.terminate(); sockets.close(); const results=await Promise.allSettled([full15.close(),publicationFeedback.close(),conversations.close(),libraryBatches?.close(),tasks.close(),library?.close()]); const failed=results.find(r=>r.status==='rejected');if(failed)throw failed.reason; };
+  const close = async () => { for (const socket of sockets.clients) socket.terminate(); sockets.close(); const results=await Promise.allSettled([independentReviews.close(),full15.close(),publicationFeedback.close(),conversations.close(),libraryBatches?.close(),tasks.close(),library?.close()]); const failed=results.find(r=>r.status==='rejected');if(failed)throw failed.reason; };
   const allowedOrigins = new Set([`http://127.0.0.1:${config.port}`, `http://localhost:${config.port}`, 'http://127.0.0.1:4323', 'http://localhost:4323']);
   const server = http.createServer(async (req, res) => {
     try {
@@ -84,21 +117,22 @@ export async function createRuntime({ config, model = createModel(config), workf
       if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host)) throw fail('请通过本机地址访问创作服务。', 403);
       if (req.headers.origin && !allowedOrigins.has(req.headers.origin)) throw fail('当前页面不能访问这台电脑的创作服务。', 403);
       const url = new URL(req.url, `http://${host}`);
+      if (await independentReviewRouter(req,res,url)) return;
       if (await full15Router(req,res,url)) return;
       if (await feedbackRouter(req,res,url)) return;
       if (await batchRouter(req, res, url)) return;
       if (await libraryRouter(req, res, url)) return;
-      if (url.pathname === '/api/runtime' && req.method === 'GET') return json(res, 200, { ...publicConfig(config), library: { available: Boolean(library), batchesAvailable:Boolean(libraryBatches), contractVersion: 'v04-contract-1', narrativeObservations: narrativeObservation.status }, full15: { available: full15.available(), contractVersion: 'full15-product-task-1' } });
+      if (url.pathname === '/api/runtime' && req.method === 'GET') return json(res, 200, { ...publicConfig(config), library: { available: Boolean(library), batchesAvailable:Boolean(libraryBatches), contractVersion: 'v04-contract-1', narrativeObservations: narrativeObservation.status }, full15: { available: full15.available(), contractVersion: 'full15-product-task-1' }, independentReviews: { available: independentReviews.available(), contractVersion: 'independent-review-product-task-1' } });
       const chat = url.pathname.match(/^\/api\/conversations\/([\w-]{1,160})(?:\/turns(?:\/([\w-]{1,160})\/(stream|cancel))?)?$/);
       if (chat) {
         const [, projectId, turnId, action] = chat;
-        if (req.method === 'GET' && !url.pathname.endsWith('/turns') && !turnId) return json(res, 200, { turns: conversations.list(projectId) });
+        if (req.method === 'GET' && !url.pathname.endsWith('/turns') && !turnId) { await conversations.refresh(projectId); return json(res, 200, { turns: conversations.list(projectId) }); }
         if (req.method === 'POST' && url.pathname.endsWith('/turns')) {
           if (!publicConfig(config).configured) throw fail(publicConfig(config).message, 503);
           return json(res, 202, { turn: await conversations.start(projectId, await bodyJSON(req)) });
         }
-        if (req.method === 'GET' && action === 'stream') return conversations.stream(projectId, turnId, req, res);
-        if (req.method === 'POST' && action === 'cancel') { await bodyJSON(req); return json(res, 200, { turn: await conversations.cancel(projectId, turnId) }); }
+        if (req.method === 'GET' && action === 'stream') { await conversations.refresh(projectId); return conversations.stream(projectId, turnId, req, res); }
+        if (req.method === 'POST' && action === 'cancel') { await bodyJSON(req); await conversations.refresh(projectId); return json(res, 200, { turn: await conversations.cancel(projectId, turnId) }); }
         throw fail('这个对话入口不支持当前操作。', 405);
       }
       if (url.pathname === '/api/tasks' && req.method === 'GET') return json(res, 200, { tasks: tasks.list(url.searchParams.get('projectId')) });
@@ -129,7 +163,7 @@ export async function createRuntime({ config, model = createModel(config), workf
       res.end(req.method === 'HEAD' ? undefined : bytes);
     } catch (error) { if (!res.headersSent) json(res, error.status || 500, { error: error.status ? error.message : '本地服务未能完成操作，请检查运行终端后重试。' }); else res.end(); }
   });
-  server.on('upgrade', (req, socket, head) => {
+  server.on('upgrade', async (req, socket, head) => {
     socket.on('error', () => {});
     const reject = status => socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     try {
@@ -138,11 +172,12 @@ export async function createRuntime({ config, model = createModel(config), workf
       const url = new URL(req.url, `http://${host}`);
       const route = url.pathname.match(/^\/api\/conversations\/([\w-]{1,160})\/turns\/([\w-]{1,160})\/socket$/);
       if (!route || url.search) return reject(404);
+      await conversations.refresh(route[1]);
       conversations.find(route[1], route[2]);
       sockets.handleUpgrade(req, socket, head, client => conversations.socket(route[1], route[2], client));
     } catch (error) { reject(error.status || 400); }
   });
-  return { server, tasks, conversations, library, libraryBatches, publicationFeedback, full15, close };
+  return { server, tasks, conversations, library, libraryBatches, publicationFeedback, full15, independentReviews, close };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

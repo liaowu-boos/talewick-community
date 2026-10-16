@@ -12,6 +12,7 @@ const plan = { title: '旧钟', premise: '钟停了', ending: '她修好了钟',
   { title: '钟声', goal: '修好钟', scenes: ['装上齿轮'], continuity: '钟响收束', targetHanMin: 50, targetHan: 100, targetHanMax: 150 } ],
   characterArcs: [{ character: '小禾', experience: '钟停摆', belief: '修钟是自己的责任', desire: '钟再次响起', fear: '失败', change: '担忧后采取行动', expression: '检查与装齿轮' }],
   emotionalScenes: Array.from({ length: 2 }, () => ({ experience: '钟楼里的经历', cognition: '理解故障', action: '修理', expression: '动作', development: '展开修理现场', echo: '钟声回应寂静' })),
+  choiceCausality: [{ id: 'choice-1', chapterNumber: 1, character: '小禾', pressure: '想让钟响又怕修坏旧件', choice: '拆开钟壳检查齿轮', immediateConsequence: '旧钟暂时无法报时且她承担修坏风险', carryForward: '第二章必须根据检查结果决定是否更换齿轮', unresolvedBoundary: '能否修好尚未知' }],
   materialDecisions: [], psychologyLimitations: ['正文落实未验证'] };
 const bodies = { 'draft:ch-1': '小禾推开门，钟楼静悄悄的。她检查了齿轮。', 'draft:ch-2': '小禾装好齿轮，钟声传出窗外。' };
 const review = { summary: '她修好了钟', issues: [], strengths: ['具体动作'], limitations: [], readingObservations: [{
@@ -44,7 +45,7 @@ test('one query, frozen versioned material, actual previous text, neutral review
   const result = await runWorkflow({ request, model, retrieveKnowledge: async query => { queries++; return retrieved(query); }, checkpoint: async (key, value) => { artifacts[key] = value; } });
   assert.equal(queries, 1);
   assert.equal(artifacts.knowledge.retrieval.packetId, 'test-retrieval-v1');
-  assert.equal(artifacts.plan.creationPolicyVersion, 'v04-creation-1');
+  assert.equal(artifacts.plan.creationPolicyVersion, 'v04-creation-2');
   assert.ok(artifacts.requestSpec.rules.v04_planning.sha256);
   assert.equal(result.review.readingObservations[0].crossScene, true);
   assert.equal(result.revisionApplied, false);

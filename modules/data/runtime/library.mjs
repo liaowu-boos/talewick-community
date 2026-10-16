@@ -716,7 +716,7 @@ async function createLibraryServiceImpl({ rootDir, model, reviewCandidates, revi
       if (query?.contractVersion !== CONTRACT_VERSION || typeof query.query !== 'string' || query.query.length > 4000 || typeof query.context !== 'string' || query.context.length > 8000 || !['planning', 'writing', 'review', 'revision'].includes(query.stage) || (query.sourceIds !== undefined && (!Array.isArray(query.sourceIds) || query.sourceIds.length > 1000 || query.sourceIds.some(id => typeof id !== 'string')))) throw fail('INVALID_QUERY', '检索参数无效。');
       if (query.evidenceType !== undefined && !['narrative', 'performance'].includes(query.evidenceType)) throw fail('INVALID_QUERY', '证据类型无效。');
       if (query.recall !== undefined) {
-        try { query = { ...query, recall: normalizeRecall(query.recall) }; } catch { throw fail('INVALID_QUERY', 'recall须包含有效focus和至多3项非空、每项至多120字符的补充查询。'); }
+        try { query = { ...query, recall: normalizeRecall(query.recall) }; } catch { throw fail('INVALID_QUERY', 'recall须包含有效focus、旧版短查询、完整查询或严格来源绑定的叙事观察种子。'); }
       }
       const budget = {};
       for (const key of ['maxCandidates', 'maxUnits', 'maxChars']) { const n = query.budget?.[key] ?? LIBRARY_LIMITS[key]; if (!Number.isInteger(n) || n < 0) throw fail('INVALID_QUERY', '预算须为非负整数。'); budget[key] = Math.min(n, LIBRARY_LIMITS[key]); }
@@ -743,6 +743,7 @@ async function createLibraryServiceImpl({ rootDir, model, reviewCandidates, revi
         entries.push(...snapshot.index.entries.map(entry => ({ ...entry, row: snapshot.row })));
       }
       const bounded = rankWithRecall(entries, query, budget.maxCandidates, { explicitSourceIds: ids ? [...ids] : undefined });
+      if (query.recall?.observationSeeds?.length) result.limits.push('叙事观察只把当前版本逐字证据窗口带入候选；版本或原文绑定不一致的种子不会进入候选，所有候选仍须经过同一语义适用性筛选。');
       if (query.recall && query.recall.focus !== 'scene' && bounded.some(c => c.recallOrigins?.some(o => o.kind === 'physical'))) result.limits.push('物理位置补充占用同一候选与材料预算，可能挤占词法材料；不证明提供文本完整或片段存在剧情联系。');
       if (query.recall && query.recall.focus !== 'scene' && !bounded.length) result.limits.push('未找到可补充物理位置的有界来源；零词法命中时须显式限定恰好一个可用来源。');
       result.candidates = bounded.map(c => ({ id: c.id, sourceId: c.row.sourceId, ...(c.recallOrigins ? { recallOrigins: structuredClone(c.recallOrigins) } : {}), reason: c.recallOrigins ? recallReason(c.recallOrigins) : `自身${c.use === 'raw_reference' ? '原文' : '已复核分析'}词项匹配 ${c.hits.length} 项；未证明语义适用` }));

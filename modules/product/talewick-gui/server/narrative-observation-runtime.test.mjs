@@ -15,6 +15,7 @@ test('missing observation runtime is explicit and keeps the projector disabled',
       serviceModuleURL: pathToFileURL(join(root, 'missing-service.mjs')),
     });
     assert.equal(result.projector, undefined);
+    assert.equal(result.query, undefined);
     assert.deepEqual(result.status, {available: false, reason: 'not_installed', contractVersion: NARRATIVE_OBSERVATION_RUNTIME_VERSION});
   } finally { await rm(root, {recursive: true, force: true}); }
 });
@@ -30,7 +31,7 @@ test('active package resolution produces a bound read-only projector and public 
     },
     createService: async input => {
       calls.push(['service', input]);
-      return {projectMaterials: async value => ({...value, projected: true})};
+      return {projectMaterials: async value => ({...value, projected: true}), query: async value => ({...value, queried: true})};
     },
   });
   assert.deepEqual(calls, [
@@ -39,6 +40,7 @@ test('active package resolution produces a bound read-only projector and public 
   ]);
   assert.deepEqual(result.status, {available: true, reason: null, contractVersion: NARRATIVE_OBSERVATION_RUNTIME_VERSION, packageId: 'package-37', sourceCount: 37});
   assert.deepEqual(await result.projector({query: '门', materials: []}), {query: '门', materials: [], projected: true});
+  assert.deepEqual(await result.query({query: '门'}), {query: '门', queried: true});
 });
 
 test('invalid active package is withheld without exposing its internal error', async () => {
@@ -60,7 +62,7 @@ test('service interface errors fail startup instead of silently disabling a vali
     readActivePointer: async () => ({schemaVersion: 'narrative-observation-active-v1', sourceCount: 37}),
     resolveActivePackage: async () => ({packageRoot: '/fixture/package', pointer: {packageId: 'x', sourceCount: 37}}),
     createService: async () => ({}),
-  }), /missing projectMaterials/);
+  }), /missing projectMaterials or query/);
 });
 
 test('pointer count is validated before resolver import and is not a permanent 37-source limit', async () => {
@@ -72,7 +74,7 @@ test('pointer count is validated before resolver import and is not a permanent 3
       seen.push(input.expectedSourceCount);
       return {packageRoot: '/fixture/package', pointer: {packageId: 'package-52', sourceCount: 52}};
     },
-    createService: async () => ({projectMaterials: async value => value}),
+    createService: async () => ({projectMaterials: async value => value, query: async value => value}),
   });
   assert.deepEqual(seen, [52]);
   assert.equal(result.status.sourceCount, 52);

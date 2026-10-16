@@ -325,6 +325,23 @@ export function applyRuntimeTask(project: Project, task: RuntimeTask): boolean {
     project.docMode = 'read';
     binding.resultDisposition = 'applied';
     binding.message = '初稿已保存，可以阅读、编辑和导出。检查范围及未覆盖项见本次结果。';
+  } else if (binding.request.revisionMode === 'whole-manuscript-v2') {
+    const groups = wholeQualityAdoptionGroups(result);
+    const structurallyBound = task.revisionMode === 'whole-manuscript-v2' && result.wholeRevision?.schemaVersion === 'whole-manuscript-quality-1'
+      && result.chapters.length === project.chapters.length && result.chapters.every((chapter, index) => chapter.id === project.chapters[index]?.id);
+    if (!structurallyBound || pendingEdits(project).length) {
+      binding.message = '整稿质量候选与任务起点的章节结构不一致，或当前仍有待处理建议。结果已保留，当前正文未被覆盖。';
+      return true;
+    }
+    if (result.wholeRevision?.status === 'no_change') {
+      binding.resultDisposition = 'declined';
+      binding.message = '独立阅读与问题核对后决定保留原稿；不用理由和未解决项仍可查看。';
+    } else if (!groups.length) {
+      binding.message = '整稿质量候选没有可验证的修订组绑定，结果仅供查看，当前正文未被覆盖。';
+    } else {
+      binding.resultDisposition = 'whole-quality-groups';
+      binding.message = `整稿质量候选包含 ${groups.length} 个独立修订组。关联组须一起选择；明确采纳前，当前正文保持原样。`;
+    }
   } else if (binding.request.revisionMode === 'whole-manuscript-v1') {
     const structurallyBound = task.revisionMode === 'whole-manuscript-v1' && Boolean(result.wholeRevision) && result.chapters.length === project.chapters.length && result.chapters.every((chapter, index) => chapter.id === project.chapters[index]?.id);
     if (!structurallyBound || pendingEdits(project).length) {
@@ -388,6 +405,169 @@ export function declineWholeRevisionCandidate(project: Project): boolean {
   if (!binding || binding.request.revisionMode !== 'whole-manuscript-v1' || binding.resultDisposition !== 'whole-revision-candidate') return false;
   binding.resultDisposition = 'declined';
   binding.message = '已保留原稿。整稿修订候选仍留在任务结果中，可继续查看。';
+  project.updatedAt = now();
+  return true;
+}
+
+export interface WholeQualityAdoptionGroup {
+  id: string;
+  label: string;
+  planItemIds: string[];
+  chapterIds: string[];
+  targetIds: string[];
+  linkedGroupIds: string[];
+  recommended: boolean;
+  eligible: boolean;
+  reasons: string[];
+  unusedReasons: string[];
+}
+
+export function wholeQualityAdoptionGroups(result?: RuntimeTask['result']): WholeQualityAdoptionGroup[] {
+  const whole = record(result?.wholeRevision) ? result.wholeRevision : undefined;
+  if (whole?.schemaVersion !== 'whole-manuscript-quality-1') return [];
+  const adoption = record(whole.adoption) ? whole.adoption : {};
+  const rows = list(adoption.groups).length ? list(adoption.groups) : list(adoption.atomicGroups);
+  const seen = new Set<string>();
+  const groups: WholeQualityAdoptionGroup[] = [];
+  for (const value of rows) {
+    if (!record(value)) return [];
+    for (const key of ['planItemIds', 'chapterIds', 'targetIds', 'linkedGroupIds', 'dependsOnGroupIds', 'requiresGroupIds']) {
+      if (value[key] !== undefined && (!Array.isArray(value[key]) || list(value[key]).some(item => typeof item !== 'string' || !item))) return [];
+    }
+    const id = text(value.id) || text(value.groupId) || text(value.planItemId);
+    if (!id || seen.has(id)) return [];
+    const suppliedPlanItemIds = list(value.planItemIds);
+    if (suppliedPlanItemIds.some(item => typeof item !== 'string' || !item)) return [];
+    const planItemIds = strings(suppliedPlanItemIds);
+    if (!planItemIds.length && text(value.planItemId)) planItemIds.push(text(value.planItemId));
+    const chapterIds = strings(value.chapterIds), targetIds = strings(value.targetIds);
+    const linkedGroupIds = [...strings(value.linkedGroupIds), ...strings(value.dependsOnGroupIds), ...strings(value.requiresGroupIds)];
+    if (!planItemIds.length || !chapterIds.length || !targetIds.length
+      || new Set(planItemIds).size !== planItemIds.length || new Set(chapterIds).size !== chapterIds.length
+      || new Set(targetIds).size !== targetIds.length || new Set(linkedGroupIds).size !== linkedGroupIds.length
+      || [...chapterIds, ...targetIds, ...linkedGroupIds].some(item => !item)) return [];
+    seen.add(id);
+    const recommendation = text(value.recommendation);
+    groups.push({ id, label: text(value.label) || text(value.summary) || `修订组 ${seen.size}`, planItemIds,
+      chapterIds, targetIds, linkedGroupIds,
+      recommended: value.recommended === true || recommendation === 'recommended' || recommendation === 'eligible_for_user_choice',
+      eligible: recommendation ? recommendation === 'eligible_for_user_choice' : value.eligible === true && value.status !== 'blocked',
+      reasons: [...new Set([...strings(value.reasons), ...(text(value.reason) ? [text(value.reason)] : []), ...(text(value.rationale) ? [text(value.rationale)] : [])])],
+      unusedReasons: [...new Set([...strings(value.notRecommendedReasons), ...strings(value.doNotAdoptReasons), ...strings(value.unusedReasons), ...(text(value.skipReason) ? [text(value.skipReason)] : [])])], });
+  }
+  if (groups.some(group => group.linkedGroupIds.some(id => !seen.has(id)))) return [];
+  return groups;
+}
+
+/** Related groups are one user decision even when the runtime represents their dependency edges separately. */
+export function linkedWholeQualityGroupIds(result: RuntimeTask['result'] | undefined, groupId: string): string[] {
+  const groups = wholeQualityAdoptionGroups(result), byId = new Map(groups.map(group => [group.id, group]));
+  if (!byId.has(groupId)) return [];
+  const linked = new Set([groupId]), queue = [groupId];
+  while (queue.length) {
+    const current = queue.shift()!;
+    const neighbours = [...(byId.get(current)?.linkedGroupIds ?? []), ...groups.filter(group => group.linkedGroupIds.includes(current)).map(group => group.id)];
+    for (const id of neighbours) if (byId.has(id) && !linked.has(id)) { linked.add(id); queue.push(id); }
+  }
+  return groups.map(group => group.id).filter(id => linked.has(id));
+}
+
+function selectedQualityCandidate(project: Project, selectedGroupIds: string[]): Chapter[] | undefined {
+  const result = project.runtime?.task?.result, whole = record(result?.wholeRevision) ? result.wholeRevision : undefined;
+  const candidateRevision = record(whole?.candidateRevision) ? whole.candidateRevision : undefined;
+  if (!result || !candidateRevision || !Array.isArray(candidateRevision.replacements)) return undefined;
+  const groups = wholeQualityAdoptionGroups(result), selected = new Set(selectedGroupIds);
+  if (!selected.size || selected.size !== selectedGroupIds.length || [...selected].some(id => !groups.some(group => group.id === id))) return undefined;
+  if ([...selected].some(id => groups.find(group => group.id === id)?.eligible === false)) return undefined;
+  for (const id of selected) if (linkedWholeQualityGroupIds(result, id).some(linked => !selected.has(linked))) return undefined;
+  const planToGroup = new Map<string, string>();
+  for (const group of groups) for (const planItemId of group.planItemIds) {
+    if (planToGroup.has(planItemId)) return undefined;
+    planToGroup.set(planItemId, group.id);
+  }
+  const targetToGroup = new Map<string, string>();
+  for (const group of groups) for (const targetId of group.targetIds) {
+    if (targetToGroup.has(targetId)) return undefined;
+    targetToGroup.set(targetId, group.id);
+  }
+  const source = project.runtime!.baseManuscript.chapters, sourceIds = new Set(source.map(chapter => chapter.id));
+  const replacementsByChapter = new Map<string, Array<{ start: number; quote: string; replacement: string }>>();
+  const replacementTargetsByGroup = new Map<string, Set<string>>(), seenTargets = new Set<string>();
+  for (const value of candidateRevision.replacements) {
+    if (!record(value) || !Number.isSafeInteger(value.sourceStart) || (value.sourceStart as number) < 0 || typeof value.chapterId !== 'string' || !value.chapterId
+      || !sourceIds.has(value.chapterId) || typeof value.targetId !== 'string' || !value.targetId || seenTargets.has(value.targetId)
+      || typeof value.sourceQuote !== 'string' || !value.sourceQuote.length || typeof value.replacement !== 'string'
+      || !Array.isArray(value.appliedPlanItemIds) || value.appliedPlanItemIds.length !== 1
+      || value.appliedPlanItemIds.some(id => typeof id !== 'string' || !id || !planToGroup.has(id))) return undefined;
+    const groupId = planToGroup.get(value.appliedPlanItemIds[0] as string), targetGroupId = targetToGroup.get(value.targetId);
+    if (!groupId || targetGroupId !== groupId || !groups.find(group => group.id === groupId)?.chapterIds.includes(value.chapterId)) return undefined;
+    seenTargets.add(value.targetId);
+    const replacementTargets = replacementTargetsByGroup.get(groupId) ?? new Set<string>();
+    replacementTargets.add(value.targetId); replacementTargetsByGroup.set(groupId, replacementTargets);
+    if (!selected.has(groupId)) continue;
+    const rows = replacementsByChapter.get(value.chapterId) ?? [];
+    rows.push({ start: value.sourceStart as number, quote: value.sourceQuote, replacement: value.replacement });
+    replacementsByChapter.set(value.chapterId, rows);
+  }
+  for (const id of selected) {
+    const expected = groups.find(group => group.id === id)!.targetIds;
+    const actual = replacementTargetsByGroup.get(id);
+    if (!actual || actual.size !== expected.length || expected.some(targetId => !actual.has(targetId))) return undefined;
+  }
+  const assembled = source.map(chapter => {
+    let body = chapter.body;
+    const rows = (replacementsByChapter.get(chapter.id) ?? []).sort((a, b) => b.start - a.start);
+    for (let index = 1; index < rows.length; index += 1) {
+      const later = rows[index - 1], earlier = rows[index];
+      if (earlier.start + earlier.quote.length > later.start) return undefined;
+    }
+    for (const row of rows) {
+      if (body.slice(row.start, row.start + row.quote.length) !== row.quote) return undefined;
+      body = body.slice(0, row.start) + row.replacement + body.slice(row.start + row.quote.length);
+    }
+    return { ...chapter, body };
+  });
+  if (assembled.some(chapter => !chapter)) return undefined;
+  if (selected.size === groups.length && JSON.stringify(assembled) !== JSON.stringify(result.chapters)) return undefined;
+  return assembled as Chapter[];
+}
+
+export function canAdoptWholeQualityGroups(project: Project, selectedGroupIds: string[]): boolean {
+  const binding = project.runtime, task = binding?.task;
+  const adoption = record(task?.result?.wholeRevision?.adoption) ? task.result.wholeRevision.adoption : undefined;
+  if (!binding || binding.request.revisionMode !== 'whole-manuscript-v2' || task?.status !== 'completed' || task.revisionMode !== 'whole-manuscript-v2'
+    || task.result?.wholeRevision?.schemaVersion !== 'whole-manuscript-quality-1' || binding.resultDisposition !== 'whole-quality-groups'
+    || text(adoption?.requiredBaseRevision) !== binding.request.baseRevision) return false;
+  return manuscriptRevision(project) === binding.request.baseRevision && JSON.stringify({ title: project.title, chapters: project.chapters }) === JSON.stringify(binding.baseManuscript)
+    && Boolean(selectedQualityCandidate(project, selectedGroupIds));
+}
+
+export function acceptWholeQualityGroups(project: Project, selectedGroupIds: string[]): boolean {
+  if (!canAdoptWholeQualityGroups(project, selectedGroupIds)) return false;
+  const binding = project.runtime!, result = binding.task!.result!, groups = wholeQualityAdoptionGroups(result);
+  const candidate = selectedQualityCandidate(project, selectedGroupIds)!;
+  snapshotProject(project, '采纳整稿质量修订组前');
+  project.chapters = clone(candidate);
+  const allSelected = selectedGroupIds.length === groups.length;
+  if (allSelected) project.title = result.title || project.title;
+  snapshotProject(project, allSelected ? '整稿质量完整候选' : '整稿质量选定修订组');
+  const declinedGroupIds = groups.map(group => group.id).filter(id => !selectedGroupIds.includes(id));
+  binding.qualityAdoption = { selectedGroupIds: [...selectedGroupIds], declinedGroupIds, fullCandidateRereadInherited: allSelected,
+    rereadScope: allSelected ? 'full-candidate' : 'selected-groups-unchecked' };
+  binding.resultDisposition = allSelected ? 'applied' : 'partially-applied';
+  binding.message = allSelected ? '已采纳全部整稿质量修订组；采纳前原稿已保存在版本记录。'
+    : `已采纳 ${selectedGroupIds.length} 个修订组并保留其余原文。完整候选复读结论不适用于混合稿；选定组合仍需复核。`;
+  project.docMode = 'read'; project.compare = 'after'; project.updatedAt = now();
+  return true;
+}
+
+export function declineWholeQualityCandidate(project: Project): boolean {
+  const binding = project.runtime;
+  if (!binding || binding.request.revisionMode !== 'whole-manuscript-v2' || binding.resultDisposition !== 'whole-quality-groups') return false;
+  binding.resultDisposition = 'declined';
+  const groups = wholeQualityAdoptionGroups(binding.task?.result);
+  binding.qualityAdoption = { selectedGroupIds: [], declinedGroupIds: groups.map(group => group.id), fullCandidateRereadInherited: false, rereadScope: 'selected-groups-unchecked' };
+  binding.message = '已保留原稿。主要问题、未解决项、不采用理由和整稿质量候选仍留在任务结果中。';
   project.updatedAt = now();
   return true;
 }

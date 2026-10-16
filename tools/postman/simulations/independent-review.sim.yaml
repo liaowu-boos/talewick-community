@@ -1,0 +1,5 @@
+simulation: independent-review-local
+routing: path
+mocks:
+  - routeKey: deepseek
+    path: ../mocks/deepseek-review-fixture/config.yaml

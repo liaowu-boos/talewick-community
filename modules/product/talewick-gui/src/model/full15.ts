@@ -9,6 +9,7 @@ export interface Full15Task {
   report: { checks: unknown; issues?: unknown; priorityIssueIds?: unknown; limitations?: unknown; coverageComplete: boolean } | null;
   error: { code: string; message: string; recoverable: boolean } | null;
   linkedAttemptId?: string;
+  linkedSourceTaskId?: string;
 }
 
 async function call(path: string, body?: unknown) {
@@ -22,6 +23,11 @@ export async function listFull15(projectId: string): Promise<{ available: boolea
   return call(`/api/full15?projectId=${encodeURIComponent(projectId)}`);
 }
 export async function startFull15(project: Project): Promise<Full15Task> {
-  const value = await call('/api/full15', { projectId: project.id, requestId: `manual-${crypto.randomUUID()}`, title: project.title, chapters: project.chapters, manuscriptRevision: manuscriptRevision(project) }); return value.task;
+  const task = project.runtime?.task, qualityAdoption = project.runtime?.qualityAdoption;
+  const linked = task?.revisionMode === 'whole-manuscript-v2'
+    ? Boolean(['applied', 'partially-applied'].includes(project.runtime?.resultDisposition ?? '') && qualityAdoption)
+    : Boolean(task?.id);
+  const value = await call('/api/full15', { projectId: project.id, requestId: `manual-${crypto.randomUUID()}`, title: project.title, chapters: project.chapters, manuscriptRevision: manuscriptRevision(project),
+    ...(linked && task?.id ? { sourceTaskId: task.id } : {}), ...(linked && task?.revisionMode === 'whole-manuscript-v2' && qualityAdoption ? { selection: qualityAdoption.selectedGroupIds } : {}) }); return value.task;
 }
 export async function full15Action(id: string, action: 'cancel' | 'retry'): Promise<Full15Task> { return (await call(`/api/full15/${id}/${action}`, {})).task; }

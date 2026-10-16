@@ -1,5 +1,5 @@
 import { MATERIAL_USE_EVIDENCE_POLICY, normalizeMaterialUseEvidence } from './material-use-evidence.mjs';
-export const CREATION_POLICY_VERSION = 'v04-creation-1';
+export const CREATION_POLICY_VERSION = 'v04-creation-2';
 const text = value => typeof value === 'string' ? value.trim() : '';
 const list = value => Array.isArray(value) ? value.map(text).filter(Boolean) : [];
 const required = (value, keys, path, fieldErrors) => {
@@ -29,6 +29,21 @@ export function normalizePsychology(value, chapters, { materialEvidencePolicyVer
   }
   const emotionalScenes = value.emotionalScenes.map((item, index) => ({ chapterId: chapters[index].id,
     ...required(item, ['experience', 'cognition', 'action', 'expression', 'development', 'echo'], `emotionalScenes[${index}]`, fieldErrors) }));
+  if (!Array.isArray(value.choiceCausality) || value.choiceCausality.length < 1 || value.choiceCausality.length > 24) {
+    assertRequiredFields(fieldErrors);
+    throw new Error('心理规划需要1–24条人物欲望或顾虑如何改变具体选择、后果与后续影响的choiceCausality；不要求逐章升级。');
+  }
+  const characterNames = new Set(characterArcs.map(item => item.character)), choiceIds = new Set();
+  const choiceCausality = value.choiceCausality.map((item, index) => {
+    const normalized = required(item, ['id', 'character', 'pressure', 'choice', 'immediateConsequence', 'carryForward', 'unresolvedBoundary'],
+      `choiceCausality[${index}]`, fieldErrors);
+    if (!Number.isInteger(item?.chapterNumber) || item.chapterNumber < 1 || item.chapterNumber > chapters.length)
+      fieldErrors.push(`choiceCausality[${index}].chapterNumber`);
+    if (choiceIds.has(normalized.id)) fieldErrors.push(`choiceCausality[${index}].id`);
+    choiceIds.add(normalized.id);
+    if (!characterNames.has(normalized.character)) fieldErrors.push(`choiceCausality[${index}].character`);
+    return { ...normalized, chapterNumber: item?.chapterNumber, chapterId: chapters[item?.chapterNumber - 1]?.id };
+  });
   assertRequiredFields(fieldErrors);
   if (!Array.isArray(value.materialDecisions) || value.materialDecisions.length > 100) throw new Error('规划需要有界的 materialDecisions 数组；没有材料时为空。');
   let materialDecisions = value.materialDecisions.map(item => ({
@@ -45,7 +60,7 @@ export function normalizePsychology(value, chapters, { materialEvidencePolicyVer
     materialDecisions = materialDecisions.map((decision, index) => ({ ...decision,
       ...normalizeMaterialUseEvidence(value.materialDecisions[index], byId.get(decision.materialId), chapters) }));
   }
-  return { creationPolicyVersion: CREATION_POLICY_VERSION, characterArcs, emotionalScenes, materialDecisions,
+  return { creationPolicyVersion: CREATION_POLICY_VERSION, characterArcs, emotionalScenes, choiceCausality, materialDecisions,
     psychologyLimitations: list(value.psychologyLimitations) };
 }
 

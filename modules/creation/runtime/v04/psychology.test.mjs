@@ -36,10 +36,15 @@ test('unsupported quotes, absent evidence, or out-of-scope chapter IDs remain ex
 test('psychology planning requires experience/cognition/action/expression and binds chapter order', () => {
   const input = { characterArcs: [{ character: '她', experience: '失去信任', belief: '决定由自己承担', desire: '独立', fear: '再次失去', change: '犹豫到行动', expression: '钥匙和门' }],
     emotionalScenes: chapters.map(() => ({ experience: '回到门前', cognition: '愿意承担', action: '取走钥匙', expression: '合门', development: '展开动作，省略重复解释', echo: '回应第一次离开' })),
+    choiceCausality: [{ id: 'choice-1', chapterNumber: 2, character: '她', pressure: '既想独立又怕再次失去关系', choice: '回来取走钥匙并合门', immediateConsequence: '她失去随时返回的退路', carryForward: '后续联系必须由她主动重新建立', unresolvedBoundary: '是否重新联系仍未决定' }],
     materialDecisions: [], psychologyLimitations: ['正文是否落实待核对'] };
   const plan = normalizePsychology(input, chapters);
   assert.deepEqual(plan.emotionalScenes.map(scene => scene.chapterId), ['a', 'b']);
-  assert.equal(plan.creationPolicyVersion, 'v04-creation-1');
+  assert.equal(plan.creationPolicyVersion, 'v04-creation-2');
+  assert.deepEqual(plan.choiceCausality.map(item => item.chapterId), ['b']);
   assert.throws(() => normalizePsychology({ ...input, emotionalScenes: [] }, chapters), /逐章/);
+  assert.throws(() => normalizePsychology({ ...input, choiceCausality: [] }, chapters), /choiceCausality/);
+  assert.throws(() => normalizePsychology({ ...input, choiceCausality: [{ ...input.choiceCausality[0], character: '未知人物' }] }, chapters),
+    error => error.code === 'PLANNING_REQUIRED_FIELDS' && error.details.some(item => item.path === 'choiceCausality[0].character'));
   assert.throws(() => normalizePsychology({ ...input, characterArcs: [{}] }, chapters), error => error.code === 'PLANNING_REQUIRED_FIELDS' && error.details.some(item => item.path === 'characterArcs[0].experience'));
 });

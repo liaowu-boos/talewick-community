@@ -1,6 +1,9 @@
 const reviewCodes = new Set(['STATE_REVIEW_REJECTED']);
 const resultCodes = new Set(['WORKFLOW_RESULT_UNVERIFIED']);
+const exhaustedWholeQualityCodes = new Set(['WHOLE_QUALITY_FORMAT_FAILED']);
 const networkCodes = new Set(['ETIMEDOUT', 'ESOCKETTIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND']);
+
+export const EXHAUSTED_WHOLE_QUALITY_MESSAGE = '整稿质量诊断的主响应和唯一格式纠正都未通过校验。原稿、诊断输入和已保存现场仍保留；这个旧任务不能继续，请从当前原稿重新发起整稿修订。';
 
 export const failureKinds = Object.freeze(['review_output', 'delivery_check', 'network', 'configuration', 'writing', 'unknown', 'interrupted', 'cancelled']);
 export const retryScopes = Object.freeze(['unfinished_review', 'unfinished_check', 'unfinished_writing', 'unfinished_step']);
@@ -21,6 +24,10 @@ const publicDetail = error => typeof error?.message === 'string' && error.messag
 export function classifyTaskFailure(error, stage = '') {
   const phase = taskPhase(stage);
   const retryScope = scopeFor(phase);
+  if (exhaustedWholeQualityCodes.has(error?.code)) return {
+    kind: 'review_output', phase: 'review', retryScope: 'unfinished_review', recoverable: false,
+    message: EXHAUSTED_WHOLE_QUALITY_MESSAGE,
+  };
   if (reviewCodes.has(error?.code)) return {
     kind: 'review_output', phase, retryScope: 'unfinished_review',
     message: '审阅结果的格式或版本绑定未通过校验。正文和已完成步骤已保存；继续任务时只会运行未完成的审阅。',
@@ -55,6 +62,25 @@ export function classifyTaskFailure(error, stage = '') {
     kind: 'unknown', phase, retryScope,
     message: '当前步骤未完成。已完成步骤已保存；继续任务时只会运行未完成步骤。',
   };
+}
+
+/** Select only the one historical stage for which saved-response proof is supported. */
+export function isStoredWholeQualityReadingFailureCandidate(task) {
+  if (!task || task.status !== 'failed' || task.revisionMode !== 'whole-manuscript-v2'
+    || task.stage !== 'whole-quality:reading:repair-response') return false;
+  return true;
+}
+
+export function applyStoredFailurePolicy(task, inspection) {
+  if (!isStoredWholeQualityReadingFailureCandidate(task) || inspection?.schemaVersion !== 'whole-quality-reading-failure-inspection-1'
+    || inspection.stage !== 'whole-quality:reading' || inspection.exhausted !== true) return task;
+  task.failure = { kind: 'review_output', phase: 'review', retryScope: 'unfinished_review', recoverable: false, message: EXHAUSTED_WHOLE_QUALITY_MESSAGE };
+  task.error = EXHAUSTED_WHOLE_QUALITY_MESSAGE;
+  return task;
+}
+
+export function taskFailureRecoverable(task) {
+  return task?.failure?.recoverable !== false;
 }
 
 export function interruptedFailure(message = '运行已中断。已完成步骤已保存；可以继续未完成步骤。') {

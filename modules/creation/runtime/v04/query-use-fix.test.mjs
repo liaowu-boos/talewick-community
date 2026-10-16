@@ -118,6 +118,7 @@ test('followup aliases, expanded raw ranges and reviewed unit aliases cannot rev
 test('mechanism, incompatible settings and target scene survive existing psychology normalization without new schema', () => {
   const v = { characterArcs: [{ character: '甲', experience: '受益', belief: '想置身事外', desire: '方便', fear: '损失', change: '承认自己受益', expression: '协商时自辩' }],
     emotionalScenes: [{ experience: '协商轮值', cognition: '自己也获益', action: '承担轮值', expression: '有限承诺', development: '展开家人失去空闲', echo: '待下一次轮值检验' }],
+    choiceCausality: [{ id: 'choice-1', chapterNumber: 1, character: '甲', pressure: '想保留便利又怕失去空闲', choice: '接受本周轮值', immediateConsequence: '家人本周少一个晚上相处', carryForward: '下次协商必须说明是否继续', unresolvedBoundary: '家人是否接受仍未知' }],
     materialDecisions: [adopt('b'), decline('a')], psychologyLimitations: ['家人是否接受仍需展开'] };
   const out = normalizePsychology(v, [{ id: 'ch-2' }]);
   assert.equal(out.materialDecisions[0].reason, v.materialDecisions[0].reason);

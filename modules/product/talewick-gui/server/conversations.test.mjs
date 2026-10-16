@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { MockLanguageModelV4 } from 'ai/test';
-import { ConversationService, permitsWriting } from './conversations.mjs';
+import { CONVERSATION_FILE_WAIT_MESSAGE, ConversationService, permitsWriting } from './conversations.mjs';
 
 const config = { baseURL: 'https://model.invalid/v1', agentProvider: 'openai-compatible', model: 'test-model' };
 const usage = { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } };
@@ -529,4 +529,68 @@ test('another auto writing message cannot create a second task while the first i
   assert.equal(tasks.attempts, 1, 'the running-task guard must apply even when a model attempts the tool again');
   assert.equal(tasks.requests.length, 1);
   assert.deepEqual(model.doStreamCalls[2].toolChoice, { type: 'auto' });
+});
+
+test('startup skips a dataless conversation, keeps other projects usable, and reloads it after hydration', async t => {
+  const runsDir = await mkdtemp(path.join(os.tmpdir(), 'talewick-conversation-local-file-'));
+  const dir = path.join(runsDir, '.conversations');
+  await mkdir(dir, { recursive: true });
+  const projectId = 'project-waiting-history';
+  const file = path.join(dir, `${projectId}.json`);
+  const oldTurn = { id: 'old-turn', projectId, userText: '旧问题', assistantText: '旧回答', status: 'completed', createdAt: '2026-10-15T01:00:00.000Z', updatedAt: '2026-10-15T01:00:01.000Z' };
+  const saved = { version: 1, projectId, history: [{ role: 'user', text: '更早的历史' }], turns: [oldTurn] };
+  await writeFile(file, JSON.stringify(saved) + '\n');
+  const readyId = 'project-ready-history';
+  await writeFile(path.join(dir, `${readyId}.json`), JSON.stringify({ version: 1, projectId: readyId, history: [], turns: [] }) + '\n');
+  const before = await readFile(file);
+  const blocked = new Set([file]);
+  const reads = [];
+  const tasks = taskStore();
+  const model = mockModel([[...textParts('继续聊旧钟。'), finish()]]);
+  const service = new ConversationService({ runsDir, tasks, config, conversationModel: model,
+    conversationFileState: async target => blocked.has(target) ? { available: false, reason: 'dataless' } : { available: true },
+    conversationFileRead: async (...args) => { reads.push(args[0]); return readFile(...args); } });
+  t.after(async () => { await service.close(); await rm(runsDir, { recursive: true, force: true }); });
+
+  await Promise.race([service.init(), new Promise((_, reject) => setTimeout(() => reject(new Error('conversation startup blocked')), 1000))]);
+  assert.deepEqual(service.list(readyId), []);
+  assert.throws(() => service.list(projectId), error => error.status === 409 && error.message === CONVERSATION_FILE_WAIT_MESSAGE);
+  assert.equal(reads.includes(file), false, 'startup must not open the dataless history');
+  const body = turnBody('new-turn', '继续聊人物。', { mode: 'light', snapshot: { ...structuredClone(snapshot), projectId } });
+  await assert.rejects(service.start(projectId, body), error => error.status === 409 && error.message === CONVERSATION_FILE_WAIT_MESSAGE);
+  assert.equal(model.doStreamCalls.length, 0);
+  assert.equal(tasks.attempts, 0);
+  assert.deepEqual(await readFile(file), before, 'waiting reads and sends must not replace the old history');
+
+  blocked.clear();
+  await service.refresh(projectId);
+  assert.equal(service.list(projectId)[0].assistantText, oldTurn.assistantText);
+  await service.start(projectId, body);
+  await until(() => !service.active.has(projectId), 'hydrated conversation reply');
+  assert.equal(service.get(projectId, 'new-turn').assistantText, '继续聊旧钟。');
+  assert.equal(service.list(projectId)[0].assistantText, oldTurn.assistantText);
+  assert.equal(tasks.attempts, 0, 'loading old context must not execute a creation task');
+});
+
+test('invalid hydrated conversation binding stays blocked without model calls or file rewrites', async t => {
+  const runsDir = await mkdtemp(path.join(os.tmpdir(), 'talewick-conversation-invalid-hydration-'));
+  const dir = path.join(runsDir, '.conversations');
+  await mkdir(dir, { recursive: true });
+  const projectId = 'project-invalid-history';
+  const file = path.join(dir, `${projectId}.json`);
+  await writeFile(file, JSON.stringify({ version: 1, projectId: 'different-project', history: [], turns: [] }) + '\n');
+  const before = await readFile(file);
+  let blocked = true;
+  const tasks = taskStore();
+  const model = mockModel([]);
+  const service = await new ConversationService({ runsDir, tasks, config, conversationModel: model,
+    conversationFileState: async () => blocked ? { available: false, reason: 'dataless' } : { available: true } }).init();
+  t.after(async () => { await service.close(); await rm(runsDir, { recursive: true, force: true }); });
+
+  blocked = false;
+  await assert.rejects(service.refresh(projectId), error => error.status === 503 && /格式不匹配/.test(error.message));
+  await assert.rejects(service.start(projectId, turnBody('invalid-hydration-turn', '继续聊人物。', { mode: 'light', snapshot: { ...structuredClone(snapshot), projectId } })), error => error.status === 503 && /格式不匹配/.test(error.message));
+  assert.equal(model.doStreamCalls.length, 0);
+  assert.equal(tasks.attempts, 0);
+  assert.deepEqual(await readFile(file), before);
 });

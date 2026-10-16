@@ -134,6 +134,23 @@ test('model attempt diagnostics survive failure and resume without saving partia
   assert.equal(done.modelAttempts.at(-1).finishReason, 'stop');
 });
 
+test('known provider receipts persist privately when a structured stage rejects returned content', async t => {
+  const { service, runsDir } = await fixture(t, async ({ model }) => {
+    await model.complete({ stage: 'whole-quality:applicability', system: 'private-system', user: 'private-user' });
+    throw new Error('unreachable');
+  });
+  service.model = { complete: async options => {
+    await options.onReceipt({ provider: 'synthetic', invocationId: 'inv-returned', contextId: 'ctx-returned' });
+    throw new Error('returned content rejected');
+  } };
+  const submitted = await service.create(request());
+  await until(() => service.get(submitted.id).status === 'failed' && !service.busy);
+  assert.equal(service.get(submitted.id).providerReceipts, undefined);
+  const saved = JSON.parse(await readFile(path.join(runsDir, submitted.id, 'task.json'), 'utf8'));
+  assert.deepEqual(saved.providerReceipts.map(item => [item.stage, item.invocationId, item.contextId]), [['whole-quality:applicability', 'inv-returned', 'ctx-returned']]);
+  assert.doesNotMatch(JSON.stringify(saved), /private-system|private-user/);
+});
+
 test('missing creative input waits for a new request and survives restart without publishing a manuscript', async t => {
   const question = '这篇故事希望写多少字、分几章？';
   let calls = 0;

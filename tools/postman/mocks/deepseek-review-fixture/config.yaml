@@ -1,0 +1,10 @@
+version: 1
+name: DeepSeek review fixture
+slug: deepseek-review-fixture
+protocol: http
+port: 4932
+interceptRequests: true
+scenarios:
+  - name: default
+    path: ./default.js
+    default: true

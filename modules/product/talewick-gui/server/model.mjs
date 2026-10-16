@@ -1,4 +1,4 @@
-import { agentProviderFor, followupContinuityReasoningEffort, full15ReasoningEffort, isBusinessStage, isFull15Stage, isLibraryStage, isWholeRevisionStage, recoveryTextLimit, RECOVERY_BUDGET_VERSION, outputTokenLimit, usesDeepSeekThinking, wholeRevisionReasoningEffort } from './model-policy.mjs';
+import { agentProviderFor, followupContinuityReasoningEffort, full15ReasoningEffort, independentReviewReasoningEffort, isBusinessStage, isFull15Stage, isIndependentReviewStage, isLibraryStage, isWholeQualityStage, isWholeRevisionStage, recoveryTextLimit, RECOVERY_BUDGET_VERSION, outputTokenLimit, usesDeepSeekThinking, wholeQualityReasoningEffort, wholeRevisionReasoningEffort } from './model-policy.mjs';
 import { readModelResponse } from './model-response.mjs';
 import { validateRelevanceModel, validateRelevanceProvider } from './config.mjs';
 import { createCodexRelevanceAssessor } from './codex-relevance.mjs';
@@ -15,8 +15,8 @@ export function projectCodexAttempt(record = {}, { requestedModel, effort, statu
     timedOut: record.timedOut === true, aborted: record.aborted === true };
 }
 
-const JSON_STAGES = new Set(['library-relevance', 'library-analysis', 'library-analysis-revision', 'library-review', 'requirements', 'requirements:repair', 'planning', 'planning:material-decisions', 'agent:replan', 'review', 'agent:reviewManuscript', 'revisionReview', 'review-adjudication', 'review-adjudication:repair', 'review-adjudication:continuity-v4', 'review-adjudication:repair:continuity-v4', 'requestedRevision', 'continuity-review', 'continuity-chain-review', 'full15-cold-read', 'full15-check', 'whole-revision:diagnosis', 'whole-revision:diagnosis:format-repair', 'whole-revision:diagnosis:repair', 'whole-revision:plan', 'whole-revision:plan:format-repair', 'whole-revision:plan:repair', 'whole-revision:revision', 'whole-revision:revision:format-repair', 'whole-revision:revision:repair', 'whole-revision:reread', 'whole-revision:reread:format-repair', 'whole-revision:reread:repair']);
-const stageLabel = stage => /^draft:ch-\d+$/.test(stage ?? '') ? `第 ${stage.slice(9)} 章写作` : ({ 'library-relevance': '材料相关性复核', 'library-analysis': '小说拆解', 'library-analysis-revision': '拆解修订', 'library-review': '拆解复核', requirements: '需求整理', 'requirements:repair': '需求纠正', planning: '故事规划', 'planning:material-decisions': '补查材料决策', 'agent:replan': '故事重规划', review: '审稿', 'agent:reviewManuscript': '全文复核', revisionReview: '修后复核', 'review-adjudication': '审稿证据裁定', 'review-adjudication:repair': '裁定响应纠正', 'review-adjudication:continuity-v4': '连续性证据裁定', 'review-adjudication:repair:continuity-v4': '连续性裁定响应纠正', requestedRevision: '指定修改', 'continuity-review': '连续性核查', 'continuity-chain-review': '时间与状态连续性核查', 'full15-cold-read': '全文冷读', 'full15-check': '全文问题检查', 'whole-revision:diagnosis': '整稿独立初读', 'whole-revision:diagnosis:format-repair': '整稿初读格式纠正', 'whole-revision:diagnosis:repair': '整稿初读格式纠正', 'whole-revision:plan': '整稿修改方案', 'whole-revision:plan:format-repair': '整稿方案格式纠正', 'whole-revision:plan:repair': '整稿方案格式纠正', 'whole-revision:revision': '整稿关联场景修改', 'whole-revision:revision:format-repair': '整稿候选格式纠正', 'whole-revision:revision:repair': '整稿候选格式纠正', 'whole-revision:reread': '整稿候选独立复读', 'whole-revision:reread:format-repair': '整稿复读格式纠正', 'whole-revision:reread:repair': '整稿复读格式纠正' }[stage] ?? (/^(revision|agent:reviseChapter):/.test(stage ?? '') ? '章节修订' : '当前步骤'));
+const JSON_STAGES = new Set(['library-relevance', 'library-analysis', 'library-analysis-revision', 'library-review', 'requirements', 'requirements:repair', 'planning', 'planning:material-decisions', 'agent:replan', 'review', 'agent:reviewManuscript', 'revisionReview', 'review-adjudication', 'review-adjudication:repair', 'review-adjudication:continuity-v4', 'review-adjudication:repair:continuity-v4', 'requestedRevision', 'continuity-review', 'continuity-chain-review', 'full15-cold-read', 'full15-check', 'whole-revision:diagnosis', 'whole-revision:diagnosis:format-repair', 'whole-revision:diagnosis:repair', 'whole-revision:plan', 'whole-revision:plan:format-repair', 'whole-revision:plan:repair', 'whole-revision:revision', 'whole-revision:revision:format-repair', 'whole-revision:revision:repair', 'whole-revision:reread', 'whole-revision:reread:format-repair', 'whole-revision:reread:repair', 'independent-review:independent-reading', 'independent-review:blind-pair', 'independent-review:goal-audit']);
+const stageLabel = stage => /^draft:ch-\d+$/.test(stage ?? '') ? `第 ${stage.slice(9)} 章写作` : ({ 'library-relevance': '材料相关性复核', 'library-analysis': '小说拆解', 'library-analysis-revision': '拆解修订', 'library-review': '拆解复核', requirements: '需求整理', 'requirements:repair': '需求纠正', planning: '故事规划', 'planning:material-decisions': '补查材料决策', 'agent:replan': '故事重规划', review: '审稿', 'agent:reviewManuscript': '全文复核', revisionReview: '修后复核', 'review-adjudication': '审稿证据裁定', 'review-adjudication:repair': '裁定响应纠正', 'review-adjudication:continuity-v4': '连续性证据裁定', 'review-adjudication:repair:continuity-v4': '连续性裁定响应纠正', requestedRevision: '指定修改', 'continuity-review': '连续性核查', 'continuity-chain-review': '时间与状态连续性核查', 'full15-cold-read': '全文冷读', 'full15-check': '全文问题检查', 'whole-revision:diagnosis': '整稿独立初读', 'whole-revision:diagnosis:format-repair': '整稿初读格式纠正', 'whole-revision:diagnosis:repair': '整稿初读格式纠正', 'whole-revision:plan': '整稿修改方案', 'whole-revision:plan:format-repair': '整稿方案格式纠正', 'whole-revision:plan:repair': '整稿方案格式纠正', 'whole-revision:revision': '整稿关联场景修改', 'whole-revision:revision:format-repair': '整稿候选格式纠正', 'whole-revision:revision:repair': '整稿候选格式纠正', 'whole-revision:reread': '整稿候选独立复读', 'whole-revision:reread:format-repair': '整稿复读格式纠正', 'whole-revision:reread:repair': '整稿复读格式纠正', 'whole-quality:reading': '整稿质量独立阅读', 'whole-quality:reading:format-repair': '独立阅读格式纠正', 'whole-quality:applicability': '检索材料功能适用审查', 'whole-quality:applicability:format-repair': '功能适用审查格式纠正', 'whole-quality:plan': '整稿质量修改方案', 'whole-quality:plan:format-repair': '质量方案格式纠正', 'whole-quality:feasibility': '修订可行性核对', 'whole-quality:feasibility:format-repair': '可行性格式纠正', 'whole-quality:revision': '整稿质量修订', 'whole-quality:revision:format-repair': '质量修订格式纠正', 'whole-quality:reread': '整稿质量最终复读', 'whole-quality:reread:format-repair': '最终复读格式纠正', 'whole-quality:material-evidence': '最终正文用材定位', 'whole-quality:material-evidence:format-repair': '最终正文用材定位格式纠正' }[stage] ?? (/^(revision|agent:reviseChapter):/.test(stage ?? '') ? '章节修订' : '当前步骤'));
 
 /** A plain, stateless Chat Completions call. No agent loop or model-selected tools. */
 export function createModel(config, fetchImpl = fetch, { codexAssessorFactory = createCodexRelevanceAssessor } = {}) {
@@ -55,13 +55,17 @@ export function createModel(config, fetchImpl = fetch, { codexAssessorFactory = 
       const full15Effort = full15ReasoningEffort(requestConfig, stage);
       const followupEffort = followupContinuityReasoningEffort(requestConfig, stage, modelPolicy);
       const wholeRevisionEffort = wholeRevisionReasoningEffort(requestConfig, stage, modelPolicy);
+      const wholeQualityEffort = wholeQualityReasoningEffort(requestConfig, stage, modelPolicy);
+      const independentReviewEffort = independentReviewReasoningEffort(requestConfig, stage, modelPolicy);
       // These stages already require JSON in their business prompts; prose stays plain text.
       const requestBody = { model: requestedModel, messages: [{ role: 'system', content: system }, { role: 'user', content: user }], max_tokens: outputTokenLimit(requestConfig, maxTokens, stage, modelPolicy), stream: Boolean(nativeV4),
-        ...((nativeDeepSeek || stage === 'library-relevance' || isWholeRevisionStage(stage)) && JSON_STAGES.has(stage) ? { response_format: { type: 'json_object' } } : {}),
+        ...(((nativeDeepSeek || stage === 'library-relevance' || isWholeRevisionStage(stage)) && JSON_STAGES.has(stage)) || isWholeQualityStage(stage) || isIndependentReviewStage(stage) ? { response_format: { type: 'json_object' } } : {}),
         ...(nativeV4 && isLibraryStage(stage) ? { thinking: { type: stage === 'library-relevance' ? 'enabled' : 'disabled' } } : {}),
         ...(full15Effort ? { thinking: { type: 'enabled' }, reasoning_effort: full15Effort } : {}),
         ...(followupEffort ? { thinking: { type: 'enabled' }, reasoning_effort: followupEffort } : {}),
-        ...(wholeRevisionEffort ? { thinking: { type: 'enabled' }, reasoning_effort: wholeRevisionEffort } : {}) };
+        ...(wholeRevisionEffort ? { thinking: { type: 'enabled' }, reasoning_effort: wholeRevisionEffort } : {}),
+        ...(wholeQualityEffort ? { thinking: { type: 'enabled' }, reasoning_effort: wholeQualityEffort } : {}) };
+      if (independentReviewEffort) Object.assign(requestBody, { thinking: { type: 'enabled' }, reasoning_effort: independentReviewEffort });
       const total = new AbortController();
       const idle = new AbortController();
       const combined = AbortSignal.any([...(signal ? [signal] : []), total.signal, idle.signal]);
@@ -123,7 +127,7 @@ export function createModel(config, fetchImpl = fetch, { codexAssessorFactory = 
         const headerRequestId = response.headers?.get?.('x-request-id') || response.headers?.get?.('request-id');
         const providerRequestId = typeof payload.id === 'string' && payload.id.trim() ? payload.id : typeof headerRequestId === 'string' && headerRequestId.trim() ? headerRequestId : undefined;
         const choice = rawChoice && providerRequestId ? { ...rawChoice, providerRequestId } : rawChoice;
-        if (stage === 'library-relevance' || isWholeRevisionStage(stage)) {
+        if (stage === 'library-relevance' || isWholeRevisionStage(stage) || isWholeQualityStage(stage) || isIndependentReviewStage(stage)) {
           await onAttempt({ stage, attempt: 1, mode: 'primary', requestedModel, maxOutputTokens: body.max_tokens,
             finishReason: choice?.finish_reason, contentCharacters: typeof choice?.message?.content === 'string' ? choice.message.content.length : 0,
             hasReasoning: typeof choice?.message?.reasoning_content === 'string' && Boolean(choice.message.reasoning_content.trim()), elapsedMs: Date.now() - startedAt });
@@ -137,7 +141,7 @@ export function createModel(config, fetchImpl = fetch, { codexAssessorFactory = 
         const emptyStopped = choice?.finish_reason === 'stop' && (firstContent == null || (typeof firstContent === 'string' && !firstContent.trim()));
         const truncatedBusiness = isBusinessStage(stage) && choice?.finish_reason === 'length';
         const truncatedRelevance = stage === 'library-relevance' && choice?.finish_reason === 'length' && choice?.hasReasoning;
-        if (allowRecovery && !isFull15Stage(stage) && !isWholeRevisionStage(stage) && nativeV4 && stage !== 'publication-feedback-review' && choice?.hasReasoning && ((!isLibraryStage(stage) && (emptyStopped || truncatedBusiness)) || truncatedRelevance)) {
+        if (allowRecovery && !isFull15Stage(stage) && !isWholeRevisionStage(stage) && !isWholeQualityStage(stage) && !isIndependentReviewStage(stage) && nativeV4 && stage !== 'publication-feedback-review' && choice?.hasReasoning && ((!isLibraryStage(stage) && (emptyStopped || truncatedBusiness)) || truncatedRelevance)) {
           // 创作阶段或推理挤占相关性 JSON 时最多恢复一次：完整原输入重新生成，关闭额外推理。
           // 不拼接截断文本、不重置截止时间、不增加第三次调用；仍须通过原业务校验。
           choice = await requestChoice(true);
@@ -145,13 +149,13 @@ export function createModel(config, fetchImpl = fetch, { codexAssessorFactory = 
         // A Full15 provider ID describes the one completed wire response even
         // when its semantic output is rejected below. Other stages retain the
         // existing success-only receipt behavior.
-        const full15ReceiptRecorded = isFull15Stage(stage) && Boolean(choice?.providerRequestId);
-        if (full15ReceiptRecorded) await onReceipt({ provider: agentProviderFor(config), invocationId: choice.providerRequestId, contextId: choice.providerRequestId });
+        const isolatedReceiptRecorded = (isFull15Stage(stage) || isWholeQualityStage(stage) || isIndependentReviewStage(stage)) && Boolean(choice?.providerRequestId);
+        if (isolatedReceiptRecorded) await onReceipt({ provider: agentProviderFor(config), invocationId: choice.providerRequestId, contextId: choice.providerRequestId });
         if (choice?.finish_reason === 'length') throw new Error(`模型输出达到长度上限（${stageLabel(stage)}），本步骤未完成；此前内容已保留，需要处理该步骤的生成范围后重试。`);
         if (choice?.finish_reason && choice.finish_reason !== 'stop') throw new Error('模型未正常完成本次输出，请查看服务设置后重试。');
         const content = choice?.message?.content;
         if (typeof content !== 'string' || !content.trim()) throw new Error('模型没有返回正文，本步骤未完成。');
-        if (!full15ReceiptRecorded) await onReceipt({ provider: agentProviderFor(config), invocationId: choice.providerRequestId, contextId: choice.providerRequestId });
+        if (!isolatedReceiptRecorded) await onReceipt({ provider: agentProviderFor(config), invocationId: choice.providerRequestId, contextId: choice.providerRequestId });
         return content;
       } finally {
         clearTimeout(totalTimer);

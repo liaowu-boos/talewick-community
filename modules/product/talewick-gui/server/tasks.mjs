@@ -1,13 +1,15 @@
-import { mkdir, readFile, readdir, writeFile, rename, unlink } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile, rename, unlink, lstat } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { engineBinding } from './engines.mjs';
 import { projectReviewAdjudication } from './service-public.mjs';
 import { assertWorkflowResultReady } from './workflow-result-gate.mjs';
 import { projectCodexAttempt } from './model.mjs';
-import { FOLLOWUP_CONTINUITY_MODEL_POLICY, WHOLE_REVISION_MODEL_POLICY } from './model-policy.mjs';
-import { cancelledFailure, classifyTaskFailure, interruptedFailure } from './task-failure.mjs';
-import { WHOLE_MANUSCRIPT_REVISION_MODE } from './workflow-engine.mjs';
+import { FOLLOWUP_CONTINUITY_MODEL_POLICY, WHOLE_QUALITY_MODEL_POLICY, WHOLE_REVISION_MODEL_POLICY } from './model-policy.mjs';
+import { applyStoredFailurePolicy, cancelledFailure, classifyTaskFailure, interruptedFailure, isStoredWholeQualityReadingFailureCandidate, taskFailureRecoverable } from './task-failure.mjs';
+import { WHOLE_MANUSCRIPT_QUALITY_MODE, WHOLE_MANUSCRIPT_REVISION_MODE } from './workflow-engine.mjs';
 
 const active = new Set(['queued', 'running']);
 const recoverable = new Set(['failed', 'interrupted', 'cancelled']);
@@ -18,8 +20,28 @@ const followupContinuityCreateStateReviewModes = new Set(['create-state-review-v
 const supportedCreateStateReviewModes = new Set(['create-state-review-v1', ...followupContinuityCreateStateReviewModes]);
 const supportedPlanningFollowupDecisionModes = new Set([PLANNING_FOLLOWUP_DECISION_MODE]);
 const now = () => new Date().toISOString();
+const wholeManuscriptModes = new Set([WHOLE_MANUSCRIPT_REVISION_MODE, WHOLE_MANUSCRIPT_QUALITY_MODE]);
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
+const execFileAsync = promisify(execFile);
+const requiredTaskFiles = ['task.json', 'request.json', 'artifacts.json'];
+const storedTaskStatuses = new Set(['queued', 'running', 'needs_input', 'completed', 'failed', 'interrupted', 'cancelled']);
+export const LOCAL_FILE_WAIT_MESSAGE = '本地文件等待下载。原任务记录和已有结果保持不变；下载完成后可再次继续。';
+
+/** Metadata-only guard. On Darwin, `dataless` is an authoritative file flag; never probe it with readFile. */
+export async function localTaskFileState(file) {
+  try {
+    const info = await lstat(file);
+    if (!info.isFile()) return { available: false, reason: 'not_file' };
+    if (process.platform !== 'darwin') return { available: true };
+    const { stdout } = await execFileAsync('/usr/bin/stat', ['-f', '%Sf', file], { encoding: 'utf8' });
+    const flags = String(stdout).trim().split(',').map(value => value.trim()).filter(Boolean);
+    return flags.includes('dataless') ? { available: false, reason: 'dataless' } : { available: true };
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { available: false, reason: 'missing' };
+    throw error;
+  }
+}
 
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 /** Read-only saved draft projection; never a reviewed result or a resume operation. */
@@ -68,8 +90,8 @@ export function validateRequest(body) {
   if (!Array.isArray(chapters) || chapters.length > 30 || chapters.some(c => !c || typeof c.id !== 'string' || typeof c.title !== 'string' || typeof c.body !== 'string' || c.body.length > 100000)) throw fail('稿件章节格式不正确。');
   if (new Set(chapters.map(c => c.id)).size !== chapters.length) throw fail('稿件存在重复章节标识。');
   if (body.kind === 'revise' && (!chapters.length || typeof body.instruction !== 'string' || !body.instruction.trim())) throw fail('修改任务需要原稿和明确的修改要求。');
-  if (body.revisionMode !== undefined && body.revisionMode !== WHOLE_MANUSCRIPT_REVISION_MODE) throw fail('未知的稿件修改模式，未创建任务。');
-  if (body.revisionMode === WHOLE_MANUSCRIPT_REVISION_MODE) {
+  if (body.revisionMode !== undefined && !wholeManuscriptModes.has(body.revisionMode)) throw fail('未知的稿件修改模式，未创建任务。');
+  if (wholeManuscriptModes.has(body.revisionMode)) {
     if (body.kind !== 'revise') throw fail('整稿修订只能用于已有完整稿件。');
     if ((typeof body.quote === 'string' && body.quote.length) || body.quoteSource !== undefined || body.existingReviewMode !== undefined || body.createStateReviewMode !== undefined) throw fail('整稿修订不能与选段或旧审阅模式混用。');
   }
@@ -88,12 +110,77 @@ export function validateRequest(body) {
 
 /** File-backed sequential task runner; each successful stage is saved for recovery. */
 export class TaskService {
-  constructor({ runsDir, model, workflow, engine = 'fixed', onCompleted, newPlanningFollowupDecisionMode, wholeRevisionAssert }) {
+  constructor({ runsDir, model, workflow, engine = 'fixed', onCompleted, newPlanningFollowupDecisionMode, wholeRevisionAssert, wholeQualityAssert, taskFileState = localTaskFileState, taskFileRead = readFile, inspectStoredWholeQualityReadingFailure }) {
     if (newPlanningFollowupDecisionMode !== undefined && !supportedPlanningFollowupDecisionModes.has(newPlanningFollowupDecisionMode)) throw new TypeError('未知的新任务补查材料决策模式。');
     this.runsDir = runsDir; this.model = model; this.workflow = workflow;
-    this.defaultEngine = engineBinding(engine); this.onCompleted = onCompleted; this.newPlanningFollowupDecisionMode = newPlanningFollowupDecisionMode; this.wholeRevisionAssert = wholeRevisionAssert;
-    this.tasks = new Map(); this.requests = new Map(); this.artifacts = new Map(); this.controller = null; this.busy = false; this.closing = false;
+    this.defaultEngine = engineBinding(engine); this.onCompleted = onCompleted; this.newPlanningFollowupDecisionMode = newPlanningFollowupDecisionMode; this.wholeRevisionAssert = wholeRevisionAssert; this.wholeQualityAssert = wholeQualityAssert; this.taskFileState = taskFileState; this.taskFileRead = taskFileRead; this.inspectStoredWholeQualityReadingFailure = inspectStoredWholeQualityReadingFailure;
+    this.tasks = new Map(); this.requests = new Map(); this.artifacts = new Map(); this.localFileWaits = new Map(); this.controller = null; this.busy = false; this.closing = false;
     this.mutations = Promise.resolve(); this.writes = new Map();
+  }
+  validateStoredTaskMetadata(task, id) {
+    if (!record(task) || task.id !== id || typeof task.projectId !== 'string' || typeof task.requestId !== 'string' || (typeof task.baseRevision !== 'string' && !(task.baseRevision === undefined && task.engine === undefined && task.engineVersion === undefined)) || !['create', 'revise'].includes(task.kind) || !storedTaskStatuses.has(task.status)) throw new Error('invalid task');
+    if (task.engine === undefined && task.engineVersion === undefined) Object.assign(task, { engine: 'fixed', engineVersion: 'fixed-workflow-1' });
+    return task;
+  }
+  async applyStoredFailurePolicy(task, artifacts) {
+    if (!isStoredWholeQualityReadingFailureCandidate(task)) return task;
+    try {
+      let inspect = this.inspectStoredWholeQualityReadingFailure;
+      if (!inspect) ({ inspectStoredWholeQualityReadingFailure: inspect } = await import('../../../creation/runtime/whole-manuscript-quality.mjs'));
+      if (typeof inspect !== 'function') return task;
+      return applyStoredFailurePolicy(task, inspect(artifacts));
+    } catch { return task; }
+  }
+  async inspectTaskFiles(folder) {
+    const states = await Promise.all(requiredTaskFiles.map(async name => ({ name, ...await this.taskFileState(path.join(folder, name)) })));
+    const unavailable = states.filter(state => !state.available);
+    if (unavailable.length && !unavailable.some(state => state.reason === 'dataless')) throw new Error('incomplete task');
+    return unavailable;
+  }
+  async readTaskDirectory(id) {
+    const folder = path.join(this.runsDir, id);
+    const unavailable = await this.inspectTaskFiles(folder);
+    if (unavailable.length) {
+      const taskFile = unavailable.find(state => state.name === 'task.json');
+      const task = taskFile ? undefined : this.validateStoredTaskMetadata(JSON.parse(await this.taskFileRead(path.join(folder, 'task.json'), 'utf8')), id);
+      return { waiting: true, folder, task, files: unavailable.map(state => state.name) };
+    }
+    const [taskText, requestText, artifactsText] = await Promise.all(requiredTaskFiles.map(name => this.taskFileRead(path.join(folder, name), 'utf8')));
+    const task = this.validateStoredTaskMetadata(JSON.parse(taskText), id);
+    const request = validateRequest(JSON.parse(requestText));
+    // Earliest fixed-workflow records omitted this projection field. Recover it
+    // only from their validated request; modern records must carry an exact binding.
+    if (task.baseRevision === undefined && task.engineVersion === 'fixed-workflow-1') task.baseRevision = request.baseRevision;
+    if (task.projectId !== request.projectId || task.requestId !== request.requestId || task.baseRevision !== request.baseRevision || task.kind !== request.kind || task.revisionMode !== request.revisionMode) throw new Error('invalid task binding');
+    const artifacts = JSON.parse(artifactsText);
+    if (!record(artifacts)) throw new Error('invalid artifacts');
+    await this.applyStoredFailurePolicy(task, artifacts);
+    return { waiting: false, folder, task, request, artifacts };
+  }
+  installWaitingTask(id, loaded) {
+    if (!loaded.task) {
+      this.localFileWaits.set(id, { folder: loaded.folder, files: loaded.files });
+      console.warn(`本地任务目录 ${id} 的 task.json 正在等待下载；原文件已保留。`);
+      return;
+    }
+    const task = structuredClone(loaded.task);
+    if (task.status !== 'completed') {
+      task.status = 'interrupted'; task.stage = '等待本地文件下载'; task.failure = interruptedFailure(LOCAL_FILE_WAIT_MESSAGE); task.error = LOCAL_FILE_WAIT_MESSAGE; delete task.question;
+    } else task.error = LOCAL_FILE_WAIT_MESSAGE;
+    this.tasks.set(id, task); this.artifacts.set(id, {});
+    this.localFileWaits.set(id, { folder: loaded.folder, files: loaded.files });
+  }
+  async reloadWaitingTask(id) {
+    const waiting = this.localFileWaits.get(id);
+    if (!waiting) return this.tasks.get(id);
+    let loaded;
+    try { loaded = await this.readTaskDirectory(id); }
+    catch { throw fail('本地任务文件已下载，但任务绑定校验未通过；未继续执行，原文件已保留。', 409); }
+    if (loaded.waiting) throw fail(LOCAL_FILE_WAIT_MESSAGE, 409);
+    const task = loaded.task;
+    if (active.has(task.status)) { task.status = 'interrupted'; task.failure = interruptedFailure('上次运行中断。已完成步骤已保存；可以继续未完成步骤。'); task.error = task.failure.message; task.updatedAt = now(); }
+    this.tasks.set(id, task); this.requests.set(id, loaded.request); this.artifacts.set(id, loaded.artifacts); this.localFileWaits.delete(id);
+    return task;
   }
   async init() {
     await mkdir(this.runsDir, { recursive: true, mode: 0o700 });
@@ -101,12 +188,9 @@ export class TaskService {
     for (const entry of await readdir(this.runsDir, { withFileTypes: true })) {
       if (!entry.isDirectory() || !/^[a-f0-9-]{36}$/.test(entry.name)) continue;
       try {
-        const folder = path.join(this.runsDir, entry.name);
-        const task = JSON.parse(await readFile(path.join(folder, 'task.json'), 'utf8'));
-        if (task.engine === undefined && task.engineVersion === undefined) Object.assign(task, { engine: 'fixed', engineVersion: 'fixed-workflow-1' });
-        const request = validateRequest(JSON.parse(await readFile(path.join(folder, 'request.json'), 'utf8')));
-        if (task.id !== entry.name || task.projectId !== request.projectId || task.requestId !== request.requestId) throw new Error('invalid task');
-        const artifacts = JSON.parse(await readFile(path.join(folder, 'artifacts.json'), 'utf8'));
+        const loaded = await this.readTaskDirectory(entry.name);
+        if (loaded.waiting) { this.installWaitingTask(entry.name, loaded); continue; }
+        const { task, request, artifacts } = loaded;
         this.tasks.set(task.id, task); this.requests.set(task.id, request); this.artifacts.set(task.id, artifacts);
         if (active.has(task.status)) { task.status = 'interrupted'; task.failure = interruptedFailure('上次运行中断。已完成步骤已保存；可以继续未完成步骤。'); task.error = task.failure.message; task.updatedAt = now(); await this.save(task); }
       } catch { console.warn(`未载入不完整的本地任务目录：${entry.name}。原文件已保留。`); }
@@ -144,7 +228,7 @@ export class TaskService {
     try { await pending; } finally { if (this.writes.get(key) === pending) this.writes.delete(key); }
   }
   async save(task) { await this.write(task.id, 'task.json', task); }
-  get(id) { const task = this.tasks.get(id); if (!task) throw fail('找不到这次任务，原有浏览器稿件仍可编辑和导出。', 404); const projected = structuredClone(task); delete projected.partialDraft; delete projected.createStateReviewMode; delete projected.planningFollowupDecisionMode; const partialDraft = projectPartialDraft(task, this.artifacts.get(id)); if (partialDraft) projected.partialDraft = partialDraft; if (projected.revisionMode !== WHOLE_MANUSCRIPT_REVISION_MODE && projected.result?.chapters && projected.result?.review) projected.result.reviewAdjudicationBinding = projectReviewAdjudication(projected.result); return projected; }
+  get(id) { const task = this.tasks.get(id); if (!task) throw fail('找不到这次任务，原有浏览器稿件仍可编辑和导出。', 404); const projected = structuredClone(task); delete projected.partialDraft; delete projected.createStateReviewMode; delete projected.planningFollowupDecisionMode; delete projected.providerReceipts; const partialDraft = projectPartialDraft(task, this.artifacts.get(id)); if (partialDraft) projected.partialDraft = partialDraft; if (!wholeManuscriptModes.has(projected.revisionMode) && projected.result?.chapters && projected.result?.review) projected.result.reviewAdjudicationBinding = projectReviewAdjudication(projected.result); return projected; }
   list(projectId) { return [...this.tasks.values()].filter(t => !projectId || t.projectId === projectId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(t => this.get(t.id)); }
   ensureIdleProject(projectId, except) { if ([...this.tasks.values()].some(t => t.id !== except && t.projectId === projectId && active.has(t.status))) throw fail('这个项目已有任务正在运行，请等待或取消后再提交。', 409); }
   mutate(fn) { const next = this.mutations.then(fn); this.mutations = next.catch(() => {}); return next; }
@@ -152,8 +236,10 @@ export class TaskService {
   async createTask(input) {
     if (this.closing) throw fail('服务正在停止，请稍后重试。', 503);
     const request = validateRequest(input);
-    const previous = [...this.tasks.values()].find(t => t.projectId === request.projectId && t.requestId === request.requestId);
+    for (const id of [...this.localFileWaits.keys()]) if (!this.tasks.has(id)) await this.reloadWaitingTask(id);
+    let previous = [...this.tasks.values()].find(t => t.projectId === request.projectId && t.requestId === request.requestId);
     if (previous) {
+      if (this.localFileWaits.has(previous.id)) previous = await this.reloadWaitingTask(previous.id);
       if (digest(this.requests.get(previous.id)) !== digest(request)) throw fail('这次请求标识对应的内容已经改变，请创建新请求。', 409);
       return this.get(previous.id);
     }
@@ -196,7 +282,13 @@ export class TaskService {
       let taskModelPolicy;
       const model = { complete: async args => {
         signal.throwIfAborted(); task.stage = args.stage || task.stage; task.updatedAt = now(); await this.save(task);
-        return this.model.complete({ ...args, signal, modelPolicy: taskModelPolicy, onAttempt: async metrics => {
+        return this.model.complete({ ...args, signal, modelPolicy: taskModelPolicy, onReceipt: async receipt => {
+          if (typeof args.onReceipt === 'function') await args.onReceipt(receipt);
+          if (!receipt || ![receipt.provider, receipt.invocationId, receipt.contextId].every(value => typeof value === 'string' && value.trim())) return;
+          task.providerReceipts = [...(task.providerReceipts ?? []).slice(-127), { at: now(), stage: args.stage,
+            provider: receipt.provider, invocationId: receipt.invocationId, contextId: receipt.contextId }];
+          task.updatedAt = now(); await this.save(task);
+        }, onAttempt: async metrics => {
           signal.throwIfAborted();
           const entry = { at: now(), stage: args.stage, mode: metrics.mode === 'recovery' ? 'recovery' : 'primary', hasReasoning: metrics.hasReasoning === true };
           if (typeof metrics.requestedModel === 'string') entry.requestedModel = metrics.requestedModel;
@@ -219,19 +311,20 @@ export class TaskService {
       const persistedPlanningMode = saved.requestSpec?.planningFollowupDecisionMode;
       if (task.kind === 'create' && hasRequestSpec && persistedPlanningMode !== undefined && !supportedPlanningFollowupDecisionModes.has(persistedPlanningMode)) throw new Error('任务保存的补查材料决策模式未知，未继续执行。');
       const planningFollowupDecisionMode = task.kind === 'create' && (hasRequestSpec ? persistedPlanningMode : task.planningFollowupDecisionMode);
-      taskModelPolicy = this.requests.get(task.id)?.revisionMode === WHOLE_MANUSCRIPT_REVISION_MODE ? WHOLE_REVISION_MODEL_POLICY
+      taskModelPolicy = this.requests.get(task.id)?.revisionMode === WHOLE_MANUSCRIPT_QUALITY_MODE ? WHOLE_QUALITY_MODEL_POLICY
+        : this.requests.get(task.id)?.revisionMode === WHOLE_MANUSCRIPT_REVISION_MODE ? WHOLE_REVISION_MODEL_POLICY
         : followupContinuityCreateStateReviewModes.has(createStateReviewMode) ? FOLLOWUP_CONTINUITY_MODEL_POLICY : undefined;
       const result = await this.workflow({ request: structuredClone(this.requests.get(task.id)), model, artifacts: structuredClone(saved), checkpoint, signal, progress,
         ...(createStateReviewMode ? { createStateReviewMode } : {}), ...(planningFollowupDecisionMode ? { planningFollowupDecisionMode } : {}), ...binding });
       signal.throwIfAborted();
       if (!Array.isArray(result?.chapters) || !result.chapters.length || result.chapters.some(c => !c.id || !c.title || !c.body?.trim())) throw new Error('创作没有产出完整可读取的章节，本次未标记完成。');
-      try { await assertWorkflowResultReady(result, this.artifacts.get(task.id)?.requestSpec, this.requests.get(task.id), this.wholeRevisionAssert); }
+      try { await assertWorkflowResultReady(result, this.artifacts.get(task.id)?.requestSpec, this.requests.get(task.id), this.wholeRevisionAssert, this.wholeQualityAssert); }
       catch (error) {
         // Preserve the actual returned manuscript separately; it is not a completed result.
         await this.write(task.id, 'unverified-result.json', result);
         throw error;
       }
-      if (this.requests.get(task.id)?.revisionMode !== WHOLE_MANUSCRIPT_REVISION_MODE) {
+      if (!wholeManuscriptModes.has(this.requests.get(task.id)?.revisionMode)) {
         result.review = { ...result.review, summary: typeof result.review?.summary === 'string' ? result.review.summary : '本次没有可用的语义复核摘要。' };
         result.warnings = Array.isArray(result.warnings) ? result.warnings : [];
       }
@@ -263,10 +356,13 @@ export class TaskService {
   resume(id) { return this.mutate(() => this.resumeTask(id)); }
   async resumeTask(id) {
     if (this.closing) throw fail('服务正在停止，请稍后重试。', 503);
-    const task = this.tasks.get(id); this.get(id);
+    let task = this.tasks.get(id);
+    if (this.localFileWaits.has(id)) task = await this.reloadWaitingTask(id);
+    this.get(id);
     engineBinding(task.engine, task.engineVersion);
     if (task.status === 'needs_input') throw fail('请在输入框补充创作要求并发送，不能直接重试缺少要求的原任务。', 409);
     if (!recoverable.has(task.status)) throw fail('只有失败、中断或取消的任务可以继续。', 409);
+    if (!taskFailureRecoverable(task)) throw fail(task.failure?.message || '这个旧任务不能继续，请从当前原稿重新发起整稿修订。', 409);
     if (this.controller?.id === id) throw fail('任务正在结束当前调用，请稍后继续。', 409);
     this.ensureIdleProject(task.projectId, task.id);
     task.status = 'queued'; task.updatedAt = now(); delete task.error; delete task.failure; await this.save(task); this.schedule(); return this.get(id);

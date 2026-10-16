@@ -11,15 +11,19 @@ const retryScopes: RuntimeTaskFailure['retryScope'][] = ['unfinished_review', 'u
 function readTaskFailure(value: unknown): RuntimeTaskFailure | undefined {
   if (!record(value) || !failureKinds.includes(value.kind as RuntimeTaskFailure['kind']) || !['writing', 'review', 'check', 'step'].includes(String(value.phase))
     || !retryScopes.includes(value.retryScope as RuntimeTaskFailure['retryScope']) || !string(value.message) || !value.message.trim()) return undefined;
-  return { kind: value.kind as RuntimeTaskFailure['kind'], phase: value.phase as RuntimeTaskFailure['phase'], retryScope: value.retryScope as RuntimeTaskFailure['retryScope'], message: value.message };
+  if (value.recoverable !== undefined && typeof value.recoverable !== 'boolean') return undefined;
+  return { kind: value.kind as RuntimeTaskFailure['kind'], phase: value.phase as RuntimeTaskFailure['phase'], retryScope: value.retryScope as RuntimeTaskFailure['retryScope'], message: value.message,
+    ...(typeof value.recoverable === 'boolean' ? { recoverable: value.recoverable } : {}) };
 }
 
 export function runtimeEngineLabel(engine?: RuntimeEngine): string { return engine === 'ai-sdk' ? 'Agent 创作' : '固定创作流程'; }
 
 export function wholeRevisionDispositionLabel(disposition?: RuntimeBinding['resultDisposition']): string {
   if (disposition === 'applied') return '已整体采纳';
+  if (disposition === 'partially-applied') return '已采纳部分修订组';
   if (disposition === 'declined') return '已保留原稿';
   if (disposition === 'whole-revision-candidate') return '待确认';
+  if (disposition === 'whole-quality-groups') return '修订组待确认';
   if (disposition === 'held') return '当前稿已变化，无法自动采纳';
   return '未记录';
 }
@@ -118,6 +122,9 @@ function readResult(value: unknown): RuntimeResult | undefined {
   const binding = value.reviewAdjudicationBinding;
   const validBinding = record(binding) && ['missing', 'invalid', 'unsupported', 'unverified', 'stale', 'bound'].includes(String(binding.status)) && Array.isArray(binding.diagnostics) && binding.diagnostics.every(string) && string(binding.manuscriptSha256) && /^[a-f0-9]{64}$/.test(binding.manuscriptSha256);
   return { title: value.title, chapters: content,
+    ...(string(value.baseRevision) ? { baseRevision: value.baseRevision } : {}),
+    ...(typeof value.revisionApplied === 'boolean' ? { revisionApplied: value.revisionApplied } : {}),
+    ...(value.qualityCheckStatus === 'incomplete' ? { qualityCheckStatus: 'incomplete' as const } : {}),
     ...(record(value.review) ? {reviewOriginal: structuredClone(record(value.reviewOriginal) ? value.reviewOriginal : rawReview)} : {}),
     review: { summary: rawReview.summary as string, issues: Array.isArray(rawReview.issues) ? rawReview.issues : [], limitations: Array.isArray(rawReview.limitations) ? rawReview.limitations : [], ...reviewMetadata,
       ...(Array.isArray(rawReview.strengths) && rawReview.strengths.every(string) ? { strengths: [...rawReview.strengths] } : {}),
@@ -144,7 +151,7 @@ export function readRuntimeTask(value: unknown): RuntimeTask | undefined {
   if (!supportedEngine(value.engine)) return undefined;
   return { id: value.id, projectId: value.projectId, requestId: value.requestId, baseRevision: value.baseRevision,
     engine: value.engine === 'ai-sdk' ? 'ai-sdk' : 'fixed', engineVersion: string(value.engineVersion) ? value.engineVersion : '',
-    kind: value.kind as RuntimeTask['kind'], ...(value.revisionMode === 'whole-manuscript-v1' ? { revisionMode: value.revisionMode } : {}), status: value.status as RuntimeTaskStatus, stage: string(value.stage) ? value.stage : '',
+    kind: value.kind as RuntimeTask['kind'], ...(['whole-manuscript-v1', 'whole-manuscript-v2'].includes(String(value.revisionMode)) ? { revisionMode: value.revisionMode as RuntimeTask['revisionMode'] } : {}), status: value.status as RuntimeTaskStatus, stage: string(value.stage) ? value.stage : '',
     createdAt: string(value.createdAt) ? value.createdAt : '', updatedAt: string(value.updatedAt) ? value.updatedAt : '',
     error: value.status !== 'needs_input' && string(value.error) ? value.error : undefined,
     failure: value.status !== 'needs_input' ? readTaskFailure(value.failure) : undefined,
@@ -156,7 +163,7 @@ export function readRuntimeTask(value: unknown): RuntimeTask | undefined {
 export function readRuntimeBinding(value: unknown, projectId: string): RuntimeBinding | undefined {
   if (!record(value) || !record(value.request) || !record(value.baseManuscript)) return undefined;
   const request = value.request;
-  if (request.revisionMode !== undefined && request.revisionMode !== 'whole-manuscript-v1') return undefined;
+  if (request.revisionMode !== undefined && !['whole-manuscript-v1', 'whole-manuscript-v2'].includes(String(request.revisionMode))) return undefined;
   const baseChapters = chapters(value.baseManuscript.chapters);
   const inputChapters = chapters(request.chapters);
   if (request.projectId !== projectId || !string(request.requestId) || !string(request.baseRevision) || !string(request.idea) || !['create', 'revise'].includes(String(request.kind)) || !baseChapters || !inputChapters || !string(value.baseManuscript.title)) return undefined;
@@ -171,12 +178,20 @@ export function readRuntimeBinding(value: unknown, projectId: string): RuntimeBi
     context: { character: string(context.character) ? context.character : '', world: string(context.world) ? context.world : '', plot: string(context.plot) ? context.plot : '', theme: string(context.theme) ? context.theme : '' },
     materials: Array.isArray(request.materials) ? request.materials.filter(record).filter(item => string(item.id) && string(item.title) && string(item.content)).map(item => ({ id: item.id as string, title: item.title as string, content: item.content as string })) : [],
     style: style ? { name: string(style.name) ? style.name : '', description: string(style.description) ? style.description : '', rules: string(style.rules) ? style.rules : '', traits: strings(style.traits) } : null,
-    chapters: inputChapters, instruction: string(request.instruction) ? request.instruction : '', quote: string(request.quote) ? request.quote : '', ...(request.revisionMode === 'whole-manuscript-v1' ? { revisionMode: request.revisionMode } : {}), ...(quoteSource ? { quoteSource } : {}) },
+    chapters: inputChapters, instruction: string(request.instruction) ? request.instruction : '', quote: string(request.quote) ? request.quote : '', ...(['whole-manuscript-v1', 'whole-manuscript-v2'].includes(String(request.revisionMode)) ? { revisionMode: request.revisionMode as RuntimeRequest['revisionMode'] } : {}), ...(quoteSource ? { quoteSource } : {}) },
     baseManuscript: { title: value.baseManuscript.title, chapters: baseChapters }, task,
     submitting: false,
     connectionError: string(value.connectionError) ? value.connectionError : undefined,
     handledTaskId: string(value.handledTaskId) && value.handledTaskId === task?.id ? value.handledTaskId : undefined,
-    resultDisposition: ['applied', 'proposals', 'held', 'whole-revision-candidate', 'declined'].includes(String(value.resultDisposition)) ? value.resultDisposition as RuntimeBinding['resultDisposition'] : undefined,
+    resultDisposition: ['applied', 'partially-applied', 'proposals', 'held', 'whole-revision-candidate', 'whole-quality-groups', 'declined'].includes(String(value.resultDisposition)) ? value.resultDisposition as RuntimeBinding['resultDisposition'] : undefined,
+    ...(record(value.qualityAdoption) && Array.isArray(value.qualityAdoption.selectedGroupIds) && Array.isArray(value.qualityAdoption.declinedGroupIds)
+      && value.qualityAdoption.selectedGroupIds.every(string) && value.qualityAdoption.declinedGroupIds.every(string)
+      && typeof value.qualityAdoption.fullCandidateRereadInherited === 'boolean'
+      && ['full-candidate', 'selected-groups-unchecked'].includes(String(value.qualityAdoption.rereadScope)) ? { qualityAdoption: {
+        selectedGroupIds: [...value.qualityAdoption.selectedGroupIds], declinedGroupIds: [...value.qualityAdoption.declinedGroupIds],
+        fullCandidateRereadInherited: value.qualityAdoption.fullCandidateRereadInherited,
+        rereadScope: value.qualityAdoption.rereadScope as NonNullable<RuntimeBinding['qualityAdoption']>['rereadScope'],
+      } } : {}),
     message: string(value.message) ? value.message : undefined };
 }
 
@@ -203,7 +218,7 @@ export function makeWholeRevisionRequest(project: Project, state: AppState, requ
   if (request.kind !== 'revise') throw new Error('整稿修订需要已有完整稿件。');
   delete request.quoteSource;
   request.quote = '';
-  request.revisionMode = 'whole-manuscript-v1';
+  request.revisionMode = 'whole-manuscript-v2';
   return request;
 }
 
@@ -222,6 +237,7 @@ export function runtimeTaskPhase(task?: RuntimeTask): RuntimeTaskFailure['phase'
 
 export function runtimeProgressDetail(task?: RuntimeTask): string {
   const phase = runtimeTaskPhase(task);
+  if (taskActive(task) && task?.revisionMode === 'whole-manuscript-v2') return '正在独立阅读全文、核对主要问题并形成可分组审阅的有限修改。候选不会覆盖当前稿件。';
   if (taskActive(task) && task?.revisionMode === 'whole-manuscript-v1') return '正在阅读全文、形成方案并修改关联场景。候选不会覆盖当前稿件；独立复读状态会如实保留。';
   if (taskActive(task)) return phase === 'writing' ? '正在生成或修改正文。已完成章节会随任务检查点保存。'
     : phase === 'review' ? '正文已经生成，正在审阅当前稿件。'
@@ -244,6 +260,7 @@ export function runtimeResumeLabel(task?: RuntimeTask): string {
 /** A stored task remains readable; its engine version is never silently upgraded. */
 export function runtimeResumeMessage(task?: RuntimeTask): string {
   if (!task || !['failed', 'interrupted', 'cancelled'].includes(task.status)) return '';
+  if (task.failure?.recoverable === false) return task.failure.message;
   const versions = { fixed: 'fixed-workflow-2', 'ai-sdk': 'ai-sdk-7.0.93-talewick-2' };
   return task.engineVersion !== versions[task.engine] ? '该任务使用旧版或未记录版本的执行引擎，当前版本不能恢复；原稿和任务结果仍可查看。' : '';
 }
@@ -262,6 +279,7 @@ export function runtimeStage(task: RuntimeTask): string {
   if (task.stage.startsWith('followup:')) return '查找补充参考';
   if (task.stage.startsWith('knowledge-returned:')) return '整理本次写作结果';
   if (task.stage.startsWith('knowledge-use:')) return '准备本次写作材料';
+  if (task.stage.startsWith('whole-quality:')) return task.stage.includes('reread') || task.stage.includes('check') ? '正在复核修改目标与风险' : task.stage.includes('reading') ? '正在独立阅读全文' : task.stage.includes('retrieval') || task.stage.includes('material') ? '正在核对问题所需材料' : task.stage.includes('plan') ? '正在形成场景联动方案' : task.stage.includes('revision') ? '正在执行有限改写' : '正在处理整稿质量步骤';
   const chapter = task.stage.match(/^(draft|revision):ch-(\d+)$/);
   if (chapter) return `${chapter[1] === 'draft' ? '正在撰写' : '正在修改'}第 ${chapter[2]} 章`;
   if (task.stage.startsWith('agent:plan:') || task.stage === 'agent:replan') return 'Agent 正在检查和调整故事方案';

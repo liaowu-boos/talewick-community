@@ -47,6 +47,7 @@ export function buildRetrievalIndex(row,text){
 }
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const nonempty = value => typeof value === 'string' && value.trim().length > 0;
+const sha256 = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const validRange = value => object(value) && Number.isSafeInteger(value.lineStart) && Number.isSafeInteger(value.lineEnd) && value.lineStart >= 1 && value.lineEnd >= value.lineStart;
 const validIds = value => Array.isArray(value) && value.every(nonempty) && new Set(value).size === value.length;
 // Validate the search projection against complete packaged ranges, excluding locator labels.
@@ -141,15 +142,75 @@ export function rankCandidates(entries, query, maxCandidates = 20) {
 }
 /** Normalize only the optional recall object; never infer focus from a question. */
 export function normalizeRecall(value) {
-  if (!object(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.keys(value).some(k => !['focus', 'queries'].includes(k)) || !['scene', 'ending', 'echo'].includes(value.focus) || !Array.isArray(value.queries) || value.queries.length > 3 || value.queries.some(q => typeof q !== 'string' || !q || q !== q.trim() || q.length > 120) || new Set(value.queries).size !== value.queries.length) throw new TypeError('Invalid recall hint');
-  return { focus: value.focus, queries: [...value.queries] };
+  const allowed = new Set(['focus', 'queries', 'fullQueries', 'observationSeeds']);
+  if (!object(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.keys(value).some(k => !allowed.has(k))
+    || !['scene', 'ending', 'echo'].includes(value.focus) || !Array.isArray(value.queries) || value.queries.length > 3
+    || value.queries.some(q => typeof q !== 'string' || !q || q !== q.trim() || q.length > 120) || new Set(value.queries).size !== value.queries.length) throw new TypeError('Invalid recall hint');
+  const fullQueries = value.fullQueries ?? [];
+  if (!Array.isArray(fullQueries) || fullQueries.length > 3 || fullQueries.some(q => typeof q !== 'string' || !q || q !== q.trim() || q.length > 4000)
+    || new Set(fullQueries).size !== fullQueries.length || fullQueries.some(q => value.queries.includes(q))) throw new TypeError('Invalid recall hint');
+  const observationSeeds = value.observationSeeds ?? [];
+  const seedKeys = new Set(['seedId','observationQueryHash','observationId','recordType','sourceId','sourceSha256','textVersion','analysisVersion',
+    'lineStart','lineEnd','lineWindowUtf16Start','lineWindowUtf16End','lineWindowBodySha256','quote','quoteUtf16Start','quoteUtf16End','quoteSha256','reviewRecordId']);
+  if (!Array.isArray(observationSeeds) || observationSeeds.length > 20 || observationSeeds.some(seed => !object(seed)
+    || Object.keys(seed).some(key => !seedKeys.has(key)) || !nonempty(seed.seedId) || seed.seedId.length > 160
+    || !sha256(seed.observationQueryHash) || !nonempty(seed.observationId) || seed.observationId.length > 240
+    || !['legacy_card_observation','checked_analysis_unit'].includes(seed.recordType)
+    || !nonempty(seed.sourceId) || seed.sourceId.length > 160 || !sha256(seed.sourceSha256)
+    || !nonempty(seed.textVersion) || seed.textVersion.length > 240 || !nonempty(seed.analysisVersion) || seed.analysisVersion.length > 240
+    || !Number.isSafeInteger(seed.lineStart) || !Number.isSafeInteger(seed.lineEnd) || seed.lineStart < 1 || seed.lineEnd < seed.lineStart
+    || !Number.isSafeInteger(seed.lineWindowUtf16Start) || !Number.isSafeInteger(seed.lineWindowUtf16End)
+    || seed.lineWindowUtf16Start < 0 || seed.lineWindowUtf16End < seed.lineWindowUtf16Start || !sha256(seed.lineWindowBodySha256)
+    || !nonempty(seed.quote) || seed.quote.length > 2000 || !Number.isSafeInteger(seed.quoteUtf16Start) || !Number.isSafeInteger(seed.quoteUtf16End)
+    || seed.quoteUtf16Start < seed.lineWindowUtf16Start || seed.quoteUtf16End > seed.lineWindowUtf16End
+    || seed.quoteUtf16End - seed.quoteUtf16Start !== seed.quote.length || !sha256(seed.quoteSha256) || hash(seed.quote) !== seed.quoteSha256
+    || (seed.reviewRecordId !== undefined && (!nonempty(seed.reviewRecordId) || seed.reviewRecordId.length > 240)))) throw new TypeError('Invalid recall hint');
+  if (new Set(observationSeeds.map(seed => seed.seedId)).size !== observationSeeds.length) throw new TypeError('Invalid recall hint');
+  return { focus: value.focus, queries: [...value.queries], ...(fullQueries.length ? {fullQueries:[...fullQueries]} : {}),
+    ...(observationSeeds.length ? {observationSeeds:structuredClone(observationSeeds)} : {}) };
 }
 const uniqueOrigins = origins => [...new Map(origins.map(o => [JSON.stringify(o), o])).values()];
 export function recallReason(origins) {
   return origins.map(o => o.kind === 'physical'
     ? `提供文本物理${o.position === 'tail' ? '尾部' : '开头'}窗口${o.coreCount === 2 ? '（含相邻片段）' : ''}（${o.focus}提示）；不证明剧情呼应或全文完整`
+    : o.kind === 'observation' ? `已复核绑定的叙事观察「${o.observationId}」把来源及逐字证据窗口带入候选；仍须按当前问题判断功能适用性`
     : o.kind === 'variant' ? `补充查询${o.variantIndex + 1}「${o.query}」词法命中；补充词不是已复核分析`
     : '原查询词法命中').join('；');
+}
+
+function observationRecallCandidates(entries, seeds = []) {
+  const candidates = [];
+  for (const seed of seeds) {
+    const sourceEntries = entries.filter(entry => entry.row.sourceId === seed.sourceId && entry.row.sourceSha256 === seed.sourceSha256
+      && entry.row.textVersion === seed.textVersion && entry.row.analysis?.version === seed.analysisVersion);
+    const row = sourceEntries[0]?.row;
+    if (!row) continue;
+    if (seed.recordType === 'checked_analysis_unit' && seed.reviewRecordId !== row.analysis?.validation?.semanticReview?.recordId) continue;
+    const lines = new Map();
+    for (const entry of sourceEntries.filter(entry => entry.use === 'raw_reference')) {
+      split(entry.raw).forEach((line, index) => lines.set(entry.lineStart + index, line));
+    }
+    const bodyLines = [];
+    for (let line = seed.lineStart; line <= seed.lineEnd; line++) {
+      if (!lines.has(line)) { bodyLines.length = 0; break; }
+      bodyLines.push(lines.get(line));
+    }
+    if (!bodyLines.length) continue;
+    const body = bodyLines.join('\n');
+    if (hash(body) !== seed.lineWindowBodySha256 || body.length > RETRIEVAL_LIMITS.maxRangeChars) continue;
+    let globalStart = 0, completePrefix = true;
+    for (let line = 1; line < seed.lineStart; line++) {
+      if (!lines.has(line)) { completePrefix = false; break; }
+      globalStart += lines.get(line).length + 1;
+    }
+    if (!completePrefix || globalStart !== seed.lineWindowUtf16Start || globalStart + body.length !== seed.lineWindowUtf16End) continue;
+    const localStart = seed.quoteUtf16Start - globalStart;
+    if (localStart < 0 || body.slice(localStart, localStart + seed.quote.length) !== seed.quote) continue;
+    candidates.push({id:`${seed.sourceId}:raw:${seed.lineStart}-${seed.lineEnd}`,use:'raw_reference',lineStart:seed.lineStart,lineEnd:seed.lineEnd,
+      raw:body,unitIds:[],row,score:0,hits:[],boundedLocatorWindow:true,recallOrigins:[{kind:'observation',seedId:seed.seedId,
+        observationQueryHash:seed.observationQueryHash,observationId:seed.observationId,recordType:seed.recordType}]});
+  }
+  return [...new Map(candidates.map(candidate => [candidate.id, candidate])).values()];
 }
 /** Project an oversized reviewed candidate without rewriting its checked
  * analysis. Keep the complete focus locator and at most one complete, directly
@@ -222,7 +283,7 @@ export function rankWithRecall(entries, query, maxCandidates = 20, { explicitSou
   if (query.recall === undefined) {const cap=candidateCap(maxCandidates);return adjacentRawSupplements(entries,rankCandidates(entries,query.query,cap),query,cap);}
   const recall = normalizeRecall(query.recall), cap = candidateCap(maxCandidates);
   if (!cap || query.evidenceType === 'performance') return [];
-  const routes = [query.query, ...recall.queries];
+  const routes = [query.query, ...(recall.fullQueries ?? []), ...recall.queries];
   const merged = new Map();
   let originalTopId;
   routes.forEach((text, route) => rankCandidates(entries, text, 20).forEach((entry, rank) => {
@@ -233,6 +294,11 @@ export function rankWithRecall(entries, query, maxCandidates = 20, { explicitSou
     item.recallOrigins.push(route === 0 ? { kind: 'lexical', query: text } : { kind: 'variant', variantIndex: route - 1, query: text });
   }));
   const lexical = interleaveUses([...merged.values()].sort((a,b) => b.score-a.score || a.id.localeCompare(b.id)),merged.size);
+  const observation = observationRecallCandidates(entries, recall.observationSeeds);
+  for (const candidate of observation) {
+    const existing = merged.get(candidate.id);
+    if (existing) existing.recallOrigins.push(...candidate.recallOrigins);
+  }
   // Keep the original query’s best hit ahead of all supplemental routes.
   const prioritizeOriginal = candidates => {
     const original = merged.get(originalTopId);
@@ -240,7 +306,14 @@ export function rankWithRecall(entries, query, maxCandidates = 20, { explicitSou
   };
   // Scene variants must keep the same bounded adjacent-context opportunity as
   // the plain route. These remain raw candidates and still require relevance review.
-  if (recall.focus === 'scene') return adjacentRawSupplements(entries,prioritizeOriginal(lexical),query,cap);
+  if (recall.focus === 'scene') {
+    const newObservation = observation.filter(candidate => !merged.has(candidate.id));
+    const observationSlots = Math.min(newObservation.length, Math.max(1, Math.min(4, Math.floor(cap / 3) || 1)));
+    const original = merged.get(originalTopId);
+    const base = lexical.filter(candidate => candidate.id !== originalTopId).slice(0, Math.max(0, cap - observationSlots - (original ? 1 : 0)));
+    const combined = [...(original ? [original] : []), ...newObservation.slice(0, observationSlots), ...base];
+    return adjacentRawSupplements(entries,combined.slice(0,cap),query,cap);
+  }
   // At most two lexically established sources. Zero lexical hits require exactly one usable explicit source.
   const lexicalSources = [...new Set(lexical.map(e => e.row.sourceId))];
   const usableExplicit = explicitSourceIds === undefined ? [] : [...new Set(explicitSourceIds)].filter(id => entries.some(e => e.row.sourceId === id && e.use === 'raw_reference'));

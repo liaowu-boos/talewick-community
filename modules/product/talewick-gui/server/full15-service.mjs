@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, realpath, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, realpath, rename, writeFile, lstat } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import path from 'node:path';
 
 const now = () => new Date().toISOString();
@@ -7,6 +9,18 @@ const sha = text => createHash('sha256').update(text, 'utf8').digest('hex');
 const fail = (code, message, status = 400) => Object.assign(new Error(message), { code, status });
 const validId = value => typeof value === 'string' && /^[\w-]{1,160}$/.test(value);
 const active = new Set(['queued', 'running']);
+const execFileAsync = promisify(execFile);
+export const FULL15_LOCAL_FILE_WAIT = '辅助检查任务文件正在等待下载。原任务、正文与已有报告保持不变。';
+
+export async function full15FileState(file) {
+  try {
+    const info = await lstat(file); if (!info.isFile()) return { available: false, reason: 'not_file' };
+    if (process.platform !== 'darwin') return { available: true };
+    const { stdout } = await execFileAsync('/usr/bin/stat', ['-f', '%Sf', file], { encoding: 'utf8' });
+    const flags = String(stdout).trim().split(',').map(value => value.trim()).filter(Boolean);
+    return flags.includes('dataless') ? { available: false, reason: 'dataless' } : { available: true };
+  } catch (error) { if (error?.code === 'ENOENT') return { available: false, reason: 'missing' }; throw error; }
+}
 
 export function projectFull15Failure(error, cancelled = false) {
   if (cancelled) return { code: 'cancelled', message: '辅助检查已取消；稿件和已有检查材料不受影响。', recoverable: false };
@@ -41,25 +55,32 @@ export function productManuscriptRevision(title, chapters) {
 
 /** Product-owned queue/index around the validation adapter. Adapter runs remain immutable. */
 export class Full15Service {
-  constructor({ rootDir, adapter, analyze, inputForManuscript }) {
+  constructor({ rootDir, adapter, analyze, inputForManuscript, taskFileState = full15FileState, taskFileRead = readFile }) {
     this.rootDir = rootDir; this.adapter = adapter; this.analyze = analyze; this.inputForManuscript = inputForManuscript;
+    this.taskFileState = taskFileState; this.taskFileRead = taskFileRead; this.waitingFiles = new Map();
     this.tasks = new Map(); this.controllers = new Map(); this.busy = false; this.closed = false; this.mutations = Promise.resolve(); this.writes = new Map();
+  }
+  async loadStored(id, file) {
+    const state = await this.taskFileState(file);
+    if (!state.available) { if (state.reason === 'dataless') this.waitingFiles.set(id, file); return false; }
+    const task = JSON.parse(await this.taskFileRead(file, 'utf8'));
+    if (!validId(task.id) || task.id !== id || !validId(task.projectId)) throw new Error('invalid full15 task');
+    if (active.has(task.status)) {
+      task.status = task.runDir ? 'queued' : 'needs_attention';
+      task.error = task.runDir ? null : { code: 'provider_outcome_unknown', message: '辅助检查在运行目录落盘前中断；不会自动重发，请新建一次重新检查。', recoverable: false };
+      task.updatedAt = now(); await this.save(task);
+    }
+    this.tasks.set(task.id, task); this.waitingFiles.delete(id); return true;
+  }
+  async refreshWaiting() {
+    for (const [id, file] of [...this.waitingFiles]) { try { await this.loadStored(id, file); } catch { throw fail('LOCAL_FILE_BINDING_INVALID', '辅助检查任务文件已下载，但绑定校验未通过；原文件保持不变。', 409); } }
   }
   async init() {
     await mkdir(this.rootDir, { recursive: true, mode: 0o700 });
     // This directory is server configuration, never a browser-supplied path.
     // Resolve system aliases such as /tmp before passing the trusted run root.
     this.rootDir = await realpath(this.rootDir);
-    for (const name of await readdir(this.rootDir).catch(() => [])) if (/^[a-f0-9-]{36}\.json$/.test(name)) try {
-      const task = JSON.parse(await readFile(path.join(this.rootDir, name), 'utf8'));
-      if (!validId(task.id) || !validId(task.projectId)) continue;
-      if (active.has(task.status)) {
-        task.status = task.runDir ? 'queued' : 'needs_attention';
-        task.error = task.runDir ? null : { code: 'provider_outcome_unknown', message: '辅助检查在运行目录落盘前中断；不会自动重发，请新建一次重新检查。', recoverable: false };
-        task.updatedAt = now(); await this.save(task);
-      }
-      this.tasks.set(task.id, task);
-    } catch {}
+    for (const name of await readdir(this.rootDir).catch(() => [])) if (/^[a-f0-9-]{36}\.json$/.test(name)) try { await this.loadStored(name.slice(0, -5), path.join(this.rootDir, name)); } catch {}
     this.schedule(); return this;
   }
   available() { return Boolean(this.adapter && this.analyze && this.inputForManuscript && typeof this.adapter.getFull15Versions === 'function'); }
@@ -72,7 +93,7 @@ export class Full15Service {
     return copy;
   }
   list(projectId) { return [...this.tasks.values()].filter(t => !projectId || t.projectId === projectId).sort((a,b) => b.createdAt.localeCompare(a.createdAt)).map(t => this.project(t)); }
-  get(id) { const task = this.tasks.get(id); if (!task) throw fail('NOT_FOUND', '找不到这次辅助检查。', 404); return this.project(task); }
+  get(id) { const task = this.tasks.get(id); if (!task) { if (this.waitingFiles.has(id)) throw fail('LOCAL_FILE_WAIT', FULL15_LOCAL_FILE_WAIT, 409); throw fail('NOT_FOUND', '找不到这次辅助检查。', 404); } return this.project(task); }
   async save(task) {
     const target = path.join(this.rootDir, `${task.id}.json`), temp = `${target}.${randomUUID()}.tmp`, snapshot = structuredClone(task);
     const pending=(this.writes.get(task.id)||Promise.resolve()).catch(()=>{}).then(async()=>{await writeFile(temp, JSON.stringify(snapshot, null, 2) + '\n', { mode: 0o600 }); await rename(temp, target);});
@@ -98,7 +119,11 @@ export class Full15Service {
   start(input, options = {}) { return this.mutate(() => this.startTask(input, options)); }
   async startTask(input, { trigger = 'manual', linkedAttemptId, sourceTaskId, configuredInput } = {}) {
     if (!this.available()) throw fail('FULL15_UNAVAILABLE', '辅助检查适配器或真实模型调用收据尚未接通。', 503);
+    await this.refreshWaiting();
+    if (this.waitingFiles.size) throw fail('LOCAL_FILE_WAIT', FULL15_LOCAL_FILE_WAIT, 409);
     if (!validId(input?.projectId) || !validId(input?.requestId) || typeof input.manuscriptRevision !== 'string' || input.manuscriptRevision.length > 256) throw fail('INVALID_REQUEST', '辅助检查请求与稿件版本无效。');
+    if (input.sourceTaskId !== undefined && !validId(input.sourceTaskId)) throw fail('INVALID_REQUEST', '关联创作任务标识无效。');
+    if (input.selection !== undefined && (!Array.isArray(input.selection) || input.selection.length > 100 || input.selection.some(value => !validId(value)) || new Set(input.selection).size !== input.selection.length)) throw fail('INVALID_REQUEST', '关联采纳组选择无效。');
     const expectedRevision = productManuscriptRevision(input.title, input.chapters);
     if (input.manuscriptRevision !== expectedRevision) throw fail('MANUSCRIPT_VERSION_MISMATCH', '提交的稿件版本与正文不一致，请保存当前版本后重试。', 409);
     const duplicate = [...this.tasks.values()].find(t => t.projectId === input.projectId && t.requestId === input.requestId);
@@ -113,9 +138,10 @@ export class Full15Service {
     const sameActive = [...this.tasks.values()].find(t => t.projectId === input.projectId && t.manuscriptRevision === input.manuscriptRevision && active.has(t.status));
     if (sameActive) return this.project(sameActive);
     const text = manuscriptText(input.title, input.chapters), manuscriptSha256 = sha(text);
-    const configured = configuredInput ?? await this.inputForManuscript({ projectId: input.projectId, title: input.title, chapters: structuredClone(input.chapters), text, manuscriptSha256 });
+    const linkedSourceTaskId = validId(input.sourceTaskId) ? input.sourceTaskId : undefined;
+    const configured = configuredInput ?? await this.inputForManuscript({ projectId: input.projectId, title: input.title, chapters: structuredClone(input.chapters), text, manuscriptSha256, ...(linkedSourceTaskId ? { sourceTaskId: linkedSourceTaskId } : {}), ...(input.selection !== undefined ? { selection: [...input.selection] } : {}) });
     if (!configured?.requirements || !configured?.references || !['standard','no_corpus'].includes(configured.profile)) throw fail('FULL15_INPUT_UNAVAILABLE', '这份稿件尚未取得明确的检查规格与参考范围。', 409);
-    const task = { id: randomUUID(), projectId: input.projectId, requestId: input.requestId, trigger, ...(linkedAttemptId ? { linkedAttemptId } : {}), ...(sourceTaskId ? { sourceTaskId } : {}), status: 'queued', manuscriptRevision: input.manuscriptRevision, manuscriptSha256, createdAt: now(), updatedAt: now(), progress: { phase: 'queued', completedChunks: 0, totalChunks: 0, completedStages: 0 }, report: null, error: null,
+    const task = { id: randomUUID(), projectId: input.projectId, requestId: input.requestId, trigger, ...(linkedAttemptId ? { linkedAttemptId } : {}), ...(sourceTaskId ? { sourceTaskId } : {}), ...(linkedSourceTaskId ? { linkedSourceTaskId } : {}), ...(input.selection !== undefined ? { linkedSelection: [...input.selection] } : {}), status: 'queued', manuscriptRevision: input.manuscriptRevision, manuscriptSha256, createdAt: now(), updatedAt: now(), progress: { phase: 'queued', completedChunks: 0, totalChunks: 0, completedStages: 0 }, report: null, error: null,
       frozen: { manuscript: { text, sha256: manuscriptSha256 }, requirements: structuredClone(configured.requirements), references: structuredClone(configured.references), profile: configured.profile } };
     this.tasks.set(task.id, task); await this.save(task); this.schedule(); return this.project(task);
   }
@@ -159,6 +185,7 @@ export class Full15Service {
   retry(id) { return this.mutate(() => this.retryTask(id)); }
   async retryTask(id) {
     if (!this.available()) throw fail('FULL15_UNAVAILABLE', '辅助检查适配器或真实模型调用收据尚未接通。', 503);
+    if (this.waitingFiles.has(id)) { await this.refreshWaiting(); if (this.waitingFiles.has(id)) throw fail('LOCAL_FILE_WAIT', FULL15_LOCAL_FILE_WAIT, 409); }
     const old = this.tasks.get(id); this.get(id);
     if (active.has(old.status)) throw fail('TASK_ACTIVE', '这次辅助检查仍在运行。', 409);
     if (old.status === 'interrupted' && old.runDir) {

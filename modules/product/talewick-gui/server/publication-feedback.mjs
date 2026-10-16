@@ -1,22 +1,60 @@
+import { lstat } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import path from 'node:path';
+
 const fail=(code,message,status=400)=>Object.assign(new Error(message),{code,status});
 const object=(v,keys)=>{if(!v||typeof v!=='object'||Array.isArray(v)||Object.keys(v).some(k=>!keys.includes(k)))throw fail('INVALID_INPUT','请求字段不正确。');};
 const revision=v=>{if(!Number.isSafeInteger(v)||v<1)throw fail('INVALID_INPUT','请提供当前记录版本。');};
 const safeReview=r=>{const {rawResponse,...safe}=r;return safe;};
 const safePublication=p=>({...p,reviews:p.reviews.map(safeReview)});
-export async function createPublicationFeedbackService({rootDir,model,configured=()=>true,adapters}={}){
+const execFileAsync=promisify(execFile);
+export const PUBLICATION_FEEDBACK_LOCAL_FILE_WAIT='发布复盘记录正在等待本机下载。全文创作与评阅仍可使用；下载完成后重试。';
+/** Metadata-only guard: never opens a Darwin dataless placeholder. */
+export async function publicationFeedbackFileState(file){
+ try{
+  const info=await lstat(file);if(!info.isFile())return{available:false,reason:'not_file'};
+  if(process.platform!=='darwin')return{available:true};
+  const {stdout}=await execFileAsync('/usr/bin/stat',['-f','%Sf',file],{encoding:'utf8'});
+  const flags=String(stdout).trim().split(',').map(value=>value.trim()).filter(Boolean);
+  return flags.includes('dataless')?{available:false,reason:'dataless'}:{available:true};
+ }catch(error){if(error?.code==='ENOENT')return{available:false,reason:'missing'};throw error;}
+}
+export async function createPublicationFeedbackService({rootDir,model,configured=()=>true,adapters,catalogFileState=publicationFeedbackFileState}={}){
  const a=adapters??Object.assign({},await import('../../../data/runtime/publication-feedback-store.mjs'),await import('../../../validation/runtime/publication-feedback.mjs'),await import('../../../creation/runtime/publication-feedback.mjs'));
- const store=await a.createPublicationFeedbackStore({rootDir});const active=new Map();let closed=false;
+ if(typeof rootDir!=='string'||!rootDir.trim())throw fail('INVALID_INPUT','必须指定独立存储目录。');
+ const catalog=path.join(path.resolve(rootDir),'catalog.json'),active=new Map();let store=null,initializing=null,closed=false;
  const open=()=>{if(closed)throw fail('SERVICE_CLOSED','服务已关闭，请刷新后重试。',503);};
- const get=async id=>{open();return store.getPublication(id);};
+ const stateAllowsInitialization=state=>state?.available===true||state?.reason==='missing';
+ const storageUnavailable=()=>fail('STORAGE_FAILED','发布复盘存储暂时不可用；原记录已保留。',503);
+ const initialize=async()=>{
+  const state=await catalogFileState(catalog);open();
+  if(!stateAllowsInitialization(state)){
+   if(state?.reason==='dataless')throw fail('LOCAL_FILE_WAIT',PUBLICATION_FEEDBACK_LOCAL_FILE_WAIT,503);
+   throw storageUnavailable();
+  }
+  const created=await a.createPublicationFeedbackStore({rootDir});
+  if(closed){await created.close();throw fail('SERVICE_CLOSED','服务已关闭，请刷新后重试。',503);}
+  store=created;return created;
+ };
+ const ready=async()=>{
+  open();if(store)return store;
+  const pending=initializing??=initialize();
+  try{return await pending;}finally{if(initializing===pending)initializing=null;}
+ };
+ const initialState=await catalogFileState(catalog);
+ if(stateAllowsInitialization(initialState))store=await a.createPublicationFeedbackStore({rootDir});
+ else if(initialState?.reason!=='dataless')throw storageUnavailable();
+ const get=async id=>(await ready()).getPublication(id);
  const expect=(p,v)=>{revision(v);if(p.revision!==v)throw fail('VERSION_CONFLICT','记录已更新，请刷新后依据最新观察重试。',409);};
- const evidence=async(p,input)=>{const ids=input.action==='plan_test'?input.plan?.baselinePublicationIds:input.action==='record_result'?input.result?.publicationIds:[];if(!Array.isArray(ids)||ids.length>100||ids.some(id=>typeof id!=='string'||!id.trim()||id.trim().length>200)||new Set(ids.map(id=>id.trim())).size!==ids.length)throw fail('INVALID_INPUT','证据须为最多 100 条不同的发布记录标识。');return Promise.all(ids.map(id=>id.trim()).filter(id=>id!==p.id).map(id=>store.getPublication(id)));};
+ const evidence=async(p,input)=>{const ids=input.action==='plan_test'?input.plan?.baselinePublicationIds:input.action==='record_result'?input.result?.publicationIds:[];if(!Array.isArray(ids)||ids.length>100||ids.some(id=>typeof id!=='string'||!id.trim()||id.trim().length>200)||new Set(ids.map(id=>id.trim())).size!==ids.length)throw fail('INVALID_INPUT','证据须为最多 100 条不同的发布记录标识。');const current=await ready();return Promise.all(ids.map(id=>id.trim()).filter(id=>id!==p.id).map(id=>current.getPublication(id)));};
  return {
-  list:async()=>{open();return store.listPublications();},
-  create:async payload=>{open();return safePublication(await store.createPublication(payload));},
+  list:async()=>(await ready()).listPublications(),
+  create:async payload=>safePublication(await (await ready()).createPublication(payload)),
   get:async id=>{const p=await get(id);return {publication:safePublication(p),assessment:a.assessPublication(p)};},
-  observe:async(id,body)=>{object(body,['expectedRevision','observation']);revision(body.expectedRevision);open();const p=await store.addObservation(id,body.observation,{expectedRevision:body.expectedRevision});return {publication:safePublication(p),assessment:a.assessPublication(p)};},
+  observe:async(id,body)=>{object(body,['expectedRevision','observation']);revision(body.expectedRevision);const p=await (await ready()).addObservation(id,body.observation,{expectedRevision:body.expectedRevision});return {publication:safePublication(p),assessment:a.assessPublication(p)};},
   compare:async body=>{object(body,['publicationIds']);if(!Array.isArray(body.publicationIds)||body.publicationIds.length<2||body.publicationIds.length>50||body.publicationIds.some(id=>typeof id!=='string'||!id)||new Set(body.publicationIds).size!==body.publicationIds.length)throw fail('INVALID_INPUT','请选择 2–50 条不同的发布记录。');return a.comparePublications(await Promise.all(body.publicationIds.map(get)));},
-  decide:async(id,body)=>{object(body,['expectedRevision','decision']);const p=await get(id);expect(p,body.expectedRevision);const input=body.decision;object(input,['reviewId','hypothesisId','action','reason','plan','result','scope','planDecisionId']);const decision=a.evaluateDecision({publication:p,reviewId:input.reviewId,hypothesisId:input.hypothesisId,input,publications:await evidence(p,input),now:new Date().toISOString()});return safePublication(await store.addDecision(id,decision,{expectedRevision:body.expectedRevision}));},
+  decide:async(id,body)=>{object(body,['expectedRevision','decision']);const p=await get(id);expect(p,body.expectedRevision);const input=body.decision;object(input,['reviewId','hypothesisId','action','reason','plan','result','scope','planDecisionId']);const decision=a.evaluateDecision({publication:p,reviewId:input.reviewId,hypothesisId:input.hypothesisId,input,publications:await evidence(p,input),now:new Date().toISOString()});return safePublication(await (await ready()).addDecision(id,decision,{expectedRevision:body.expectedRevision}));},
   brief:async(id,reviewId,hypothesisId)=>{const p=await get(id);return a.feedbackExperimentBrief({publication:p,reviewId,hypothesisId});},
   review:async(id,body)=>{
    object(body,['expectedRevision']);const p=await get(id);expect(p,body.expectedRevision);
@@ -35,7 +73,7 @@ export async function createPublicationFeedbackService({rootDir,model,configured
     const review=saved.reviews.at(-1);return {publication:safePublication(saved),review:safeReview(review)};
    }finally{active.delete(id);done();}
   },
-  async close(){if(closed)return;closed=true;for(const job of active.values())job.controller.abort();await Promise.allSettled([...active.values()].map(j=>j.settled));await store.close();},
+  async close(){if(closed)return;closed=true;for(const job of active.values())job.controller.abort();await Promise.allSettled([...active.values()].map(j=>j.settled));const pending=initializing;let current=store;if(pending)current=await pending.catch(()=>null)??current;if(current)await current.close();},
  };
 }
 export function createPublicationFeedbackRouter({service,json,bodyJSON}){

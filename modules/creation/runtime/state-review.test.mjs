@@ -15,7 +15,7 @@ import {manuscriptFingerprint} from '../../validation/runtime/checks.mjs';
 const sha=s=>createHash('sha256').update(s).digest('hex');
 const request={kind:'create',idea:'写一篇归来后重读退信的短篇，保留反复和未决。'};
 const requirements={summary:'归来重读',targetHanMin:1,targetHanMax:1000,targetChapterCount:2,requiredElements:[],prohibitions:[],assumptions:[],completeEnding:true,usesChapter4Cut:false};
-const plan={title:'退信',premise:'重读旧信',ending:'保持未决',chapters:[1,2].map(n=>({title:'场景'+n,goal:'重读与等待',scenes:['重读旧信'],continuity:'保持未决',targetHanMin:40,targetHan:100,targetHanMax:150})),characterArcs:[{character:'她',experience:'读信',belief:'未知',desire:'未知',fear:'未知',change:'未决',expression:'缩手'}],emotionalScenes:[1,2].map(()=>({experience:'计划尚未发生',cognition:'尚未读信的计划与正文不符',action:'重读',expression:'沉默',development:'保留反复',echo:'认识加深而非新事实'})),materialDecisions:[],psychologyLimitations:[]};
+const plan={title:'退信',premise:'重读旧信',ending:'保持未决',chapters:[1,2].map(n=>({title:'场景'+n,goal:'重读与等待',scenes:['重读旧信'],continuity:'保持未决',targetHanMin:40,targetHan:100,targetHanMax:150})),characterArcs:[{character:'她',experience:'读信',belief:'未知',desire:'未知',fear:'未知',change:'未决',expression:'缩手'}],emotionalScenes:[1,2].map(()=>({experience:'计划尚未发生',cognition:'尚未读信的计划与正文不符',action:'重读',expression:'沉默',development:'保留反复',echo:'认识加深而非新事实'})),choiceCausality:[{id:'choice-1',chapterNumber:2,character:'她',pressure:'想知道退信原因又怕再次失望',choice:'再次读信但不答应对方',immediateConsequence:'对方仍得不到答复',carryForward:'后续关系保持未决',unresolvedBoundary:'是否重建联系未知'}],materialDecisions:[],psychologyLimitations:[]};
 const first='她已经读到回执，知道信已退回。她把手缩回袖口。';
 const quote='她第一次知道信已退回。',second='他又来，她仍把手缩回袖口；他这才看见磨破的边。\n\n'+quote+'\n\n她没有答应。';
 const fixed='她又想到那封退回的信，还是没有答应。';
@@ -74,6 +74,7 @@ test('eight comparisons with complete coverage get one format feedback call; bot
  const result=await reviewStates({chapters:existing.chapters,requirements,model,onRejectedResponse:x=>rejected.push(x)});
  assert.equal(calls.length,2);assert.equal(result.coverage.status,'bounded');assert.equal(result.comparisons.length,8);
  assert.equal(rejected.length,1);assert.equal(rejected[0].rawResponse,cappedResponse(calls[0]));
+ assert.equal(rejected[0].failurePhase,'validation');assert.equal(rejected[0].formatRetryClass,'coverage_limit');assert.equal(rejected[0].formatRetryReserved,true);
  assert.deepEqual(result.rejectedResponses,rejected);
  assert.equal(result.responseSha256,adjudicationFingerprint(result.rawResponse));
 });
@@ -83,6 +84,7 @@ test('a second capped response fails closed without a third call and archives bo
  await assert.rejects(reviewStates({chapters:existing.chapters,requirements,model,onRejectedResponse:x=>rejected.push(x)}),
   error=>error.code==='STATE_REVIEW_REJECTED'&&error.message==='状态专审达到记录上限');
  assert.equal(calls.length,2);assert.deepEqual(rejected.map(x=>x.attempt),[1,2]);
+ assert.deepEqual(rejected.map(x=>x.formatRetryReserved),[true,false]);
  assert.equal(rejected[0].inputHash,rejected[1].inputHash);
 });
 test('cancellation after archiving a capped response prevents the correction call',async()=>{
@@ -91,6 +93,20 @@ test('cancellation after archiving a capped response prevents the correction cal
  await assert.rejects(reviewStates({chapters:existing.chapters,requirements,model,signal:controller.signal,
   onRejectedResponse:()=>controller.abort(new Error('cancelled after archive'))}),/cancelled after archive/);
  assert.equal(calls,1);
+});
+test('invalid JSON and unsupported must_fix are archived exactly and never consume or dispatch format repair',async()=>{
+ for(const kind of ['json','semantic']){
+  const rejected=[];let calls=0,raw;
+  const model={complete:async args=>{calls++;if(kind==='json')raw='{"inputHash":';else{const value=JSON.parse(stateResponse(args));value.comparisons[0].alternatives[0].status='plausible';raw=JSON.stringify(value);}return raw;}};
+  await assert.rejects(reviewStates({chapters:existing.chapters,requirements,model,onRejectedResponse:x=>rejected.push(x)}),
+   error=>error.code==='STATE_REVIEW_REJECTED');
+  assert.equal(calls,1);assert.equal(rejected.length,1);assert.equal(rejected[0].rawResponse,raw);
+  assert.equal(rejected[0].responseSha256,adjudicationFingerprint(raw));assert.equal(rejected[0].attempt,1);
+  assert.equal(rejected[0].failurePhase,kind==='json'?'json':'validation');
+  if(kind==='semantic')assert.equal(rejected[0].error,'状态专审候选缺少支持，不能升必修');
+  assert.equal(rejected[0].formatRetryClass,'not_format_retryable');assert.equal(rejected[0].formatRetryReserved,false);
+  assert.equal(rejected[0].recovery,'resume_unfinished_state_review_with_fresh_response');
+ }
 });
 function v2model({decision='confirm',stateFail=false,uncertainState=false}={}){
  const m=fixture({decision}),base=m.complete;
@@ -122,6 +138,9 @@ test('invalid state binding or unresolved must_fix fails closed and retains actu
  for(const mode of [{stateFail:true},{uncertainState:true}]){
  const m=v2model(mode),a={};await assert.rejects(runWorkflow({...v2,model:m,checkpoint:async(k,v)=>a[k]=v}),e=>e.code==='STATE_REVIEW_REJECTED');
  assert.equal(a['review:general'].issues.length,0);assert.equal(a.review,undefined);assert.equal(m.calls.some(c=>c.stage==='review-adjudication'),false);assert.deepEqual(a.existingManuscript.chapters,existing.chapters);
+ const archived=Object.entries(a).filter(([key])=>key.startsWith('review:state:rejected:'));
+ assert.equal(archived.length,1);assert.equal(archived[0][1].rawResponse,stateResponse(m.calls.find(call=>call.stage==='continuity-review'),{stale:mode.stateFail,unknown:mode.uncertainState}));
+ assert.equal(archived[0][1].formatRetryReserved,false);assert.equal(archived[0][1].failurePhase,'validation');
  }
 });
 test('state comparison without explicit model issue is never upgraded even if marked conflict_candidate',async()=>{
@@ -132,8 +151,9 @@ test('unknown and meaningful repetition have safe no-edit exits; malformed locat
  const model={complete:async args=>{const v=JSON.parse(stateResponse(args,{issue:false}));v.comparisons[0].assessment=assessment;v.comparisons[0].alternatives[0].status='plausible';return JSON.stringify(v);}};
  assert.equal((await reviewStates({chapters:existing.chapters,requirements,model})).issues.length,0);
  }
- let calls=0;const bad={complete:async args=>{calls++;const v=JSON.parse(stateResponse(args));v.comparisons[0].after.evidence.fragmentEnd=100000;return JSON.stringify(v);}};
- await assert.rejects(reviewStates({chapters:existing.chapters,requirements,model:bad}),/位置无效/);assert.equal(calls,1);
+ let calls=0,raw;const rejected=[],bad={complete:async args=>{calls++;const v=JSON.parse(stateResponse(args));v.comparisons[0].after.evidence.fragmentEnd=100000;raw=JSON.stringify(v);return raw;}};
+ await assert.rejects(reviewStates({chapters:existing.chapters,requirements,model:bad,onRejectedResponse:x=>rejected.push(x)}),/位置无效/);assert.equal(calls,1);
+ assert.equal(rejected.length,1);assert.equal(rejected[0].rawResponse,raw);assert.equal(rejected[0].error,'状态专审引文位置无效');assert.equal(rejected[0].formatRetryReserved,false);
 });
 test('v2 stops after two allowed rounds, retaining remaining candidates and actual no-op status',async()=>{
  const m=v2model(),base=m.complete;
@@ -147,6 +167,19 @@ test('v2 stops after two allowed rounds, retaining remaining candidates and actu
 test('state review failure resumes general checkpoint without repeating general model call',async()=>{
  const a={},bad=v2model({stateFail:true});await assert.rejects(runWorkflow({...v2,model:bad,checkpoint:async(k,v)=>a[k]=v}));
  const good=v2model({decision:'reject'});await runWorkflow({...v2,model:good,artifacts:a});assert.deepEqual(good.calls.map(c=>c.stage),['continuity-review','review-adjudication']);
+});
+test('ordinary archived state failure does not consume the one coverage format repair on resume',async()=>{
+ const artifacts={},bad=v2model({uncertainState:true});await assert.rejects(runWorkflow({...v2,model:bad,checkpoint:async(k,v)=>artifacts[k]=v}));
+ const resumed=v2model({decision:'reject'}),base=resumed.complete;let continuityCalls=0;
+ resumed.complete=async args=>{
+  if(args.stage==='continuity-review'){resumed.calls.push(args);continuityCalls++;return cappedResponse(args,{corrected:continuityCalls===2});}
+  return base(args);
+ };
+ const result=await runWorkflow({...v2,model:resumed,artifacts,checkpoint:async(k,v)=>artifacts[k]=v});
+ assert.equal(result.revisionApplied,false);assert.equal(continuityCalls,2);
+ const archived=Object.entries(artifacts).filter(([key])=>key.startsWith('review:state:rejected:')).map(([,value])=>value);
+ assert.equal(archived.length,2);assert.equal(archived[0].formatRetryClass,'not_format_retryable');assert.equal(archived[0].formatRetryReserved,false);
+ assert.equal(archived[1].formatRetryClass,'coverage_limit');assert.equal(archived[1].formatRetryReserved,true);
 });
 
 test('normal workflow projects only neutral requirements into state review and hashes that projection',async()=>{

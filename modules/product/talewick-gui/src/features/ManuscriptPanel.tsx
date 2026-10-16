@@ -11,16 +11,19 @@ import { Select, SelectItem } from '@/components/base/select/select';
 import { Tabs, TabList, Tab, TabPanel } from '@/components/base/tabs/tabs';
 import { SegmentedControl, SegmentedControlItem } from '@/components/base/segmented-control/segmented-control';
 import {
-  acceptPendingEdits, acceptWholeRevisionCandidate, beginEditing, canAdoptWholeRevisionCandidate, canApplyPendingEdit, characterCount, declineWholeRevisionCandidate, hanCharacterCount, exportManuscript, pendingEdits,
-  rejectPendingEdits, restoreVersion, saveEditorVersion, snapshotProject, undoEditing, updateChapter,
+  acceptPendingEdits, acceptWholeQualityGroups, acceptWholeRevisionCandidate, beginEditing, canAdoptWholeQualityGroups, canAdoptWholeRevisionCandidate, canApplyPendingEdit, characterCount,
+  declineWholeQualityCandidate, declineWholeRevisionCandidate, hanCharacterCount, exportManuscript, linkedWholeQualityGroupIds, pendingEdits,
+  rejectPendingEdits, restoreVersion, saveEditorVersion, snapshotProject, undoEditing, updateChapter, wholeQualityAdoptionGroups,
 } from '@/model/store';
-import { runtimeBusy, wholeRevisionDispositionLabel, wholeRevisionRereadPresentation, wholeRevisionRereadReport } from '@/model/runtime';
+import { manuscriptRevision, runtimeBusy, wholeRevisionDispositionLabel, wholeRevisionRereadPresentation, wholeRevisionRereadReport } from '@/model/runtime';
 import type { Chapter, CompareMode, DocMode, PendingEdit, Project, QuoteSource, RuntimeBinding, RuntimeResult, Version } from '@/model/types';
 import { getEditStart } from '@/model/revision-anchor';
 import { cx } from '@/utils/cx';
 import { useWorkspace } from '@/features/context';
 import { DialogShell, downloadText, EmptyState, formatDate, TextAreaField } from '@/features/shared';
 import { Full15ReviewPanel } from '@/features/Full15ReviewPanel';
+import { IndependentReviewPanel } from '@/features/IndependentReviewPanel';
+import type { ReviewEvidenceLocation } from '@/model/independent-review-view';
 
 interface LocalDraft {
   key: string;
@@ -76,6 +79,8 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
   const [versionId, setVersionId] = useState<string | null>(null);
   const [versionCompare, setVersionCompare] = useState(false);
   const [acceptingIds, setAcceptingIds] = useState<string[] | null>(null);
+  const [qualitySelectedGroupIds, setQualitySelectedGroupIds] = useState<string[]>([]);
+  const [reviewLocation, setReviewLocation] = useState<ReviewEvidenceLocation | null>(null);
   const panelRef = useRef<HTMLElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
@@ -88,11 +93,15 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
   const chapterPending = allPending.filter(edit => edit.chapterId === chapter.id);
   const chapterSuggestions = project.pendingEdits.filter(edit => edit.chapterId === chapter.id);
   const selectedVersion = project.versions.find(version => version.id === versionId) || project.versions.at(-1);
-  const wholeTask = project.runtime?.request.revisionMode === 'whole-manuscript-v1' ? project.runtime.task : undefined;
+  const wholeMode = project.runtime?.request.revisionMode;
+  const wholeTask = wholeMode === 'whole-manuscript-v1' || wholeMode === 'whole-manuscript-v2' ? project.runtime?.task : undefined;
   const wholeResult = wholeTask?.result?.wholeRevision ? wholeTask.result : undefined;
   const wholeRereadReport = wholeRevisionRereadReport(wholeResult?.wholeRevision);
-  const wholeReady = project.runtime?.resultDisposition === 'whole-revision-candidate';
+  const wholeReady = wholeMode === 'whole-manuscript-v1' && project.runtime?.resultDisposition === 'whole-revision-candidate';
+  const qualityReady = wholeMode === 'whole-manuscript-v2' && project.runtime?.resultDisposition === 'whole-quality-groups';
+  const qualityGroups = wholeMode === 'whole-manuscript-v2' ? wholeQualityAdoptionGroups(wholeResult) : [];
   const wholeAdoptable = canAdoptWholeRevisionCandidate(project);
+  const qualityAdoptable = canAdoptWholeQualityGroups(project, qualitySelectedGroupIds);
   const typography = { '--manuscript-font-size': `${state.settings.fontSize}px` } as CSSProperties;
 
   function mutate(recipe: (item: Project) => void) {
@@ -111,6 +120,34 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
   }, [key, chapter.title, chapter.body, project.id]);
 
   useEffect(() => { setSelection(null); scrollRef.current?.scrollTo({ top: 0 }); }, [key, project.docMode]);
+
+  useEffect(() => {
+    if (!reviewLocation || reviewLocation.chapterId !== chapter.id || project.docMode !== 'read') return;
+    const frame = window.requestAnimationFrame(() => {
+      if (chapter.body.slice(reviewLocation.start, reviewLocation.start + reviewLocation.quote.length) !== reviewLocation.quote) { notify('引文与当前固定版本不一致，未移动正文。'); setReviewLocation(null); return; }
+      const root = panelRef.current?.querySelector<HTMLElement>('.tw-manuscript-prose');
+      if (!root) return;
+      const locate = (offset: number) => {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); let remaining = offset; let node = walker.nextNode();
+        while (node) { const length = node.textContent?.length ?? 0; if (remaining <= length) return { node, offset: remaining }; remaining -= length; node = walker.nextNode(); }
+        return null;
+      };
+      const start = locate(reviewLocation.start), end = locate(reviewLocation.start + reviewLocation.quote.length);
+      if (!start || !end) { notify('原文位置暂时无法显示。'); setReviewLocation(null); return; }
+      const range = document.createRange(); range.setStart(start.node, start.offset); range.setEnd(end.node, end.offset);
+      const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
+      const scroll = scrollRef.current, rect = range.getBoundingClientRect();
+      if (scroll) { const container = scroll.getBoundingClientRect(); scroll.scrollTop += rect.top - container.top - 72; }
+      notify(`已定位到${chapter.title}的位置 ${reviewLocation.start}。`); setReviewLocation(null);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [reviewLocation, chapter.id, chapter.title, chapter.body, project.docMode, notify]);
+
+  useEffect(() => {
+    if (wholeMode !== 'whole-manuscript-v2') { setQualitySelectedGroupIds([]); return; }
+    const preferred = qualityGroups.filter(group => group.recommended && group.eligible).flatMap(group => linkedWholeQualityGroupIds(wholeResult, group.id));
+    setQualitySelectedGroupIds([...new Set(preferred)]);
+  }, [wholeTask?.id]);
 
   useEffect(() => {
     function readSelection() {
@@ -201,6 +238,15 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
     guard({ run: () => mutate(item => { item.selectedChapter = index; }) });
   }
 
+  function locateReviewEvidence(location: ReviewEvidenceLocation, revision: string) {
+    if (hasUnsavedDraft) { notify('请先保存当前草稿，再离开本章查看评阅证据。'); return; }
+    if (revision !== manuscriptRevision(project)) { notify('这条证据属于旧版稿件，请从版本记录查看对应正文。'); return; }
+    const index = project.chapters.findIndex(item => item.id === location.chapterId);
+    const target = project.chapters[index];
+    if (!target || target.body.slice(location.start, location.start + location.quote.length) !== location.quote) { notify('引文位置与当前稿件不一致，旧报告仍保留。'); return; }
+    setReviewLocation(location); mutate(item => { item.selectedChapter = index; item.docMode = 'read'; });
+  }
+
   function sendQuote() {
     if (!selection) return;
     const quoted = selection.text;
@@ -239,8 +285,23 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
   }
 
   function keepWholeOriginal() {
-    mutate(item => { declineWholeRevisionCandidate(item); });
+    mutate(item => { if (wholeMode === 'whole-manuscript-v2') declineWholeQualityCandidate(item); else declineWholeRevisionCandidate(item); });
     setDialog(null); notify('已保留当前原稿；候选仍可从任务结果查看。');
+  }
+
+  function toggleQualityGroup(groupId: string) {
+    const linked = linkedWholeQualityGroupIds(wholeResult, groupId);
+    if (!linked.length || linked.some(id => qualityGroups.find(group => group.id === id)?.eligible === false)) return;
+    setQualitySelectedGroupIds(current => linked.some(id => current.includes(id)) ? current.filter(id => !linked.includes(id)) : [...new Set([...current, ...linked])]);
+  }
+
+  function adoptQualityGroups() {
+    let adopted = false;
+    mutate(item => { adopted = acceptWholeQualityGroups(item, qualitySelectedGroupIds); });
+    if (adopted) {
+      const mixed = qualitySelectedGroupIds.length < qualityGroups.length;
+      setDialog(null); notify(mixed ? '已采纳所选修订组；混合稿不继承完整候选的复读结论，仍需复核。' : '已采纳全部修订组，采纳前原稿已保存在版本记录。');
+    } else notify('当前稿件已变化、关联组未完整选择，或候选绑定无效；没有覆盖原稿。');
   }
 
   useEffect(() => {
@@ -295,9 +356,10 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
       <div className="flex flex-wrap items-center gap-2 text-caption-1-regular text-text-tertiary"><span>{project.chapters.length} 章</span><span>·</span><span>{hanCharacterCount(project.chapters.map(item => item.body).join('')).toLocaleString()} 汉字</span><span>·</span><span aria-live="polite">{hasUnsavedDraft ? '有未保存的修改' : savedLabel}</span><span className="tw-manuscript-demo">{project.runtime ? '本机稿件' : '演示稿件'}</span></div>
     </div>
     {progress}
-    <Full15ReviewPanel project={project} hasUnsavedDraft={hasUnsavedDraft} />
+    <IndependentReviewPanel project={project} hasUnsavedDraft={hasUnsavedDraft} onLocate={locateReviewEvidence} />
+    <Full15ReviewPanel project={project} hasUnsavedDraft={hasUnsavedDraft} onLocate={locateReviewEvidence} />
     {wholeResult && <section className="mx-5 mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border-button-default bg-tw-glass p-4" aria-label="整稿修订候选">
-      <div className="min-w-0 flex-1"><p className="text-body-medium">{wholeReady ? '整稿修订候选待确认' : project.runtime?.resultDisposition === 'applied' ? '整稿修订候选已整体采纳' : project.runtime?.resultDisposition === 'declined' ? '已保留原稿' : '整稿修订结果已保留'}</p><p className="mt-1 text-caption-1-regular text-text-secondary">候选生成、独立复读和用户采纳分别记录；查看候选不会修改当前正文。</p><p className="mt-1 text-caption-1-regular text-text-secondary">复读报告提出：新增疑问 {wholeRereadReport.introducedIssueCount} 项 · 未充分支持修改 {wholeRereadReport.unsupportedChangeCount} 项。</p></div>
+      <div className="min-w-0 flex-1"><p className="text-body-medium">{qualityReady ? `${qualityGroups.length} 个修订组待确认` : wholeReady ? '整稿修订候选待确认' : project.runtime?.resultDisposition === 'partially-applied' ? '已采纳部分修订组' : project.runtime?.resultDisposition === 'applied' ? '整稿候选已采纳' : project.runtime?.resultDisposition === 'declined' ? '已保留原稿' : '整稿修订结果已保留'}</p><p className="mt-1 text-caption-1-regular text-text-secondary">候选生成、检查和用户采纳分别记录；查看候选不会修改当前正文。</p>{wholeMode === 'whole-manuscript-v2' ? <p className="mt-1 text-caption-1-regular text-text-secondary">关联修订组必须一起选择；混合采纳后需重新复核所选组合。</p> : <p className="mt-1 text-caption-1-regular text-text-secondary">复读报告提出：新增疑问 {wholeRereadReport.introducedIssueCount} 项 · 未充分支持修改 {wholeRereadReport.unsupportedChangeCount} 项。</p>}</div>
       <Button variant="secondary" size="small" onClick={() => setDialog('whole-candidate')}>查看候选与原稿</Button>
     </section>}
     <Tabs selectedKey={project.docMode} onSelectionChange={value => changeMode(String(value) as DocMode)} className="tw-manuscript-tabs gap-0">
@@ -351,11 +413,11 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
       <p className="font-story text-title-3-medium">{activeDraft.title}</p><p className="mt-2 text-body-regular text-text-secondary">{hanCharacterCount(activeDraft.body).toLocaleString()} 汉字 · 草稿尚未写入项目数据。</p>
     </DialogShell>
     <DialogShell title="当前稿件已经更新" description="这份草稿基于更早的正文。保存草稿时，会先保留当前稿件的版本副本。" open={dialog === 'conflict'} onClose={() => { setDialog(null); setDeferred(null); }} footer={<><Button variant="ghost" onClick={() => { setDialog(null); setDeferred(null); }}>继续编辑</Button><Button variant="secondary" leadingIcon={RiDownload2Line} onClick={() => downloadText(`${project.title}-未保存草稿.md`, `# ${activeDraft.title}\n\n${activeDraft.body}`)}>导出草稿</Button><Button variant="primary" onClick={() => saveAndContinue(true)}>保存草稿为当前稿</Button></>}><p className="text-body-regular text-text-secondary">你可以导出草稿留存，或保存为当前稿。已有版本不会被删除。</p></DialogShell>
-    <DialogShell title="发起整稿修订" description="系统会保存本次完整原稿，独立阅读全文、形成修改方案并生成候选。候选不会自动覆盖当前稿件。" open={dialog === 'whole-request'} onClose={() => setDialog(null)} footer={<><Button variant="secondary" onClick={() => setDialog(null)}>取消</Button><Button variant="primary" leadingIcon={RiSparklingLine} disabled={!wholeInstruction.trim()} onClick={() => { const instruction = wholeInstruction.trim(); if (!instruction || !onWholeRevision) return; setDialog(null); onWholeRevision(instruction); }}>开始整稿修订</Button></>}>
-      <div className="flex flex-col gap-4"><TextAreaField label="本轮整稿修改目标" value={wholeInstruction} onChange={setWholeInstruction} rows={6} maxLength={12000} autoFocus placeholder="例如：检查人物情绪变化与结尾代价，只修改有多处原文证据支持的问题；保留有效回环、留白和克制。" /><p className="text-caption-1-regular text-text-secondary">修改会按关联场景组成整体候选。生成、检查完成和你的采纳是三个独立状态。</p></div>
+    <DialogShell title="发起整稿质量修订" description="系统会保存完整原稿，先独立阅读全文、核对主要问题，再形成有限候选。候选不会自动覆盖当前稿件。" open={dialog === 'whole-request'} onClose={() => setDialog(null)} footer={<><Button variant="secondary" onClick={() => setDialog(null)}>取消</Button><Button variant="primary" leadingIcon={RiSparklingLine} disabled={!wholeInstruction.trim()} onClick={() => { const instruction = wholeInstruction.trim(); if (!instruction || !onWholeRevision) return; setDialog(null); onWholeRevision(instruction); }}>开始整稿修订</Button></>}>
+      <div className="flex flex-col gap-4"><TextAreaField label="本轮整稿修改目标" value={wholeInstruction} onChange={setWholeInstruction} rows={6} maxLength={12000} autoFocus placeholder="例如：检查人物情绪变化与结尾代价，只修改有多处原文证据支持的问题；保留有效回环、留白和克制。" /><p className="text-caption-1-regular text-text-secondary">修改按独立修订组提供；关联组必须一起选择。系统会保留不用理由、未解决项和原稿版本。</p></div>
     </DialogShell>
-    <DialogShell title="整稿候选与原稿" description="这里展示独立候选、方案依据和复读状态；文学判断仍需你审阅。" open={dialog === 'whole-candidate'} onClose={() => setDialog(null)} className="tw-manuscript-version-dialog" footer={wholeReady ? <><Button variant="secondary" onClick={keepWholeOriginal}>保留原稿</Button><Button variant="primary" leadingIcon={RiCheckLine} disabled={!wholeAdoptable} onClick={adoptWholeRevision}>整体采纳候选</Button></> : <Button onClick={() => setDialog(null)}>关闭</Button>}>
-      {wholeResult && project.runtime ? <WholeRevisionDetails result={wholeResult} source={project.runtime.baseManuscript.chapters} disposition={project.runtime.resultDisposition} conflicted={project.runtime.resultDisposition === 'held'} /> : <p className="text-body-regular text-text-secondary">当前没有可查看的整稿候选。</p>}
+    <DialogShell title="整稿候选与原稿" description="先看主要问题和候选结果；证据、材料与未解决细节默认收起。文学判断仍需你审阅。" open={dialog === 'whole-candidate'} onClose={() => setDialog(null)} className="tw-manuscript-version-dialog" footer={qualityReady ? <><Button variant="secondary" onClick={keepWholeOriginal}>保留原稿</Button><Button variant="primary" leadingIcon={RiCheckLine} disabled={!qualityAdoptable} onClick={adoptQualityGroups}>采纳所选修订组</Button></> : wholeReady ? <><Button variant="secondary" onClick={keepWholeOriginal}>保留原稿</Button><Button variant="primary" leadingIcon={RiCheckLine} disabled={!wholeAdoptable} onClick={adoptWholeRevision}>整体采纳候选</Button></> : <Button onClick={() => setDialog(null)}>关闭</Button>}>
+      {wholeResult && project.runtime ? wholeMode === 'whole-manuscript-v2' ? <WholeQualityDetails result={wholeResult} source={project.runtime.baseManuscript.chapters} disposition={project.runtime.resultDisposition} conflicted={project.runtime.resultDisposition === 'held'} groups={qualityGroups} selectedGroupIds={qualitySelectedGroupIds} onToggleGroup={toggleQualityGroup} /> : <WholeRevisionDetails result={wholeResult} source={project.runtime.baseManuscript.chapters} disposition={project.runtime.resultDisposition} conflicted={project.runtime.resultDisposition === 'held'} /> : <p className="text-body-regular text-text-secondary">当前没有可查看的整稿候选。</p>}
     </DialogShell>
     <DialogShell title="把故事带走" description="只导出当前已保存、已采纳的稿件，待审建议不会写入文件。" open={dialog === 'export'} onClose={() => setDialog(null)}>
       <div className="mb-6 flex items-center gap-4 rounded-3xl border border-border-button-default bg-tw-glass p-4"><RiFileTextLine className="size-8 text-tw-warm" /><div><p className="text-headline-medium">{project.title}</p><p className="text-body-2-regular text-text-secondary">{project.chapters.length} 章 · {hanCharacterCount(project.chapters.map(item => item.body).join('')).toLocaleString()} 汉字</p></div></div>
@@ -384,6 +446,85 @@ function EvidenceList({ value }: { value: unknown }) {
   const rows = arrayValue(value).map(objectValue).filter((item): item is Record<string, unknown> => Boolean(item));
   if (!rows.length) return <p className="text-body-2-regular text-text-tertiary">未列出可定位证据。</p>;
   return <div className="flex flex-col gap-2">{rows.map((row, index) => <blockquote key={`${textValue(row.chapterId)}-${index}`} className="rounded-xl border border-border-button-default p-3"><p className="text-caption-1-medium text-text-tertiary">{textValue(row.chapterId) || '未标明章节'}{Number.isSafeInteger(row.start) ? ` · 位置 ${row.start}` : ''}{textValue(row.purpose) ? ` · ${textValue(row.purpose)}` : ''}</p><p className="mt-2 whitespace-pre-wrap font-story text-body-regular">{textValue(row.quote) || '未提供引文'}</p></blockquote>)}</div>;
+}
+
+const displayItemText = (value: unknown, fallback: string): string => {
+  const item = objectValue(value);
+  return item ? textValue(item.observation) || textValue(item.issue) || textValue(item.summary) || textValue(item.reason) || textValue(item.action) || fallback : textValue(value) || fallback;
+};
+
+function WholeQualityDetails({ result, source, disposition, conflicted, groups, selectedGroupIds, onToggleGroup }: {
+  result: RuntimeResult;
+  source: Chapter[];
+  disposition: RuntimeBinding['resultDisposition'];
+  conflicted: boolean;
+  groups: ReturnType<typeof wholeQualityAdoptionGroups>;
+  selectedGroupIds: string[];
+  onToggleGroup: (groupId: string) => void;
+}) {
+  const whole = result.wholeRevision ?? {};
+  const quality = objectValue(whole.quality) ?? {};
+  const reading = objectValue(quality.independentReading) ?? {};
+  const plan = objectValue(whole.plan) ?? {};
+  const diff = objectValue(whole.diff) ?? {};
+  const adoption = objectValue(whole.adoption) ?? {};
+  const materialUseRecord = objectValue(quality.materialUse);
+  const materialLedgers = arrayValue(materialUseRecord?.ledgers).map(objectValue).filter((item): item is Record<string, unknown> => Boolean(item));
+  const materialUse: Record<string, unknown>[] = materialLedgers.flatMap(ledger => arrayValue(ledger.decisions).map(objectValue).filter((item): item is Record<string, unknown> => Boolean(item)).map(item => ({ ...item, issueId: textValue(ledger.issueId) })));
+  const priorityRows = arrayValue(quality.issuePriorities).length ? arrayValue(quality.issuePriorities) : arrayValue(reading.majorIssues).length ? arrayValue(reading.majorIssues) : arrayValue(reading.issues).length ? arrayValue(reading.issues) : arrayValue(reading.findings);
+  const priorities = priorityRows.filter(item => { const row = objectValue(item); return row?.priority === 'major' && row?.disposition === 'investigate'; });
+  const unresolved = arrayValue(whole.unresolvedItems).length ? arrayValue(whole.unresolvedItems) : arrayValue(quality.unresolved).length ? arrayValue(quality.unresolved) : arrayValue(whole.unresolved);
+  const sceneChanges = arrayValue(quality.sceneChanges);
+  const feasibilityRecord = objectValue(quality.feasibility);
+  const feasibility = arrayValue(quality.feasibility).length ? arrayValue(quality.feasibility) : arrayValue(feasibilityRecord?.checks).length ? arrayValue(feasibilityRecord?.checks) : arrayValue(feasibilityRecord?.groups).length ? arrayValue(feasibilityRecord?.groups) : arrayValue(feasibilityRecord?.items);
+  const planItems = arrayValue(plan.items).map(objectValue).filter((item): item is Record<string, unknown> => Boolean(item));
+  const changedIds = textList(diff.changedChapterIds);
+  const sourceChapters = arrayValue(whole.sourceChapters).length
+    ? arrayValue(whole.sourceChapters).map(objectValue).filter((item): item is Record<string, unknown> => Boolean(item)).map(item => ({ id: textValue(item.id), title: textValue(item.title), body: textValue(item.body) })).filter(item => item.id && item.title && item.body)
+    : source;
+  const selection = new Set(selectedGroupIds);
+  const adoptionRecord = objectValue(adoption) ?? {};
+  const requiredBaseRevision = textValue(adoptionRecord.requiredBaseRevision);
+  const statusLabel = ({ candidate_ready: '候选已生成', candidate_ready_reread_incomplete: '候选已生成，最终复读未完整闭合', no_change: '质量流程决定保留原稿' } as Record<string, string>)[textValue(whole.status)] || '状态记录不完整';
+  const qualityAdoption = disposition === 'partially-applied' ? '混合稿没有继承完整候选的复读结论，仍需复核所选组合。' : disposition === 'applied' ? '全部修订组已采纳，采纳前原稿已保存。' : '选择修订组不会立即修改正文；点击采纳后才会生成新版本。';
+
+  return <div className="flex flex-col gap-5">
+    <section className="rounded-2xl border border-border-button-default p-4">
+      <p className="text-body-medium">候选状态：{statusLabel}</p>
+      <p className="mt-2 text-body-regular text-text-secondary">主要问题 {priorities.length} 项 · 修订组 {groups.length} 个 · 变化章节 {changedIds.length || '0'} 个。</p>
+      <p className="mt-2 text-body-regular text-text-secondary">{qualityAdoption}</p>
+      {conflicted && <p className="mt-2 text-body-regular text-text-error-primary">当前工作稿与任务起点不一致，修订组不可采纳。</p>}
+      {textValue(result.warnings?.[0]) && <p className="mt-2 text-body-regular text-text-error-primary">{result.warnings[0]}</p>}
+      <p className="mt-2 text-caption-1-regular text-text-tertiary">采纳状态：{wholeRevisionDispositionLabel(disposition)}{requiredBaseRevision ? ` · 基准版本 ${requiredBaseRevision.slice(0, 12)}…` : ''}</p>
+    </section>
+
+    <section>
+      <h3 className="mb-3 text-headline-medium">独立修订组</h3>
+      <div className="flex flex-col gap-3">{groups.length ? groups.map((group, index) => {
+        const selected = selection.has(group.id);
+        const linked = group.linkedGroupIds.length ? linkedWholeQualityGroupIds(result, group.id).filter(id => id !== group.id) : [];
+        const planItem = planItems.find(item => group.planItemIds.includes(textValue(item.id)));
+        const risks = textList(planItem?.risks);
+        return <section key={group.id} className="rounded-2xl border border-border-button-default p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0 flex-1"><p className="text-body-medium">{group.label || `修订组 ${index + 1}`}</p><p className="mt-1 text-caption-1-regular text-text-tertiary">{group.chapterIds.length ? `涉及章节：${group.chapterIds.join('、')}` : `方案：${group.planItemIds.join('、')}`}</p></div><Button variant={selected ? 'primary' : 'secondary'} size="small" disabled={!group.eligible || conflicted || disposition !== 'whole-quality-groups'} onClick={() => onToggleGroup(group.id)}>{selected ? '已选择' : group.eligible ? '选择此组' : '不可采纳'}</Button></div>
+          {group.reasons.map((reason, reasonIndex) => <p key={reasonIndex} className="mt-2 text-body-regular text-text-secondary">{reason}</p>)}
+          {risks[0] && <p className="mt-2 text-body-2-regular text-text-secondary">主要风险：{risks[0]}</p>}
+          {linked.length > 0 && <p className="mt-2 text-body-2-regular text-text-secondary">关联组 {linked.join('、')} 将一起选择或取消。</p>}
+          {!group.eligible && <p className="mt-2 text-body-2-regular text-text-error-primary">该组未通过可采纳条件，保留原文。</p>}
+          {group.unusedReasons.length > 0 && <details className="mt-3 rounded-xl bg-tw-glass p-3"><summary className="cursor-pointer text-body-2-medium">不采用理由</summary>{group.unusedReasons.map((reason, reasonIndex) => <p key={reasonIndex} className="mt-2 text-body-2-regular text-text-secondary">{reason}</p>)}</details>}
+          {planItem && <details className="mt-3 rounded-xl bg-tw-glass p-3"><summary className="cursor-pointer text-body-2-medium">方案、风险与保护范围</summary>{textValue(planItem.action) && <p className="mt-2 text-body-regular text-text-secondary">方案：{textValue(planItem.action)}</p>}{textValue(planItem.expectedEffect) && <p className="mt-2 text-body-regular text-text-secondary">预期作用：{textValue(planItem.expectedEffect)}</p>}{risks.map((risk, riskIndex) => <p key={riskIndex} className="mt-2 text-body-2-regular text-text-secondary">风险：{risk}</p>)}</details>}
+        </section>;
+      }) : <p className="text-body-regular text-text-secondary">没有形成可独立采纳的修订组，原稿保持不变。</p>}</div>
+    </section>
+
+    <details className="rounded-2xl border border-border-button-default p-4"><summary className="cursor-pointer text-body-medium">原稿与完整候选对比（{changedIds.length} 章）</summary><div className="mt-4"><VersionComparison previous={{ id: 'whole-quality-source', label: '任务起点原稿', date: '', chapters: sourceChapters }} current={result.chapters} beforeLabel="原稿" afterLabel="完整候选" /></div></details>
+
+    <details className="rounded-2xl border border-border-button-default p-4"><summary className="cursor-pointer text-body-medium">主要问题与独立阅读（{priorities.length}）</summary><div className="mt-4 flex flex-col gap-3">{priorities.length ? priorities.map((item, index) => { const row = objectValue(item); return <section key={textValue(row?.id) || index} className="rounded-xl bg-tw-glass p-4"><p className="text-body-medium">{displayItemText(item, `问题 ${index + 1}`)}</p>{row && textValue(row.expectedEffect) && <p className="mt-2 text-body-regular text-text-secondary">预期作用：{textValue(row.expectedEffect)}</p>}{row && <div className="mt-3"><EvidenceList value={row.evidence} /></div>}{row && textList(row.limitations).map((line, lineIndex) => <p key={lineIndex} className="mt-2 text-body-2-regular text-text-tertiary">边界：{line}</p>)}</section>; }) : <p className="text-body-regular text-text-secondary">独立阅读没有列出需要修改的主要问题。</p>}{sceneChanges.length > 0 && <p className="text-body-2-regular text-text-secondary">全文阅读记录了 {sceneChanges.length} 条场景变化；详细记录由任务结果保留。</p>}</div></details>
+
+    <details className="rounded-2xl border border-border-button-default p-4"><summary className="cursor-pointer text-body-medium">材料采用与可行性（{materialUse.length + feasibility.length}）</summary><div className="mt-4 flex flex-col gap-3">{materialUse.map((item, index) => <section key={`${textValue(item.issueId)}-${textValue(item.materialId) || index}`} className="rounded-xl bg-tw-glass p-3"><p className="text-body-medium">材料 {textValue(item.materialId) || index + 1} · {textValue(item.decision) === 'used' || textValue(item.decision) === 'adopt' ? '采用' : '不采用'}</p>{textValue(item.issueId) && <p className="mt-1 text-caption-1-regular text-text-tertiary">对应问题：{textValue(item.issueId)}</p>}<p className="mt-2 text-body-regular text-text-secondary">{textValue(item.reason) || '未记录理由'}</p>{textValue(item.appliedAs) && <p className="mt-2 text-body-2-regular text-text-secondary">使用方式：{textValue(item.appliedAs)}</p>}{textValue(item.applicabilityBoundary) && <p className="mt-2 text-body-2-regular text-text-tertiary">适用边界：{textValue(item.applicabilityBoundary)}</p>}</section>)}{feasibility.map((item, index) => <section key={index} className="rounded-xl bg-tw-glass p-3"><p className="text-body-medium">{displayItemText(item, `可行性记录 ${index + 1}`)}</p></section>)}{textList(materialUseRecord?.unavailableIssueIds).map(issueId => <p key={issueId} className="text-body-2-regular text-text-tertiary">问题 {issueId} 的检索未连接或不可用；这不表示没有相关材料。</p>)}{!materialUse.length && !feasibility.length && <p className="text-body-regular text-text-secondary">没有材料采用或可行性记录。</p>}</div></details>
+
+    <details className="rounded-2xl border border-border-button-default p-4"><summary className="cursor-pointer text-body-medium">未解决项与保留理由（{unresolved.length}）</summary><div className="mt-4 flex flex-col gap-2">{unresolved.length ? unresolved.map((item, index) => <p key={index} className="text-body-regular text-text-secondary">{displayItemText(item, `未解决项 ${index + 1}`)}</p>) : <p className="text-body-regular text-text-secondary">结果中没有列出未解决项；这不等同于文学质量已验收。</p>}</div></details>
+  </div>;
 }
 
 function WholeRevisionDetails({ result, source, disposition, conflicted }: { result: RuntimeResult; source: Chapter[]; disposition: RuntimeBinding['resultDisposition']; conflicted: boolean }) {

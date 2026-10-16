@@ -7,7 +7,7 @@ import {manuscriptFingerprint} from '../../validation/runtime/checks.mjs';
 const sha=s=>createHash('sha256').update(s).digest('hex');
 const request={kind:'create',idea:'写一篇归来后重读退信的短篇，保留反复和未决。'};
 const requirements={summary:'归来重读',targetHanMin:1,targetHanMax:1000,targetChapterCount:2,requiredElements:[],prohibitions:[],assumptions:[],completeEnding:true,usesChapter4Cut:false};
-const plan={title:'退信',premise:'重读旧信',ending:'保持未决',chapters:[1,2].map(n=>({title:'场景'+n,goal:'重读与等待',scenes:['重读旧信'],continuity:'保持未决',targetHanMin:40,targetHan:100,targetHanMax:150})),characterArcs:[{character:'她',experience:'读信',belief:'未知',desire:'未知',fear:'未知',change:'未决',expression:'缩手'}],emotionalScenes:[1,2].map(()=>({experience:'计划尚未发生',cognition:'尚未读信的计划与正文不符',action:'重读',expression:'沉默',development:'保留反复',echo:'认识加深而非新事实'})),materialDecisions:[],psychologyLimitations:[]};
+const plan={title:'退信',premise:'重读旧信',ending:'保持未决',chapters:[1,2].map(n=>({title:'场景'+n,goal:'重读与等待',scenes:['重读旧信'],continuity:'保持未决',targetHanMin:40,targetHan:100,targetHanMax:150})),characterArcs:[{character:'她',experience:'读信',belief:'未知',desire:'未知',fear:'未知',change:'未决',expression:'缩手'}],emotionalScenes:[1,2].map(()=>({experience:'计划尚未发生',cognition:'尚未读信的计划与正文不符',action:'重读',expression:'沉默',development:'保留反复',echo:'认识加深而非新事实'})),choiceCausality:[{id:'choice-1',chapterNumber:2,character:'她',pressure:'想知道退信原因又怕再次失望',choice:'再次读信但不答应对方',immediateConsequence:'对方仍得不到答复',carryForward:'后续关系保持未决',unresolvedBoundary:'是否重建联系未知'}],materialDecisions:[],psychologyLimitations:[]};
 const first='她已经读到回执，知道信已退回。她把手缩回袖口。';
 const quote='她第一次知道信已退回。',second='他又来，她仍把手缩回袖口；他这才看见磨破的边。\n\n'+quote+'\n\n她没有答应。';
 const fixed='她又想到那封退回的信，还是没有答应。';

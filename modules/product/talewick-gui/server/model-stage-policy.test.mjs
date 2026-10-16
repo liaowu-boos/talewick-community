@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createModel } from './model.mjs';
-import { isBusinessStage, isWholeRevisionStage, outputTokenLimit, WHOLE_REVISION_MODEL_POLICY, wholeRevisionReasoningEffort } from './model-policy.mjs';
+import { isBusinessStage, isWholeQualityStage, isWholeRevisionStage, outputTokenLimit, WHOLE_QUALITY_MODEL_POLICY, WHOLE_REVISION_MODEL_POLICY, wholeQualityReasoningEffort, wholeRevisionReasoningEffort } from './model-policy.mjs';
 import { agentCallSettings } from './agent-ai-sdk.mjs';
 
 const config = { baseURL: 'https://api.deepseek.com', apiKey: 'synthetic-stage-private-key', model: 'deepseek-v4-flash', timeoutMs: 3000, idleTimeoutMs: 2500 };
@@ -56,6 +56,41 @@ test('actual whole-revision format-repair stage names retain the whole-manuscrip
 
   for (const stage of ['diagnosis', 'plan', 'revision', 'reread'].map(name => `whole-revision:${name}:repair`)) {
     assert.equal(isWholeRevisionStage(stage), true, `${stage} compatibility`);
+  }
+});
+
+test('whole-quality stages use the isolated JSON policy without transport recovery', async () => {
+  const actualStages = ['reading', 'applicability', 'plan', 'feasibility', 'revision', 'reread', 'material-evidence'].flatMap(name => [`whole-quality:${name}`, `whole-quality:${name}:format-repair`]);
+  for (const stage of actualStages) {
+    assert.equal(isWholeQualityStage(stage), true, stage);
+    assert.equal(isBusinessStage(stage), true, stage);
+    assert.equal(wholeQualityReasoningEffort(config, stage, WHOLE_QUALITY_MODEL_POLICY), 'low', stage);
+    assert.equal(outputTokenLimit(config, 7000, stage, WHOLE_QUALITY_MODEL_POLICY), 65536, stage);
+    const sent = [];
+    const model = createModel(config, async (_url, init) => {
+      sent.push(JSON.parse(init.body));
+      return response('{"partial":true}', 'length', privateReasoning);
+    });
+    await assert.rejects(model.complete({ ...input(stage, 7000), modelPolicy: WHOLE_QUALITY_MODEL_POLICY }), /长度上限/);
+    assert.equal(sent.length, 1, `${stage} format repair is owned by the quality runtime`);
+    assert.equal(sent[0].max_tokens, 65536, stage);
+    assert.deepEqual(sent[0].thinking, { type: 'enabled' }, stage);
+    assert.equal(sent[0].reasoning_effort, 'low', stage);
+    assert.deepEqual(sent[0].response_format, { type: 'json_object' }, stage);
+  }
+  for (const stage of ['whole-quality:', 'whole-quality:Reading', 'whole-quality:reading:repair', 'whole-quality:reading:format-repair:extra', 'whole-quality:reading/format-repair']) {
+    assert.equal(isWholeQualityStage(stage), false, stage);
+  }
+});
+
+test('whole-quality provider receipts survive known length and empty-content failures', async () => {
+  for (const [finish_reason, content] of [['length', '{"partial":true}'], ['stop', '']]) {
+    const receipts = [];
+    const model = createModel({ baseURL: 'https://provider.invalid/v1', apiKey: 'synthetic', model: 'fixture', timeoutMs: 3000 }, async () =>
+      Response.json({ id: `inv-${finish_reason}`, choices: [{ finish_reason, message: { content } }] }));
+    await assert.rejects(model.complete({ ...input('whole-quality:material-evidence', 10000), modelPolicy: WHOLE_QUALITY_MODEL_POLICY,
+      onReceipt: value => receipts.push(value) }), finish_reason === 'length' ? /长度上限/ : /没有返回正文/);
+    assert.deepEqual(receipts, [{ provider: 'openai-compatible', invocationId: `inv-${finish_reason}`, contextId: `inv-${finish_reason}` }]);
   }
 });
 

@@ -5,7 +5,7 @@ import { ToolLoopAgent, tool, isStepCount } from 'ai';
 import { z } from 'zod';
 import { createAgentModel } from './agent-ai-sdk.mjs';
 import { agentProviderFor, outputTokenLimit } from './model-policy.mjs';
-import { validateRequest } from './tasks.mjs';
+import { localTaskFileState, validateRequest } from './tasks.mjs';
 
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
 const now = () => new Date().toISOString();
@@ -13,6 +13,7 @@ const hash = value => createHash('sha256').update(JSON.stringify(value)).digest(
 const validId = value => typeof value === 'string' && /^[\w-]{1,160}$/.test(value);
 const clone = value => structuredClone(value);
 const runningTask = task => ['queued', 'running'].includes(task.status);
+export const CONVERSATION_FILE_WAIT_MESSAGE = '历史对话本地文件等待下载。原记录保持不变；下载完成后可重新读取或发送。';
 
 // A direct refusal always wins. Generic discussion words only hold writing when
 // the same message does not also contain an explicit execution instruction.
@@ -104,34 +105,58 @@ const instructions = `你是 Talewick 的小说创作伙伴，使用自然中文
 
 /** Durable, one-turn-at-a-time conversations. SDK owns streaming; TaskService owns manuscript effects. */
 export class ConversationService {
-  constructor({ runsDir, tasks, config, conversationModel }) {
+  constructor({ runsDir, tasks, config, conversationModel, conversationFileState = localTaskFileState, conversationFileRead = readFile }) {
     this.dir = path.join(runsDir, '.conversations');
     this.tasks = tasks; this.config = config; this.model = conversationModel;
-    this.projects = new Map(); this.active = new Map(); this.listeners = new Map();
+    this.conversationFileState = conversationFileState; this.conversationFileRead = conversationFileRead;
+    this.projects = new Map(); this.waitingProjects = new Map(); this.projectLoads = new Map(); this.active = new Map(); this.listeners = new Map();
     this.writes = new Map(); this.mutations = Promise.resolve(); this.closing = false;
+  }
+  async loadProject(projectId, file = path.join(this.dir, `${projectId}.json`)) {
+    const state = await this.conversationFileState(file);
+    if (!state.available) {
+      if (state.reason === 'dataless') { this.waitingProjects.set(projectId, file); return false; }
+      throw fail('对话记录无法读取，原文件已保留。请检查本地对话目录后重试。', 503);
+    }
+    let project;
+    try { project = JSON.parse(await this.conversationFileRead(file, 'utf8')); }
+    catch { throw fail('对话记录无法读取，原文件已保留。请检查本地对话目录后重试。', 503); }
+    if (!project || typeof project !== 'object' || Array.isArray(project) || project.projectId !== projectId || !Array.isArray(project.turns) || !Array.isArray(project.history)) throw fail('对话记录格式不匹配，原文件已保留。', 503);
+    this.projects.set(project.projectId, project);
+    for (const turn of project.turns) {
+      // A crash between task creation and linking still resolves by the durable request id.
+      if (turn.intent && !turn.task) {
+        const task = this.tasks.list(project.projectId).find(item => item.requestId === turn.intent.requestId);
+        if (task) turn.task = { request: turn.intent, task };
+      }
+      if (turn.status === 'running') {
+        turn.status = 'interrupted'; turn.updatedAt = now();
+        turn.error = '上次对话因服务重启而中断，已保留收到的回复和已提交的创作任务。可以继续发送消息。';
+      }
+    }
+    await this.save(project);
+    this.waitingProjects.delete(projectId);
+    return true;
+  }
+  async refresh(projectId) {
+    if (!validId(projectId)) throw fail('对话标识无效。');
+    if (!this.waitingProjects.has(projectId)) return;
+    let pending = this.projectLoads.get(projectId);
+    if (!pending) {
+      pending = this.loadProject(projectId, this.waitingProjects.get(projectId));
+      this.projectLoads.set(projectId, pending);
+    }
+    try { if (!await pending) throw fail(CONVERSATION_FILE_WAIT_MESSAGE, 409); }
+    finally { if (this.projectLoads.get(projectId) === pending) this.projectLoads.delete(projectId); }
+  }
+  assertReady(projectId) {
+    if (this.waitingProjects.has(projectId)) throw fail(CONVERSATION_FILE_WAIT_MESSAGE, 409);
   }
   async init() {
     await mkdir(this.dir, { recursive: true, mode: 0o700 });
     for (const name of await readdir(this.dir)) {
       if (!name.endsWith('.json') || !validId(name.slice(0, -5))) continue;
-      // Never silently overwrite an unreadable conversation with an empty one.
-      let project;
-      try { project = JSON.parse(await readFile(path.join(this.dir, name), 'utf8')); }
-      catch { throw fail('对话记录无法读取，原文件已保留。请检查本地对话目录后重启。', 503); }
-      if (project.projectId !== name.slice(0, -5) || !Array.isArray(project.turns) || !Array.isArray(project.history)) throw fail('对话记录格式不匹配，原文件已保留。', 503);
-      this.projects.set(project.projectId, project);
-      for (const turn of project.turns) {
-        // A crash between task creation and linking still resolves by the durable request id.
-        if (turn.intent && !turn.task) {
-          const task = this.tasks.list(project.projectId).find(item => item.requestId === turn.intent.requestId);
-          if (task) turn.task = { request: turn.intent, task };
-        }
-        if (turn.status === 'running') {
-          turn.status = 'interrupted'; turn.updatedAt = now();
-          turn.error = '上次对话因服务重启而中断，已保留收到的回复和已提交的创作任务。可以继续发送消息。';
-        }
-      }
-      await this.save(project);
+      await this.loadProject(name.slice(0, -5), path.join(this.dir, name));
     }
     return this;
   }
@@ -153,9 +178,11 @@ export class ConversationService {
   }
   list(projectId) {
     if (!validId(projectId)) throw fail('对话标识无效。');
+    this.assertReady(projectId);
     return (this.projects.get(projectId)?.turns || []).map(turn => this.publicTurn(turn));
   }
   find(projectId, turnId) {
+    this.assertReady(projectId);
     const turn = this.projects.get(projectId)?.turns.find(item => item.id === turnId);
     if (!turn) throw fail('找不到这轮对话。', 404);
     return turn;
@@ -169,6 +196,7 @@ export class ConversationService {
     if (this.closing) throw fail('服务正在停止，请稍后重试。', 503);
     if (!validId(projectId) || !validId(body?.turnId)) throw fail('对话标识无效。');
     if (typeof body.text !== 'string' || !body.text.trim() || body.text.length > 12000) throw fail('请发送 1–12000 字符的消息；较长的发布计划请在发送前精简附加想法，原计划仍保留在发布复盘。');
+    await this.refresh(projectId);
     const snapshot = validateRequest(body.snapshot);
     if (snapshot.projectId !== projectId) throw fail('稿件快照与当前对话不匹配。');
     if (body.allowTools !== undefined && typeof body.allowTools !== 'boolean') throw fail('工具权限格式不正确。');
@@ -265,6 +293,7 @@ export class ConversationService {
   async close() {
     this.closing = true;
     await this.mutations;
+    await Promise.allSettled(this.projectLoads.values());
     const pending = [...this.active.values()];
     for (const run of pending) run.abort.abort();
     await Promise.allSettled(pending.map(run => run.promise));
