@@ -32,3 +32,18 @@ test('historical failures without recoverability metadata remain compatible', ()
   assert.equal(loaded.failure.recoverable, undefined);
   assert.equal(runtimeResumeMessage(loaded), '');
 });
+
+test('browser import preserves old and cross-chapter whole-quality reports verbatim', () => {
+  const chapters = [{ id: 'c1', title: '第一章', body: '她把钥匙放回桌上。' }];
+  const completed = { ...task, status: 'completed', stage: '创作完成', failure: undefined };
+  const legacyQuality = { independentReading: { schemaVersion: 'whole-quality-reading-1' }, unresolved: [] };
+  const legacy = readRuntimeTask({ ...completed, result: { title: '钥匙', chapters, warnings: [], wholeRevision: { schemaVersion: 'whole-manuscript-quality-1', status: 'no_change', quality: legacyQuality } } });
+  assert.deepEqual(legacy.result.wholeRevision.quality, legacyQuality);
+  const crossChapterReview = { schemaVersion: 'whole-quality-cross-chapter-bundle-1', sourceManuscriptSha256: 'a'.repeat(64), review: {
+    schemaVersion: 'cross-chapter-review-result-1', findings: [{ groupId: 'g1', status: 'ambiguous', summary: '需澄清是否为同一轮事件', evidence: [] }] }, confirmedConflicts: [] };
+  const crossChapterResolution = { schemaVersion: 'whole-quality-cross-chapter-outcome-1', confirmedCount: 0, resolvedInCandidateCount: 0, unresolvedCount: 0, items: [] };
+  const current = readRuntimeTask({ ...completed, id: '88888888-8888-4888-8888-888888888888', result: { title: '钥匙', chapters, warnings: [], wholeRevision: {
+    schemaVersion: 'whole-manuscript-quality-1', status: 'no_change', quality: { ...legacyQuality, crossChapterReview, crossChapterResolution } } } });
+  assert.deepEqual(current.result.wholeRevision.quality.crossChapterReview, crossChapterReview);
+  assert.deepEqual(current.result.wholeRevision.quality.crossChapterResolution, crossChapterResolution);
+});

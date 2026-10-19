@@ -37,6 +37,7 @@ test('workflow router injects production retrieval only into whole quality runti
   assert.equal(await router({ request: request(), artifacts: {}, checkpoint() {}, progress() {} }), result);
   assert.equal(qualityArgs.retrieveKnowledge, retrieveKnowledge);
   assert.equal(qualityArgs.queryNarrativeObservations, queryNarrativeObservations);
+  assert.equal(qualityArgs.modelPolicy, WHOLE_QUALITY_MODEL_POLICY);
   assert.equal(await router({ request: request({ revisionMode: WHOLE_MANUSCRIPT_REVISION_MODE }), artifacts: {}, checkpoint() {}, progress() {} }), result);
   assert.equal(v1Args.retrieveKnowledge, undefined, 'v1 receives its unchanged argument shape');
   assert.equal(v1Args.queryNarrativeObservations, undefined, 'v1 does not receive observation recall');
@@ -52,12 +53,11 @@ test('quality result gate requires exact request/spec mode binding and uses its 
 
 test('TaskService applies the quality model policy and saves only asserted candidates', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'talewick-quality-product-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
   let asserted = 0, observedPolicy;
   const service = await new TaskService({ runsDir: root, model: { complete: async ({ modelPolicy }) => { observedPolicy = modelPolicy; return '{"ok":true}'; } },
     wholeQualityAssert: (value, spec) => { asserted++; assert.equal(value.wholeRevision.schemaVersion, 'whole-manuscript-quality-1'); assert.equal(spec.revisionMode, WHOLE_MANUSCRIPT_QUALITY_MODE); },
     workflow: async ({ checkpoint, model }) => { await checkpoint('requestSpec', requestSpec); await model.complete({ stage: 'whole-quality:reading', system: 'fixture', user: 'fixture' }); return structuredClone(result); } }).init();
-  t.after(() => service.close());
+  t.after(async () => { await service.close(); await rm(root, { recursive: true, force: true }); });
   const created = await service.create(request());
   let task = created;
   for (let index = 0; index < 100 && task.status !== 'completed' && task.status !== 'failed'; index += 1) { await new Promise(resolve => setTimeout(resolve, 10)); task = service.get(created.id); }

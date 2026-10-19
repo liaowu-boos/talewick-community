@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {buildWholeQualityQuery,retrieveWholeQualityEvidence,validateWholeQualityRetrievalPacket,
-  assertWholeQualityEvidenceBundle,buildWholeQualityMaterialUseLedger} from '../runtime/whole-quality-retrieval.mjs';
+  assertWholeQualityEvidenceBundle,buildWholeQualityMaterialUseLedger,buildWholeQualityObservationRecall,addWholeQualityObservationRecall} from '../runtime/whole-quality-retrieval.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const issue = overrides => ({issueId:'issue-1',question:'人物在压力累积后如何用行动回应此前承诺？',storyProblem:'心理解释重复，关键决定没有变成可见动作。',
@@ -107,4 +107,21 @@ test('abort stops before callback and callback failures are not rewritten as mis
   const controller=new AbortController();controller.abort(new Error('stop'));let calls=0;
   await assert.rejects(retrieveWholeQualityEvidence({issue:issue(),signal:controller.signal,retrieveKnowledge:async()=>{calls++;}}),/stop/);assert.equal(calls,0);
   await assert.rejects(retrieveWholeQualityEvidence({issue:issue(),retrieveKnowledge:async()=>{throw Error('offline failure');}}),/offline failure/);
+});
+
+
+test('oversized verified observation quotes are recorded as omitted seeds without breaking other recall or altering evidence',()=>{
+  const quote=value=>({quote:value,lineStart:1,lineEnd:1,lineWindowUtf16Start:0,lineWindowUtf16End:value.length,lineWindowBodySha256:hash(value),matchedQuoteUtf16Start:0,matchedQuoteUtf16End:value.length});
+  const large=quote('甲'.repeat(2218)),small=quote('她关门后把钥匙交给同伴。');
+  const item={id:'observation-1',recordType:'checked_analysis_unit',source:{sourceId:'source-a',sourceSha256:'a'.repeat(64),textVersion:'text-v1'},currentReviewState:{analysisVersion:'analysis-v1',reviewRecordId:'review-1'},quotes:[large,small]};
+  const input={contractVersion:'narrative-observation-query-1',queryHash:'b'.repeat(64),status:'covered',request:{query:issue().question},results:[item]};
+  const before=structuredClone(input), recall=buildWholeQualityObservationRecall(issue(),input);
+  assert.deepEqual(input,before);assert.equal(recall.seeds.length,1);assert.equal(recall.seeds[0].quote,small.quote);
+  assert.equal(recall.excludedQuotes[0].quoteSha256,hash(large.quote));assert.equal(recall.excludedQuotes[0].characters,2218);
+  assert.doesNotThrow(()=>addWholeQualityObservationRecall(buildWholeQualityQuery(issue()),recall));
+  const allLarge=structuredClone(input);allLarge.results[0].quotes=[large];
+  const empty=buildWholeQualityObservationRecall(issue(),allLarge);assert.equal(empty.seeds.length,0);assert.equal(empty.excludedQuotes.length,1);
+  assert.doesNotThrow(()=>addWholeQualityObservationRecall(buildWholeQualityQuery(issue()),empty));
+  const forged=structuredClone(input);forged.results[0].quotes[0].matchedQuoteUtf16End--;
+  assert.throws(()=>buildWholeQualityObservationRecall(issue(),forged),/UTF-16 binding/);
 });

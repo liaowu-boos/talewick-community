@@ -105,3 +105,18 @@ test('frozen body and citation retain whitespace and emoji UTF-16 offsets exactl
   assert.equal('😀'.length, 2, 'offset fixture must exercise JavaScript UTF-16 code units');
   assert.equal(body.slice(start + 1, start + 3), '😀');
 });
+
+test('legacy severe harms are never relabelled from prose; explicit v2 attribution is separate', () => {
+  const old = independentReviewView({ schemaVersion: 'whole-quality-evaluation-result-1', adoptionBoundary: 'preserve_original', severeHarms: [{ comparison: { statement: 'B原稿有问题，A已修复' } }] }, 'compare');
+  assert.match(old.boundary, /历史建议/);
+  assert.match(old.attributionLines[0], /旧版归属未区分/);
+  assert.ok(!old.attributionLines.some(line => line.includes('候选严重损伤记录：0')));
+  const fresh = independentReviewView({ schemaVersion: 'whole-quality-evaluation-result-2', adoptionBoundary: 'eligible_for_editorial_consideration', severeHarmAttribution: { baselineIssues: [{}, {}, {}], candidateRisks: [], unknown: [] } }, 'compare');
+  assert.match(fresh.boundary, /编辑选择/);
+  assert.ok(fresh.attributionLines.includes('原稿严重问题记录：3 条'));
+  assert.ok(fresh.attributionLines.includes('候选严重损伤记录：0 条'));
+  const uncertain = independentReviewView({ schemaVersion: 'whole-quality-evaluation-result-2', adoptionBoundary: 'narrowed_recheck_required', severeHarmAttribution: { baselineIssues: [{}], candidateRisks: [{}], unknown: [{}] } }, 'compare');
+  assert.match(uncertain.boundary, /复核/);
+  assert.ok(uncertain.attributionLines.includes('候选严重损伤记录：1 条'));
+  assert.ok(uncertain.attributionLines.includes('问题归属待核对：1 条'));
+});

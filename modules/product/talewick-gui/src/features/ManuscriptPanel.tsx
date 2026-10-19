@@ -24,6 +24,7 @@ import { DialogShell, downloadText, EmptyState, formatDate, TextAreaField } from
 import { Full15ReviewPanel } from '@/features/Full15ReviewPanel';
 import { IndependentReviewPanel } from '@/features/IndependentReviewPanel';
 import type { ReviewEvidenceLocation } from '@/model/independent-review-view';
+import { countercheckAssessment, countercheckName, crossChapterSummary, crossChapterBoundaryNote } from '@/model/cross-chapter-view';
 
 interface LocalDraft {
   key: string;
@@ -453,6 +454,48 @@ const displayItemText = (value: unknown, fallback: string): string => {
   return item ? textValue(item.observation) || textValue(item.issue) || textValue(item.summary) || textValue(item.reason) || textValue(item.action) || fallback : textValue(value) || fallback;
 };
 
+function CrossChapterReviewDetails({ quality, source, candidate }: { quality: Record<string, unknown>; source: Chapter[]; candidate: Chapter[] }) {
+  const bundle = objectValue(quality.crossChapterReview);
+  const review = objectValue(bundle?.review);
+  const recheckBundle = objectValue(quality.crossChapterRecheck);
+  const recheckReview = objectValue(recheckBundle?.review);
+  const recheckIncomplete = objectValue(quality.crossChapterRecheckIncomplete);
+  const resolution = objectValue(quality.crossChapterResolution);
+  if (bundle?.schemaVersion !== 'whole-quality-cross-chapter-bundle-1' || review?.schemaVersion !== 'cross-chapter-review-result-1') return null;
+  const summary = crossChapterSummary(quality);
+  if (!summary) return null;
+  const findings = arrayValue(review.findings).map(objectValue).filter((item): item is Record<string, unknown> => Boolean(item));
+  const recheckFindings = arrayValue(recheckReview?.findings).map(objectValue).filter((item): item is Record<string, unknown> => Boolean(item));
+  const outcomeItems = arrayValue(resolution?.items).map(objectValue).filter((item): item is Record<string, unknown> => Boolean(item));
+  const outcomeByFinding = new Map(outcomeItems.map(item => [textValue(item.findingId), item]));
+  const statusLabel = (status: unknown) => status === 'confirmed_conflict' ? '已确认冲突' : status === 'ambiguous' ? '待澄清' : status === 'resolved' ? '已确认非冲突' : '状态未知';
+  const repairLabel = (status: unknown) => status === 'resolved_in_candidate' ? '候选已修复' : status === 'unresolved' ? '未确认修复' : '';
+  const rereadLabel = (status: unknown) => ({ resolved: '复查确认已解决', unresolved: '复查确认未解决', uncertain: '复查仍不确定', not_attempted: '未执行复查', incomplete: '复查未完成' } as Record<string, string>)[textValue(status)] || '未记录候选复查';
+
+  return <details className="rounded-2xl border border-border-button-default p-4">
+    <summary className="cursor-pointer text-body-medium">{summary.label}</summary>
+    <div className="mt-4 flex flex-col gap-4">
+      <p className="text-body-regular text-text-secondary">原稿待澄清 {summary.sourceAmbiguous} 项，已确认非冲突 {summary.sourceResolved} 项，原定问题未结案 {summary.unrepairedOriginalIssues} 项。任务流程完成只表示报告已保存，不代表质量通过；未改动不算修复。</p>
+      {recheckIncomplete?.status === 'incomplete' && <p className="text-body-regular text-text-error-primary">候选跨章核查未完成，两次失败记录已保留。正文修改可继续接受独立盲评，但不能把缺少核查结果当作没有矛盾，当前候选不可采纳。</p>}
+      {findings.length ? findings.map((finding, index) => {
+        const findingId = textValue(finding.id) || textValue(finding.groupId) || `finding-${index + 1}`;
+        const outcome = outcomeByFinding.get(findingId);
+        const counterchecks = Object.entries(objectValue(finding.counterchecks) ?? {}).map(([name, value]) => ({ name, value: objectValue(value) })).filter(item => item.value);
+        return <section key={`${textValue(finding.groupId)}-${index}`} className="rounded-xl bg-tw-glass p-4">
+          <div className="flex flex-wrap items-center gap-2"><p className="text-body-medium">{textValue(finding.summary) || `跨章发现 ${index + 1}`}</p><span className="rounded-full border border-border-button-default px-2 py-1 text-caption-1-medium">{statusLabel(finding.status)}</span>{outcome && <span className="rounded-full border border-border-button-default px-2 py-1 text-caption-1-medium">{repairLabel(outcome.repairStatus)}</span>}</div>
+          <p className="mt-2 text-caption-1-regular text-text-tertiary">{textValue(finding.resolutionReason) || '未记录原稿裁定原因'}{textValue(finding.sameEventDecision) ? ` · 同一事件判断：${textValue(finding.sameEventDecision)}` : ''}</p>
+          {crossChapterBoundaryNote(finding) && <p className="mt-2 text-body-2-regular text-text-secondary">{crossChapterBoundaryNote(finding)}</p>}
+          <details className="mt-3 rounded-xl border border-border-button-default p-3"><summary className="cursor-pointer text-body-2-medium">原稿逐字证据（{arrayValue(finding.evidence).length}）</summary><div className="mt-3"><EvidenceList value={finding.evidence} /></div></details>
+          {outcome && <details className="mt-3 rounded-xl border border-border-button-default p-3"><summary className="cursor-pointer text-body-2-medium">候选复查结果：{rereadLabel(outcome.rereadAssessment)}</summary><p className="mt-2 text-body-regular text-text-secondary">{textValue(outcome.reason) || '未记录复查理由'}</p>{textList(outcome.planItemIds).length > 0 && <p className="mt-2 text-caption-1-regular text-text-tertiary">关联修订组：{textList(outcome.planItemIds).join('、')}</p>}</details>}
+          {counterchecks.length > 0 && <details className="mt-3 rounded-xl border border-border-button-default p-3"><summary className="cursor-pointer text-body-2-medium">反证与澄清检查（{counterchecks.length}）</summary><div className="mt-3 flex flex-col gap-3">{counterchecks.map(({ name, value }) => <div key={name}><p className="text-body-2-medium">{countercheckName(name)} · {countercheckAssessment(value?.assessment)}</p><p className="mt-1 text-body-2-regular text-text-secondary">{textValue(value?.rationale) || '未记录理由'}</p>{arrayValue(value?.evidence).length > 0 && <div className="mt-2"><EvidenceList value={value?.evidence} /></div>}</div>)}</div></details>}
+        </section>;
+      }) : <p className="text-body-regular text-text-secondary">跨章核查没有形成候选比较项。</p>}
+      {recheckBundle?.schemaVersion === 'whole-quality-cross-chapter-bundle-1' && <details className="rounded-xl border border-border-button-default p-3"><summary className="cursor-pointer text-body-2-medium">候选版本独立复查（{recheckFindings.length}）</summary><div className="mt-3 flex flex-col gap-3">{recheckFindings.length ? recheckFindings.map((finding, index) => <section key={`${textValue(finding.groupId)}-${index}`} className="rounded-xl bg-tw-glass p-3"><p className="text-body-medium">{textValue(finding.summary) || `候选复查 ${index + 1}`}</p><p className="mt-1 text-caption-1-regular text-text-tertiary">{statusLabel(finding.status)} · {textValue(finding.resolutionReason) || '未记录裁定原因'}</p>{crossChapterBoundaryNote(finding) && <p className="mt-2 text-body-2-regular text-text-secondary">{crossChapterBoundaryNote(finding)}</p>}<div className="mt-3"><EvidenceList value={finding.evidence} /></div></section>) : <p className="text-body-regular text-text-secondary">候选复查没有形成比较项。</p>}</div></details>}
+      <details className="rounded-xl border border-border-button-default p-3"><summary className="cursor-pointer text-body-2-medium">原稿与候选版本</summary><div className="mt-4"><VersionComparison previous={{ id: 'cross-chapter-source', label: '跨章核查原稿', date: '', chapters: source }} current={candidate} beforeLabel="原稿" afterLabel="候选版本" /></div></details>
+    </div>
+  </details>;
+}
+
 function WholeQualityDetails({ result, source, disposition, conflicted, groups, selectedGroupIds, onToggleGroup }: {
   result: RuntimeResult;
   source: Chapter[];
@@ -485,13 +528,14 @@ function WholeQualityDetails({ result, source, disposition, conflicted, groups, 
   const selection = new Set(selectedGroupIds);
   const adoptionRecord = objectValue(adoption) ?? {};
   const requiredBaseRevision = textValue(adoptionRecord.requiredBaseRevision);
-  const statusLabel = ({ candidate_ready: '候选已生成', candidate_ready_reread_incomplete: '候选已生成，最终复读未完整闭合', no_change: '质量流程决定保留原稿' } as Record<string, string>)[textValue(whole.status)] || '状态记录不完整';
+  const statusLabel = ({ candidate_ready: '候选已生成，质量未验收', candidate_ready_reread_incomplete: '候选已生成，最终复读未完整闭合', candidate_ready_cross_check_incomplete: '候选已生成，跨章核查未完成，可独立盲评但不可采纳', no_change: '未改动不算修复' } as Record<string, string>)[textValue(whole.status)] || '状态记录不完整';
   const qualityAdoption = disposition === 'partially-applied' ? '混合稿没有继承完整候选的复读结论，仍需复核所选组合。' : disposition === 'applied' ? '全部修订组已采纳，采纳前原稿已保存。' : '选择修订组不会立即修改正文；点击采纳后才会生成新版本。';
 
   return <div className="flex flex-col gap-5">
     <section className="rounded-2xl border border-border-button-default p-4">
       <p className="text-body-medium">候选状态：{statusLabel}</p>
       <p className="mt-2 text-body-regular text-text-secondary">主要问题 {priorities.length} 项 · 修订组 {groups.length} 个 · 变化章节 {changedIds.length || '0'} 个。</p>
+      <p className="mt-2 text-body-regular text-text-secondary">任务流程 completed 只表示结果已保存，不代表文学质量通过。</p>
       <p className="mt-2 text-body-regular text-text-secondary">{qualityAdoption}</p>
       {conflicted && <p className="mt-2 text-body-regular text-text-error-primary">当前工作稿与任务起点不一致，修订组不可采纳。</p>}
       {textValue(result.warnings?.[0]) && <p className="mt-2 text-body-regular text-text-error-primary">{result.warnings[0]}</p>}
@@ -518,6 +562,8 @@ function WholeQualityDetails({ result, source, disposition, conflicted, groups, 
     </section>
 
     <details className="rounded-2xl border border-border-button-default p-4"><summary className="cursor-pointer text-body-medium">原稿与完整候选对比（{changedIds.length} 章）</summary><div className="mt-4"><VersionComparison previous={{ id: 'whole-quality-source', label: '任务起点原稿', date: '', chapters: sourceChapters }} current={result.chapters} beforeLabel="原稿" afterLabel="完整候选" /></div></details>
+
+    <CrossChapterReviewDetails quality={quality} source={sourceChapters} candidate={result.chapters} />
 
     <details className="rounded-2xl border border-border-button-default p-4"><summary className="cursor-pointer text-body-medium">主要问题与独立阅读（{priorities.length}）</summary><div className="mt-4 flex flex-col gap-3">{priorities.length ? priorities.map((item, index) => { const row = objectValue(item); return <section key={textValue(row?.id) || index} className="rounded-xl bg-tw-glass p-4"><p className="text-body-medium">{displayItemText(item, `问题 ${index + 1}`)}</p>{row && textValue(row.expectedEffect) && <p className="mt-2 text-body-regular text-text-secondary">预期作用：{textValue(row.expectedEffect)}</p>}{row && <div className="mt-3"><EvidenceList value={row.evidence} /></div>}{row && textList(row.limitations).map((line, lineIndex) => <p key={lineIndex} className="mt-2 text-body-2-regular text-text-tertiary">边界：{line}</p>)}</section>; }) : <p className="text-body-regular text-text-secondary">独立阅读没有列出需要修改的主要问题。</p>}{sceneChanges.length > 0 && <p className="text-body-2-regular text-text-secondary">全文阅读记录了 {sceneChanges.length} 条场景变化；详细记录由任务结果保留。</p>}</div></details>
 

@@ -91,9 +91,16 @@ test('cancel wins over a late adapter result and retry keeps attempt history', a
   for (let i = 0; i < 1000 && typeof release !== 'function'; i++) await new Promise(resolve => setTimeout(resolve, 2));
   assert.equal(typeof release, 'function', 'wait for the delayed adapter, not merely the running status');
   await f.service.cancel(first.id); release(); assert.equal((await settled(f.service, first.id)).status, 'cancelled');
-  f.service.adapter.startIndependentReview = async args => result(args, args.request);
+  f.service.tasks.get(first.id).sealedStageIds = ['old-stage-1', 'old-stage-2'];
+  f.service.adapter.startIndependentReview = async args => {
+    await args.onProgress({ type: 'dispatch_started', stageId: '01-reader-1-single' });
+    const newTask = [...f.service.tasks.values()].find(task => task.linkedAttemptId === first.id);
+    assert.equal(f.service.get(newTask.id).progress.completedStages, 0, 'a new attempt cannot inherit completed stages from the failed attempt');
+    return result(args, args.request);
+  };
   const retry = await f.service.retry(first.id); assert.equal(retry.linkedAttemptId, first.id); assert.notEqual(retry.id, first.id);
   assert.equal((await settled(f.service, retry.id)).status, 'complete'); assert.equal(f.service.get(first.id).status, 'cancelled');
+  assert.deepEqual(f.service.tasks.get(first.id).sealedStageIds, ['old-stage-1', 'old-stage-2']);
 });
 
 test('a hydrated interrupted run resumes from its sealed directory', async t => {

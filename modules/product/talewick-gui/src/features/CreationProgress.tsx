@@ -37,11 +37,14 @@ export function CreationProgress({ project, onTaskAction, onResult }: CreationPr
     detail = binding.message || '当前稿件保持原样，可以先查看本次返回的结果。';
   } else if (task?.status === 'completed') {
     const whole = task.revisionMode === 'whole-manuscript-v1' ? task.result?.wholeRevision : undefined;
+    const quality = task.revisionMode === 'whole-manuscript-v2' ? task.result?.wholeRevision : undefined;
     const reread = wholeRevisionRereadPresentation(whole);
     const rereadIncomplete = whole?.status === 'candidate_ready_reread_incomplete' || reread.status === 'incomplete' || Boolean(task.result?.wholeRevision && task.result.warnings.some(warning => warning.includes('复读') && warning.includes('未完成')));
-    title = whole ? rereadIncomplete ? '整稿候选已生成，独立复读未完成' : reread.status === 'bounded' ? '整稿候选已生成，独立复读覆盖有限' : binding.resultDisposition === 'applied' ? '整稿候选已整体采纳' : binding.resultDisposition === 'declined' ? '已保留原稿' : '整稿候选待确认'
+    title = quality ? quality.status === 'no_change' ? '整稿核查完成，未改动不算修复' : quality.status === 'candidate_ready_cross_check_incomplete' ? '候选已生成，跨章事实核查未完成' : quality.status === 'candidate_ready_reread_incomplete' ? '整稿候选已生成，复查未完成' : '整稿候选已生成，质量未验收'
+      : whole ? rereadIncomplete ? '整稿候选已生成，独立复读未完成' : reread.status === 'bounded' ? '整稿候选已生成，独立复读覆盖有限' : binding.resultDisposition === 'applied' ? '整稿候选已整体采纳' : binding.resultDisposition === 'declined' ? '已保留原稿' : '整稿候选待确认'
       : pending ? `${pending} 处修改待审阅` : task.stage === '稿件已生成，部分检查未完成' ? task.stage : task.kind === 'create' ? '完整初稿已就绪' : '本轮修改已完成';
-    detail = whole ? binding.message || '查看方案、证据、未解决项和原稿对比后，再决定是否整体采纳。'
+    detail = quality ? quality.status === 'candidate_ready_cross_check_incomplete' ? '已保留实际修改和核查失败记录。可以继续独立盲评，当前候选不可采纳。' : `${binding.message || '查看跨章证据、候选复查和未解决项后，再决定是否采纳。'} 流程完成不代表文学质量通过。`
+      : whole ? binding.message || '查看方案、证据、未解决项和原稿对比后，再决定是否整体采纳。'
       : pending ? '在文稿中逐条采纳或保留原文。待审建议不会写入导出稿件。' : binding.message || '可以继续阅读、编辑，或从版本记录回看和导出稿件。';
   } else {
     title = task ? runtimeStage(task) : '创作等待连接';

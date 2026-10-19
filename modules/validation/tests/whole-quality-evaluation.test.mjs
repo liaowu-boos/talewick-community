@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
-import {mkdtempSync,writeFileSync} from 'node:fs';
+import {mkdtempSync,readFileSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -43,7 +43,7 @@ function pairRecords(bundle,independent,preferences=['first','second']){
     const first=packet.manuscripts[0],second=packet.manuscripts[1];
     return {schemaVersion:packet.schemaVersion,packetSha256:packet.packetSha256,readerId:packet.readerId,
       independentRecordSha256:wholeQualitySha256(independent[index]),preference:preferences[index],comparisons:[{
-        id:`cmp-${packet.readerId}`,claimType:'editorial_hypothesis',statement:'两稿的人物主动性呈现不同',severeHarm:false,
+        id:`cmp-${packet.readerId}`,claimType:'editorial_hypothesis',statement:'两稿的人物主动性呈现不同',severeHarm:{status:'none',blindIds:[],evidence:[]},
         evidence:[cite(first,'ch-1',first.chapters[0].body.slice(0,3)),cite(second,'ch-1',second.chapters[0].body.slice(0,3))],
       }]};
   });
@@ -93,11 +93,11 @@ test('standalone record readerId must exactly match its packet',()=>{
 });
 
 test('valid staged records finalize without voting or a literary pass',()=>{
-  const {publicBundle}=prepared(),independent=independentRecords(publicBundle),pairs=pairRecords(publicBundle,independent),goal=goalRecord(publicBundle,pairs);
+  const {publicBundle,privateBinding}=prepared(),independent=independentRecords(publicBundle),pairs=pairRecords(publicBundle,independent),goal=goalRecord(publicBundle,pairs);
   independent.forEach(item=>assert.equal(validateIndependentReading(publicBundle,item).ok,true));
   pairs.forEach(item=>assert.equal(validateBlindPairReview(publicBundle,item).ok,true));
   assert.equal(validateGoalAudit(publicBundle,goal).ok,true);
-  const result=finalizeWholeQualityEvaluation({bundle:publicBundle,independentRecords:independent,pairRecords:pairs,goalRecord:goal});
+  const result=finalizeWholeQualityEvaluation({bundle:publicBundle,privateBinding,independentRecords:independent,pairRecords:pairs,goalRecord:goal});
   assert.equal(result.goalFulfillment,true);assert.equal(result.automaticAdoption,false);assert.equal(result.literaryPass,'NOT_COMPUTED');
   assert.equal(result.adoptionBoundary,'eligible_for_editorial_consideration');
   assert.equal(result.voteResult,null);assert.equal(result.totalScore,null);
@@ -128,10 +128,10 @@ test('a pair comparison must trace evidence to both anonymous manuscripts',()=>{
 });
 
 test('internal coherence or blind preference cannot turn an unimplemented plan into goal achievement',()=>{
-  const {publicBundle}=prepared(),independent=independentRecords(publicBundle),pairs=pairRecords(publicBundle,independent,['second','first']);
+  const {publicBundle,privateBinding}=prepared(),independent=independentRecords(publicBundle),pairs=pairRecords(publicBundle,independent,['second','first']);
   pairs.forEach(item=>item.comparisons[0].statement='候选稿整体更自洽');
   const goal=goalRecord(publicBundle,pairs,{status:'not_implemented',outcomeStatuses:['not_implemented','not_implemented']});
-  const result=finalizeWholeQualityEvaluation({bundle:publicBundle,independentRecords:independent,pairRecords:pairs,goalRecord:goal});
+  const result=finalizeWholeQualityEvaluation({bundle:publicBundle,privateBinding,independentRecords:independent,pairRecords:pairs,goalRecord:goal});
   assert.equal(result.goalFulfillment,false);assert.equal(result.adoptionBoundary,'goals_not_achieved');assert.deepEqual(result.unimplementedGoalIds,['g-agency']);
 });
 
@@ -148,9 +148,9 @@ test('unchanged evidence cannot support an implemented outcome',()=>{
 
 test('explicit no-change may have no goals without vacuous goal achievement',()=>{
   const input=structuredClone(request);input.candidate={mode:'no_change',chapters:baseline};input.goals=[];
-  const {publicBundle}=prepareWholeQualityEvaluation(input),independent=independentRecords(publicBundle),pairs=pairRecords(publicBundle,independent);
+  const {publicBundle,privateBinding}=prepareWholeQualityEvaluation(input),independent=independentRecords(publicBundle),pairs=pairRecords(publicBundle,independent);
   const packet=publicBundle.goalPacket,goal={schemaVersion:packet.schemaVersion,packetSha256:packet.packetSha256,blindPairRecordSha256s:pairs.map(wholeQualitySha256),goalAssessments:[]};
-  const result=finalizeWholeQualityEvaluation({bundle:publicBundle,independentRecords:independent,pairRecords:pairs,goalRecord:goal});
+  const result=finalizeWholeQualityEvaluation({bundle:publicBundle,privateBinding,independentRecords:independent,pairRecords:pairs,goalRecord:goal});
   assert.equal(result.goalFulfillment,'not_applicable');assert.equal(result.adoptionBoundary,'no_change');assert.equal(result.qualityGain,'NO_QUALITY_GAIN_ASSERTED');
   const revised=structuredClone(request);revised.goals=[];assert.throws(()=>prepareWholeQualityEvaluation(revised),error=>error.code==='GOALS_REQUIRED'||error.code==='REVISED_REQUIRES_GOALS');
 });
@@ -161,30 +161,85 @@ test('the whole public bundle is hash-bound across stages',()=>{
   assert.throws(()=>validateIndependentReading(publicBundle,record),error=>error.code==='BUNDLE_TAMPERED');
 });
 
+test('the core finalizer binds private role hashes to both anonymous manuscript snapshots',()=>{
+  const {publicBundle,privateBinding}=prepared(),independent=independentRecords(publicBundle),pairs=pairRecords(publicBundle,independent),goal=goalRecord(publicBundle,pairs);
+  const forgedBinding={...privateBinding,candidateManuscriptSha256:'0'.repeat(64)};
+  assert.throws(
+    ()=>finalizeWholeQualityEvaluation({bundle:publicBundle,privateBinding:forgedBinding,independentRecords:independent,pairRecords:pairs,goalRecord:goal}),
+    error=>error.code==='PRIVATE_BINDING_INVALID',
+  );
+
+  const body=structuredClone(publicBundle);delete body.bundleSha256;
+  const second=body.blindPairPackets[1],candidateBlindId=Object.entries(privateBinding.bindings).find(([,role])=>role==='candidate')[0];
+  second.manuscripts=structuredClone(second.manuscripts);
+  const manuscript=second.manuscripts.find(item=>item.blindId===candidateBlindId);
+  manuscript.chapters[0].body+='被篡改';manuscript.manuscriptSha256=wholeQualitySha256(manuscript.chapters);
+  const packetBody=structuredClone(second);delete packetBody.packetSha256;second.packetSha256=wholeQualitySha256(packetBody);
+  const forgedBundle={...body,bundleSha256:wholeQualitySha256(body)};
+  const rebound={...privateBinding,bundleSha256:forgedBundle.bundleSha256};
+  assert.throws(
+    ()=>finalizeWholeQualityEvaluation({bundle:forgedBundle,privateBinding:rebound,independentRecords:independent,pairRecords:pairs,goalRecord:goal}),
+    error=>error.code==='PRIVATE_BINDING_INVALID',
+  );
+});
+
 test('a severe harm blocks candidate consideration even when goals were implemented',()=>{
-  const {publicBundle}=prepared(),independent=independentRecords(publicBundle),pairs=pairRecords(publicBundle,independent);
-  pairs[0].comparisons[0].severeHarm=true;
+  const {publicBundle,privateBinding}=prepared(),independent=independentRecords(publicBundle),pairs=pairRecords(publicBundle,independent);
+  const candidateBlindId=Object.entries(privateBinding.bindings).find(([,role])=>role==='candidate')[0];
+  const packet=publicBundle.blindPairPackets[0],manuscript=packet.manuscripts.find(item=>item.blindId===candidateBlindId);
+  pairs[0].comparisons[0].severeHarm={status:'attributed',blindIds:[candidateBlindId],evidence:[cite(manuscript,'ch-1',manuscript.chapters[0].body.slice(0,3))]};
   const goal=goalRecord(publicBundle,pairs);
-  const result=finalizeWholeQualityEvaluation({bundle:publicBundle,independentRecords:independent,pairRecords:pairs,goalRecord:goal});
-  assert.equal(result.adoptionBoundary,'preserve_original');assert.equal(result.severeHarms.length,1);
+  const result=finalizeWholeQualityEvaluation({bundle:publicBundle,privateBinding,independentRecords:independent,pairRecords:pairs,goalRecord:goal});
+  assert.equal(result.adoptionBoundary,'preserve_original');assert.equal(result.severeHarms.length,1);assert.equal(result.severeHarmAttribution.candidateRisks.length,1);
+});
+
+test('severe harm attribution distinguishes baseline issues, shared harm, and unknown risk',()=>{
+  for(const scenario of ['baseline','both','unknown']){
+    const {publicBundle,privateBinding}=prepared(),independent=independentRecords(publicBundle),pairs=pairRecords(publicBundle,independent);
+    const packet=publicBundle.blindPairPackets[0],idsByRole=Object.fromEntries(Object.entries(privateBinding.bindings).map(([id,role])=>[role,id]));
+    if(scenario==='unknown'){
+      pairs[0].comparisons[0].severeHarm={status:'unknown',blindIds:[],evidence:packet.manuscripts.map(item=>cite(item,'ch-1',item.chapters[0].body.slice(0,3)))};
+    }else{
+      const affected=scenario==='both'?[idsByRole.baseline,idsByRole.candidate]:[idsByRole.baseline];
+      pairs[0].comparisons[0].severeHarm={status:'attributed',blindIds:affected,evidence:affected.map(id=>{const manuscript=packet.manuscripts.find(item=>item.blindId===id);return cite(manuscript,'ch-1',manuscript.chapters[0].body.slice(0,3));})};
+    }
+    const goal=goalRecord(publicBundle,pairs),result=finalizeWholeQualityEvaluation({bundle:publicBundle,privateBinding,independentRecords:independent,pairRecords:pairs,goalRecord:goal});
+    assert.equal(result.qualityGain,'NO_QUALITY_GAIN_ASSERTED');
+    if(scenario==='baseline'){
+      assert.equal(result.adoptionBoundary,'eligible_for_editorial_consideration');
+      assert.equal(result.severeHarmAttribution.baselineIssues.length,1);assert.equal(result.severeHarmAttribution.candidateRisks.length,0);
+    }else if(scenario==='both'){
+      assert.equal(result.adoptionBoundary,'preserve_original');
+      assert.equal(result.severeHarmAttribution.baselineIssues.length,1);assert.equal(result.severeHarmAttribution.candidateRisks.length,1);
+    }else{
+      assert.equal(result.adoptionBoundary,'narrowed_recheck_required');assert.equal(result.severeHarmAttribution.unknown.length,1);
+    }
+  }
+});
+
+test('pair v2 rejects attributed harm without exact evidence for every affected blindId',()=>{
+  const {publicBundle}=prepared(),independent=independentRecords(publicBundle),pairs=pairRecords(publicBundle,independent),packet=publicBundle.blindPairPackets[0];
+  const [first,second]=packet.manuscripts;
+  pairs[0].comparisons[0].severeHarm={status:'attributed',blindIds:[first.blindId,second.blindId],evidence:[cite(first,'ch-1',first.chapters[0].body.slice(0,3))]};
+  assert.throws(()=>validateBlindPairReview(publicBundle,pairs[0]),error=>error.code==='SEVERE_HARM_ATTRIBUTION_EVIDENCE');
 });
 
 test('divergent readings are preserved and force a narrowed recheck',()=>{
-  const {publicBundle}=prepared(),independent=independentRecords(publicBundle),pairs=pairRecords(publicBundle,independent,['first','no_clear_preference']),goal=goalRecord(publicBundle,pairs);
-  const result=finalizeWholeQualityEvaluation({bundle:publicBundle,independentRecords:independent,pairRecords:pairs,goalRecord:goal});
+  const {publicBundle,privateBinding}=prepared(),independent=independentRecords(publicBundle),pairs=pairRecords(publicBundle,independent,['first','no_clear_preference']),goal=goalRecord(publicBundle,pairs);
+  const result=finalizeWholeQualityEvaluation({bundle:publicBundle,privateBinding,independentRecords:independent,pairRecords:pairs,goalRecord:goal});
   assert.equal(result.adoptionBoundary,'narrowed_recheck_required');assert.equal(result.divergentReadings.preferenceDivergence,true);assert.equal(result.divergentReadings.semanticDivergence,'NOT_PROGRAMMATICALLY_ASSESSED');assert.equal(result.divergentReadings.records.length,2);
 });
 
 test('matching no-clear-preference readings are not preference divergence',()=>{
-  const {publicBundle}=prepared(),independent=independentRecords(publicBundle),pairs=pairRecords(publicBundle,independent,['no_clear_preference','no_clear_preference']),goal=goalRecord(publicBundle,pairs);
-  const result=finalizeWholeQualityEvaluation({bundle:publicBundle,independentRecords:independent,pairRecords:pairs,goalRecord:goal});
+  const {publicBundle,privateBinding}=prepared(),independent=independentRecords(publicBundle),pairs=pairRecords(publicBundle,independent,['no_clear_preference','no_clear_preference']),goal=goalRecord(publicBundle,pairs);
+  const result=finalizeWholeQualityEvaluation({bundle:publicBundle,privateBinding,independentRecords:independent,pairRecords:pairs,goalRecord:goal});
   assert.equal(result.adoptionBoundary,'eligible_for_editorial_consideration');assert.equal(result.divergentReadings.preferenceDivergence,false);
   assert.equal(result.divergentReadings.semanticDivergence,'NOT_PROGRAMMATICALLY_ASSESSED');
 });
 
 test('partially implemented goals require a narrowed recheck and are not fulfilled',()=>{
-  const {publicBundle}=prepared(),independent=independentRecords(publicBundle),pairs=pairRecords(publicBundle,independent),goal=goalRecord(publicBundle,pairs,{status:'partially_implemented',outcomeStatuses:['implemented','partially_implemented']});
-  const result=finalizeWholeQualityEvaluation({bundle:publicBundle,independentRecords:independent,pairRecords:pairs,goalRecord:goal});
+  const {publicBundle,privateBinding}=prepared(),independent=independentRecords(publicBundle),pairs=pairRecords(publicBundle,independent),goal=goalRecord(publicBundle,pairs,{status:'partially_implemented',outcomeStatuses:['implemented','partially_implemented']});
+  const result=finalizeWholeQualityEvaluation({bundle:publicBundle,privateBinding,independentRecords:independent,pairRecords:pairs,goalRecord:goal});
   assert.equal(result.goalFulfillment,false);assert.equal(result.adoptionBoundary,'narrowed_recheck_required');
 });
 
@@ -192,5 +247,16 @@ test('CLI is offline, stdout-only, and usable for prepare',()=>{
   const dir=mkdtempSync(join(tmpdir(),'whole-quality-')),path=join(dir,'request.json');writeFileSync(path,JSON.stringify(request));
   const cli=fileURLToPath(new URL('../runtime/whole-quality-evaluation-cli.mjs',import.meta.url));
   const run=spawnSync(process.execPath,[cli,'prepare',path],{encoding:'utf8'});
-  assert.equal(run.status,0,run.stderr);assert.equal(JSON.parse(run.stdout).publicBundle.schemaVersion,'whole-quality-evaluation-1');
+  assert.equal(run.status,0,run.stderr);assert.equal(JSON.parse(run.stdout).publicBundle.schemaVersion,'whole-quality-evaluation-2');
+  const help=spawnSync(process.execPath,[cli,'--help'],{encoding:'utf8'});
+  assert.equal(help.status,0,help.stderr);assert.match(help.stdout,/finalize input: .*"privateBinding"/);
+});
+
+test('CLI finalize rejects a private binding that does not match the anonymous manuscript SHA',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'whole-quality-cli-finalize-')),path=join(dir,'finalize.json');
+  const {publicBundle,privateBinding}=prepared(),independent=independentRecords(publicBundle),pairs=pairRecords(publicBundle,independent),goal=goalRecord(publicBundle,pairs);
+  writeFileSync(path,JSON.stringify({bundle:publicBundle,privateBinding:{...privateBinding,baselineManuscriptSha256:'f'.repeat(64)},independentRecords:independent,pairRecords:pairs,goalRecord:goal}));
+  const cli=fileURLToPath(new URL('../runtime/whole-quality-evaluation-cli.mjs',import.meta.url));
+  const run=spawnSync(process.execPath,[cli,'finalize',path],{encoding:'utf8'});
+  assert.equal(run.status,1);assert.match(run.stderr,/PRIVATE_BINDING_INVALID/);
 });

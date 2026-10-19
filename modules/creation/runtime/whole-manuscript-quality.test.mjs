@@ -2,12 +2,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFileSync, statSync } from 'node:fs';
 import { runWholeManuscriptQualityRevision, assertWholeQualityResult, createWholeQualityRequestSpec,
-  createWholeQualityDraftGuidance, inspectStoredWholeQualityReadingFailure } from './whole-manuscript-quality.mjs';
+  createWholeQualityDraftGuidance, inspectStoredWholeQualityReadingFailure,
+  runCrossChapterAwareWholeManuscriptQualityRevision } from './whole-manuscript-quality.mjs';
 
 const chapters = [
   { id: 'ch-1', title: '旧账', body: '周青把零件簿推回柜台。\n她说先把旧账分清，再谈谁留下。' },
-  { id: 'ch-2', title: '分工', body: '第二天电话又响。\n林遥说自己只是回来帮忙，手却停在欠款页上。' },
+  { id: 'ch-2', title: '分工', body: '\n\n前序😀\r\n\r\n第二天电话又响。\n\n🙂林遥说自己只是回来帮忙，手却停在欠款页上。' },
   { id: 'ch-3', title: '清单', body: '周青把未完的清单递过去。\n林遥接过，没有说原谅。' },
 ];
 const request = () => ({ kind: 'revise', revisionMode: 'whole-manuscript-v2', projectTitle: '零件簿', instruction: '独立阅读，修复主要场景问题并保留克制结尾。', baseRevision: 'base-1', chapters: structuredClone(chapters) });
@@ -321,3 +323,203 @@ test('new draft guidance exposes the same scene-change and failure-criterion met
   assert.equal(guidance.schemaVersion,'whole-quality-draft-guidance-1');assert.match(guidance.guidanceSha256,/^[0-9a-f]{64}$/);assert.match(guidance.boundary,/不证明/);});
 
 test('request spec binds v2 source, objective and base revision',()=>{const spec=createWholeQualityRequestSpec(request());assert.equal(spec.revisionMode,'whole-manuscript-v2');assert.equal(spec.sourceBaseRevision,'base-1');assert.match(spec.inputFingerprint,/^[0-9a-f]{64}$/);});
+
+function crossReviewResult(chapterList,{confirmed=true}={}){const first=chapterList[0],second=chapterList[1],left='她说先把旧账分清，再谈谁留下。',right=confirmed?'林遥说自己只是回来帮忙，手却停在欠款页上。':'林遥接起电话，说明自己前一天已核过欠款，再把余下三家记到名下。';return{
+  schemaVersion:'cross-chapter-review-result-1',modelPolicy:'whole-manuscript-quality-json-1',manuscriptSha256:'a'.repeat(64),checkedChapterIds:chapterList.map(item=>item.id),chapterCoverage:[],entities:[],events:[],claims:[],comparisonGroups:[],
+  findings:confirmed?[{groupId:'fact-1',status:'confirmed_conflict',summary:'同一欠款事实被写成先已知、后初次接触。',sameEventDecision:'same',resolutionReason:'direct_conflict',
+    evidence:[{claimId:'c-1',chapterId:first.id,quote:left,start:first.body.indexOf(left),role:'support'},{claimId:'c-2',chapterId:second.id,quote:right,start:second.body.indexOf(right),role:'support'}],counterchecks:{}}]:[],
+  counts:{confirmed_conflict:confirmed?1:0,ambiguous:0,resolved:0},stageReceipts:[
+    {stage:'whole-quality:cross-chapter:extract',primaryResponseSha256:'1'.repeat(64)},
+    {stage:'whole-quality:cross-chapter:adjudicate',primaryResponseSha256:'2'.repeat(64)}],independentReviewProtocolMutation:false,qualityPreset:false,automaticRepairEligible:false};}
+
+function crossAwareFixture({unresolved=false,candidateUnrelated=false,candidateRelatedRenumbered=false}={}){const calls=[],reviewCalls=[];const model={calls,complete:async args=>{calls.push(args);const envelope=JSON.parse(args.user),u=args.stage.endsWith(':format-repair')?envelope.originalInput:envelope;
+  if(args.stage.startsWith('whole-quality:reading'))return readingResponse(u,{preserve:true});
+  if(args.stage.startsWith('whole-quality:plan')){const conflict=u.confirmedConflicts[0];if(unresolved)return JSON.stringify({schemaVersion:binding(u,'schemaVersion'),inputHash:binding(u,'inputHash'),sourceManuscriptSha256:binding(u,'sourceManuscriptSha256'),readingSha256:binding(u,'readingSha256'),retrievalSha256:binding(u,'retrievalSha256'),decision:'preserve_original',summary:'冻结冲突无法在授权范围内安全修订。',items:[],materialDecisions:[],unresolved:[{issueId:conflict.id,reason:'相邻说话人边界不够明确，保留为未决。'}]});
+    const scope=conflict.scopeOptions.find(item=>item.chapterId==='ch-2'&&item.quote.includes('林遥说自己只是回来帮忙'));
+    return JSON.stringify({schemaVersion:binding(u,'schemaVersion'),inputHash:binding(u,'inputHash'),sourceManuscriptSha256:binding(u,'sourceManuscriptSha256'),readingSha256:binding(u,'readingSha256'),retrievalSha256:binding(u,'retrievalSha256'),decision:'revise',summary:'在冻结连续段落内统一欠款认知。',items:[{id:'cross-plan-1',issueIds:[conflict.id],decision:'revise',scope:'linked_scenes',affectedChapterIds:['ch-2'],sceneIds:['s-2'],targets:[{id:'cross-target-1',sceneId:'s-2',chapterId:scope.chapterId,quote:scope.quote,purpose:'在最小连续段落内修复认知冲突'}],actionRequirements:[{id:'cross-req-1',description:'明确林遥此前已核过欠款并承担后续电话',targetIds:['cross-target-1'],expectedVisibleChange:'认知与行动在同一句可见',failureCriterion:'仍写成第一次接触欠款'}],action:'统一欠款认知并让承担落地。',rationale:'事实核对已确认互斥。',expectedEffect:'跨章事实一致。',failureCriteria:'删除问题但没有保留人物行动。',risks:['可能改变克制语气。'],preserve:[ev('ch-3','林遥接过，没有说原谅。','保留结尾优点')],adoptedSupplyIds:[],independentAdoption:'该事实修复不依赖其他修改组。'}],materialDecisions:[],unresolved:[]});}
+  if(args.stage.startsWith('whole-quality:feasibility')){const item=u.plan.items[0];return JSON.stringify({schemaVersion:binding(u,'schemaVersion'),inputHash:binding(u,'inputHash'),sourceManuscriptSha256:binding(u,'sourceManuscriptSha256'),planSha256:binding(u,'planSha256'),checks:[{planItemId:item.id,assessment:'feasible',reason:'冻结段落覆盖完整认知与动作。',requirementChecks:item.actionRequirements.map(req=>({requirementId:req.id,assessment:'supported',reason:'可在该连续段落完成。',targetIds:req.targetIds})),sourceEvidence:[ev('ch-2',item.targets[0].quote,'冻结范围')],blockingReasons:[],limitations:['仍须复读说话人和视角。']}]});}
+  if(args.stage.startsWith('whole-quality:revision')){const target=u.plan.items[0].targets[0];return JSON.stringify({schemaVersion:binding(u,'schemaVersion'),inputHash:binding(u,'inputHash'),sourceManuscriptSha256:binding(u,'sourceManuscriptSha256'),planSha256:binding(u,'planSha256'),feasibilitySha256:binding(u,'feasibilitySha256'),replacements:[{targetId:target.id,chapterId:target.chapterId,sourceQuote:target.quote,replacement:'林遥接起电话，说明自己前一天已核过欠款，再把余下三家记到名下。',appliedPlanItemIds:['cross-plan-1'],notes:['保持林遥为说话人与视角承担者。']}],skippedPlanItems:[]});}
+  if(args.stage.startsWith('whole-quality:reread')){const applied=!unresolved,quote='林遥接起电话，说明自己前一天已核过欠款，再把余下三家记到名下。';return JSON.stringify({schemaVersion:binding(u,'schemaVersion'),inputHash:binding(u,'inputHash'),sourceManuscriptSha256:binding(u,'sourceManuscriptSha256'),candidateManuscriptSha256:binding(u,'candidateManuscriptSha256'),checkedChapterIds:binding(u,'checkedChapterIds'),coverage:{status:'complete',omissions:[]},summary:applied?'冲突消除且说话人、视角和克制结尾保持。':'冲突未执行修订。',changeChecks:u.plan.items.filter(item=>item.decision==='revise').map(item=>({planItemId:item.id,executionStatus:'applied',goalAssessment:'implemented',coherenceAssessment:'consistent',reason:'认知与行动已经统一。',requirementChecks:item.actionRequirements.map(req=>({requirementId:req.id,assessment:'supported',reason:'候选逐字可见。',evidence:[ev('ch-2',quote,'冲突修复证据')]})),risks:[],recommendation:'eligible_for_user_choice'})),introducedIssues:[],unresolvedItems:[],preservedStrengths:[ev('ch-3','林遥接过，没有说原谅。','结尾仍保留')],crossChapterChecks:u.confirmedConflicts.map(conflict=>({conflictId:conflict.id,assessment:applied?'resolved':'not_attempted',reason:applied?'原互斥认知已统一。':'未执行修订。',evidence:applied?[ev('ch-2',quote,'候选事实一致')]:[]}))});}
+  throw Error(`unexpected ${args.stage}`);}};
+  const reviewCrossChapter=async ({manuscript,modelPolicy})=>{reviewCalls.push(structuredClone(manuscript));assert.equal(modelPolicy,'whole-manuscript-quality-json-1');const fixed=manuscript.chapters[1].body.includes('前一天已核过欠款');
+    if(fixed&&candidateUnrelated){const review=crossReviewResult(manuscript.chapters,{confirmed:false}),left='周青把零件簿推回柜台。',right='林遥接过，没有说原谅。';review.findings=[{groupId:'fact-1',status:'confirmed_conflict',summary:'候选稿另有与原欠款冲突无关的清单风险。',sameEventDecision:'same',resolutionReason:'direct_conflict',
+      evidence:[{claimId:'other-a',chapterId:'ch-1',quote:left,start:manuscript.chapters[0].body.indexOf(left),role:'support'},{claimId:'other-b',chapterId:'ch-3',quote:right,start:manuscript.chapters[2].body.indexOf(right),role:'support'}],counterchecks:{}}];review.counts.confirmed_conflict=1;return review;}
+    if(fixed&&candidateRelatedRenumbered){const review=crossReviewResult(manuscript.chapters,{confirmed:false}),left='她说先把旧账分清，再谈谁留下。',right='林遥接起电话，说明自己前一天已核过欠款，再把余下三家记到名下。';review.findings=[{groupId:'renumbered-9',status:'confirmed_conflict',summary:'复查仍认为旧账认知与后续承担互相冲突。',sameEventDecision:'same',resolutionReason:'direct_conflict',
+      evidence:[{claimId:'renumbered-a',chapterId:'ch-1',quote:left,start:manuscript.chapters[0].body.indexOf(left),role:'support'},{claimId:'renumbered-b',chapterId:'ch-2',quote:right,start:manuscript.chapters[1].body.indexOf(right),role:'support'}],counterchecks:{}}];review.counts.confirmed_conflict=1;return review;}
+    return crossReviewResult(manuscript.chapters,{confirmed:!fixed});};
+  return{model,reviewCrossChapter,reviewCalls};}
+
+function installFrozenCrossProtocolFailure(target,prefix,manuscript,{code='FORMAT_REPAIR_SEMANTIC_DRIFT',primaryRaw='{"invalid":"primary"}',repairRaw='{"invalid":"repair"}'}={}){
+  const stage='whole-quality:cross-chapter:extract',input={schemaVersion:'cross-chapter-extraction-input-1',implementationVersion:'cross-chapter-review-r04',
+    modelPolicy:'whole-manuscript-quality-json-1',manuscript:{chapters:structuredClone(manuscript)}};
+  const inputHash=stableFingerprint(input),requestSha256=hash(`request:${inputHash}`),primaryResponseSha256=hash(primaryRaw);
+  const repairInput={schemaVersion:'cross-chapter-format-repair-1',stage,originalInputHash:inputHash,invalidResponseSha256:primaryResponseSha256,
+    errorCode:'EXTRACTION_CONTRACT_VIOLATIONS',error:'frozen invalid response'};
+  const repairInputHash=stableFingerprint(repairInput),repairRequestSha256=hash(`repair:${repairInputHash}`),repairResponseSha256=hash(repairRaw);
+  Object.assign(target,{
+    [`${prefix}${stage}:input`]:{inputHash,requestSha256,input},
+    [`${prefix}${stage}:primary-response`]:{stage,inputHash,requestSha256,rawResponse:primaryRaw,responseSha256:primaryResponseSha256},
+    [`${prefix}${stage}:repair-input`]:{repairInputHash,repairInput,requestSha256:repairRequestSha256},
+    [`${prefix}${stage}:repair-response`]:{stage:`${stage}:format-repair`,inputHash:repairInputHash,requestSha256:repairRequestSha256,
+      rawResponse:repairRaw,responseSha256:repairResponseSha256},
+  });
+  return{code,inputHash,primaryResponseSha256,repairInputHash,repairResponseSha256};
+}
+function failedCrossError(code){const error=Object.assign(new Error(code),{code});if(code==='FORMAT_REPAIR_FAILED')error.causeCode='EXTRACTION_CONTRACT_VIOLATIONS';return error;}
+function prepareCandidateCrossFailure(j,result,code='FORMAT_REPAIR_SEMANTIC_DRIFT'){
+  const prefix='whole-quality:cross-chapter:candidate:';
+  for(const key of Object.keys(j.artifacts))if(key===`${prefix}bundle`||key.startsWith(`${prefix}artifact:`)||key.startsWith(`${prefix}retry-`)
+    ||key.startsWith(`${prefix}protocol-failure:`))delete j.artifacts[key];
+  const frozen=installFrozenCrossProtocolFailure(j.artifacts,`${prefix}artifact:`,result.chapters,{code});return{prefix,frozen};
+}
+function retryingCrossReviewer({sourceChapters,sourceReview,originalFailureCode='FORMAT_REPAIR_SEMANTIC_DRIFT',retryFailureCode}={}){const calls=[];return{calls,reviewer:async({manuscript,model,modelPolicy,artifacts})=>{
+  assert.equal(modelPolicy,'whole-manuscript-quality-json-1');const store=artifacts.store;
+  if(sourceChapters&&JSON.stringify(manuscript.chapters)===JSON.stringify(sourceChapters))return structuredClone(sourceReview);
+  if(store['whole-quality:cross-chapter:result'])return structuredClone(store['whole-quality:cross-chapter:result']);
+  if(store['test:successful-review'])return structuredClone(store['test:successful-review']);
+  if(store['whole-quality:cross-chapter:extract:repair-response'])throw failedCrossError(store['test:retry-failure-marker']?retryFailureCode:originalFailureCode);
+  assert.deepEqual(Object.keys(store),[],'retry-1 must start with an empty independent artifact namespace');
+  const first=await model.complete({stage:'test:cross-retry:extract',system:'fresh extraction',user:JSON.stringify({manuscript}),modelPolicy,maxTokens:1});
+  const second=await model.complete({stage:'test:cross-retry:adjudicate',system:'fresh adjudication',user:JSON.stringify({manuscript}),modelPolicy,maxTokens:1});
+  calls.push(first,second);
+  if(retryFailureCode){installFrozenCrossProtocolFailure(store,'',manuscript.chapters,{code:retryFailureCode,primaryRaw:first,repairRaw:second});store['test:retry-failure-marker']=true;
+    for(const [key,value]of Object.entries(store))await artifacts.checkpoint(key,value);throw failedCrossError(retryFailureCode);}
+  const review=crossReviewResult(manuscript.chapters,{confirmed:false});review.stageReceipts=[
+    {stage:'whole-quality:cross-chapter:extract',primaryResponseSha256:hash(first)},
+    {stage:'whole-quality:cross-chapter:adjudicate',primaryResponseSha256:hash(second)}];
+  await artifacts.checkpoint('test:successful-review',review);return structuredClone(review);
+}};}
+
+test('new cross-chapter binding runs even after issues=[], freezes a bounded target, rereads, rechecks, and counts factual stages',async()=>{const j=journal(),fixture=crossAwareFixture();const result=await runCrossChapterAwareWholeManuscriptQualityRevision({request:request(),model:fixture.model,modelPolicy:'whole-manuscript-quality-json-1',reviewCrossChapter:fixture.reviewCrossChapter,artifacts:j.artifacts,checkpoint:j.checkpoint});
+  assert.equal(fixture.reviewCalls.length,2);assert.equal(result.wholeRevision.quality.independentReading.issues.length,0);assert.equal(result.wholeRevision.plan.items[0].issueIds[0],'cross-chapter:fact-1');
+  const conflict=result.wholeRevision.quality.crossChapterReview.confirmedConflicts[0],body=chapters[1].body,targetLine='🙂林遥说自己只是回来帮忙，手却停在欠款页上。';
+  assert.equal(conflict.scopeOptions.find(item=>item.quote===targetLine)?.start,body.indexOf(targetLine));
+  const adjacent=conflict.scopeOptions.find(item=>item.quote.startsWith('第二天电话又响。')&&item.paragraphCount===2);
+  assert.equal(adjacent.start,body.indexOf('第二天电话又响。'));assert.equal(adjacent.quote,`第二天电话又响。\n\n${targetLine}`);
+  const planCall=fixture.model.calls.find(item=>item.stage==='whole-quality:plan'),frozen=JSON.parse(planCall.user).confirmedConflicts[0];
+  assert.deepEqual({hardIssue:frozen.hardIssue,claimType:frozen.claimType,requiredDisposition:frozen.requiredDisposition},{hardIssue:true,claimType:'textual_conflict',requiredDisposition:'revise_or_unresolved'});
+  assert.equal(result.wholeRevision.plan.items[0].targets[0].quote.includes('\n'),false);assert.equal(result.wholeRevision.quality.crossChapterResolution.items[0].repairStatus,'resolved_in_candidate');
+  assert.equal(conflict.id,'cross-chapter:fact-1');assert.equal(result.wholeRevision.reread.crossChapterChecks[0].conflictId,conflict.id);
+  assert.equal(result.wholeRevision.modelCalls.primaryCalls,9);assert.equal(result.wholeRevision.modelCalls.crossChapterPrimaryCalls,4);assert.equal(result.wholeRevision.modelCalls.maxPrimaryCalls,11);
+  assert.deepEqual(assertWholeQualityResult(result,j.artifacts.requestSpec),result);
+  let modelCalls=0;const resumed=await runCrossChapterAwareWholeManuscriptQualityRevision({request:request(),model:{complete(){modelCalls++;throw Error('forbidden');}},modelPolicy:'whole-manuscript-quality-json-1',reviewCrossChapter:fixture.reviewCrossChapter,artifacts:j.artifacts,checkpoint:j.checkpoint});
+  assert.equal(modelCalls,0);assert.equal(fixture.reviewCalls.length,4);assert.deepEqual(resumed,result);
+});
+
+test('confirmed conflict may end no_change only as explicit unresolved and is never counted as repaired',async()=>{const fixture=crossAwareFixture({unresolved:true}),result=await runCrossChapterAwareWholeManuscriptQualityRevision({request:request(),model:fixture.model,modelPolicy:'whole-manuscript-quality-json-1',reviewCrossChapter:fixture.reviewCrossChapter});
+  assert.equal(result.wholeRevision.status,'no_change');assert.equal(result.revisionApplied,false);assert.equal(result.wholeRevision.quality.crossChapterResolution.items[0].repairStatus,'unresolved');
+  assert.equal(result.wholeRevision.quality.crossChapterResolution.items[0].hardIssue,true);assert.equal(result.wholeRevision.reread.crossChapterChecks[0].assessment,'not_attempted');
+  assert.match(result.wholeRevision.quality.crossChapterResolution.items[0].reason,/说话人边界/);assert(result.warnings.some(item=>item.includes('no_change')));assert.equal(fixture.reviewCalls.length,1);
+  assert.equal(result.wholeRevision.modelCalls.primaryCalls,5);assert.equal(result.wholeRevision.modelCalls.crossChapterPrimaryCalls,2);assert.equal(result.wholeRevision.modelCalls.maxPrimaryCalls,9);
+});
+
+test('source cross with zero confirmed still runs the two-stage candidate recheck after free-reading changes',async()=>{const base=modelFor(),reviewCalls=[],model={complete:async args=>{const raw=await base.complete(args);
+    if(args.stage==='whole-quality:reread'){const value=JSON.parse(raw);value.crossChapterChecks=[];return JSON.stringify(value);}return raw;}};
+  const reviewCrossChapter=async ({manuscript,modelPolicy})=>{assert.equal(modelPolicy,'whole-manuscript-quality-json-1');reviewCalls.push(structuredClone(manuscript));return crossReviewResult(manuscript.chapters,{confirmed:false});};
+  const result=await runCrossChapterAwareWholeManuscriptQualityRevision({request:request(),model,modelPolicy:'whole-manuscript-quality-json-1',reviewCrossChapter});
+  assert.equal(result.wholeRevision.quality.crossChapterReview.confirmedConflicts.length,0);assert.equal(result.wholeRevision.quality.independentReading.issues[0].priority,'major');
+  assert(result.wholeRevision.diff.changedChapterIds.length>0);assert.equal(reviewCalls.length,2);assert.notDeepEqual(reviewCalls[0].chapters,reviewCalls[1].chapters);
+  assert.equal(result.wholeRevision.quality.crossChapterRecheck.confirmedConflicts.length,0);assert.equal(result.wholeRevision.quality.crossChapterResolution.confirmedCount,0);
+  assert.equal(result.wholeRevision.modelCalls.crossChapterPrimaryCalls,4);assert.equal(result.wholeRevision.modelCalls.primaryCalls,9);assert.equal(result.wholeRevision.modelCalls.maxPrimaryCalls,11);
+  assert.deepEqual(assertWholeQualityResult(result,result.wholeRevision.requestSpec),result);
+});
+
+test('candidate recheck does not relate a reused local group id when claim and verbatim evidence differ',async()=>{const fixture=crossAwareFixture({candidateUnrelated:true}),result=await runCrossChapterAwareWholeManuscriptQualityRevision({request:request(),model:fixture.model,modelPolicy:'whole-manuscript-quality-json-1',reviewCrossChapter:fixture.reviewCrossChapter});
+  const resolution=result.wholeRevision.quality.crossChapterResolution;
+  assert.equal(resolution.items[0].repairStatus,'resolved_in_candidate');assert.deepEqual(resolution.items[0].candidateRelatedFindingIds,[]);
+  assert.deepEqual(resolution.candidateConfirmedRisks.map(item=>({findingId:item.findingId,sourceConflictIds:item.sourceConflictIds,sourceRelations:item.sourceRelations})),[{findingId:'fact-1',sourceConflictIds:[],sourceRelations:[]}]);
+});
+
+test('candidate recheck relates a renumbered group through shared verbatim fact evidence',async()=>{const fixture=crossAwareFixture({candidateRelatedRenumbered:true}),result=await runCrossChapterAwareWholeManuscriptQualityRevision({request:request(),model:fixture.model,modelPolicy:'whole-manuscript-quality-json-1',reviewCrossChapter:fixture.reviewCrossChapter});
+  const resolution=result.wholeRevision.quality.crossChapterResolution,item=resolution.items[0],risk=resolution.candidateConfirmedRisks[0];
+  assert.equal(item.repairStatus,'unresolved');assert.deepEqual(item.candidateRelatedFindingIds,['renumbered-9']);assert.equal(item.candidateRelations[0].matchedBy,'shared_verbatim_evidence');
+  assert.deepEqual(risk.sourceConflictIds,['cross-chapter:fact-1']);assert.equal(risk.sourceRelations[0].matchedBy,'shared_verbatim_evidence');assert(risk.sourceRelations[0].evidenceKeys.length>0);
+});
+
+test('candidate cross protocol drift gets one fresh namespace, preserves failed raw hashes, and resumes completed work without replaying whole stages',async()=>{
+  const j=journal(),fixture=crossAwareFixture(),initial=await runCrossChapterAwareWholeManuscriptQualityRevision({request:request(),model:fixture.model,
+    modelPolicy:'whole-manuscript-quality-json-1',reviewCrossChapter:fixture.reviewCrossChapter,artifacts:j.artifacts,checkpoint:j.checkpoint});
+  const {prefix,frozen}=prepareCandidateCrossFailure(j,initial,'FORMAT_REPAIR_SEMANTIC_DRIFT'),sourceReview=j.artifacts['whole-quality:cross-chapter:source:bundle'].review;
+  const retry=retryingCrossReviewer({sourceChapters:initial.wholeRevision.sourceChapters,sourceReview});let freshCalls=0;
+  const retryModel={complete:async args=>{assert.match(args.stage,/^test:cross-retry:/);assert.doesNotMatch(args.user,new RegExp(frozen.primaryResponseSha256));freshCalls++;return JSON.stringify({fresh:true,stage:args.stage});}};
+  const resumed=await runCrossChapterAwareWholeManuscriptQualityRevision({request:request(),model:retryModel,modelPolicy:'whole-manuscript-quality-json-1',
+    reviewCrossChapter:retry.reviewer,artifacts:j.artifacts,checkpoint:j.checkpoint});
+  const bundle=resumed.wholeRevision.quality.crossChapterRecheck,failure=bundle.protocolFailures[0];
+  assert.equal(freshCalls,2);assert.equal(retry.calls.length,2);assert.equal(failure.code,'FORMAT_REPAIR_SEMANTIC_DRIFT');
+  assert.equal(failure.rawResponseSha256,frozen.primaryResponseSha256);assert.equal(failure.formatRepairResponseSha256,frozen.repairResponseSha256);
+  assert.deepEqual(bundle.attempts.map(item=>[item.attempt,item.artifactNamespace,item.status]),[[0,'primary','protocol_failed'],[1,'retry-1','completed']]);
+  assert.equal(resumed.wholeRevision.modelCalls.crossChapterPrimaryCalls,5);assert.equal(resumed.wholeRevision.modelCalls.crossChapterFormatRepairCalls,1);
+  assert.equal(resumed.wholeRevision.modelCalls.primaryCalls,10);assert.equal(resumed.wholeRevision.modelCalls.formatRepairCalls,1);
+  assert.equal(resumed.wholeRevision.modelCalls.maxPrimaryCalls,13);assert.equal(resumed.wholeRevision.modelCalls.maxFormatRepairCalls,13);
+  assert.equal(Object.keys(j.artifacts).some(key=>key.startsWith(`${prefix}retry-2:`)),false);
+  assert.deepEqual(assertWholeQualityResult(resumed,resumed.wholeRevision.requestSpec),resumed);
+  let forbiddenCalls=0;const replay=await runCrossChapterAwareWholeManuscriptQualityRevision({request:request(),model:{complete(){forbiddenCalls++;throw Error('forbidden');}},
+    modelPolicy:'whole-manuscript-quality-json-1',reviewCrossChapter:retry.reviewer,artifacts:j.artifacts,checkpoint:j.checkpoint});
+  assert.equal(forbiddenCalls,0);assert.equal(retry.calls.length,2);assert.deepEqual(replay,resumed);
+});
+
+test('a failed retry retains an independently reviewable candidate but never becomes retry-2, a successful check or adoptable result',async()=>{
+  const j=journal(),fixture=crossAwareFixture(),initial=await runCrossChapterAwareWholeManuscriptQualityRevision({request:request(),model:fixture.model,
+    modelPolicy:'whole-manuscript-quality-json-1',reviewCrossChapter:fixture.reviewCrossChapter,artifacts:j.artifacts,checkpoint:j.checkpoint});
+  const {prefix}=prepareCandidateCrossFailure(j,initial,'FORMAT_REPAIR_FAILED'),sourceReview=j.artifacts['whole-quality:cross-chapter:source:bundle'].review;
+  const retry=retryingCrossReviewer({sourceChapters:initial.wholeRevision.sourceChapters,sourceReview,originalFailureCode:'FORMAT_REPAIR_FAILED',retryFailureCode:'FORMAT_REPAIR_SEMANTIC_DRIFT'});
+  let freshCalls=0;const retryModel={complete:async args=>{freshCalls++;return JSON.stringify({retryFailed:true,stage:args.stage});}};
+  const partial=await runCrossChapterAwareWholeManuscriptQualityRevision({request:request(),model:retryModel,modelPolicy:'whole-manuscript-quality-json-1',
+    reviewCrossChapter:retry.reviewer,artifacts:j.artifacts,checkpoint:j.checkpoint});
+  assert.deepEqual(partial.chapters,initial.chapters);assert.equal(partial.wholeRevision.status,'candidate_ready_cross_check_incomplete');
+  assert.equal(partial.qualityCheckStatus,'incomplete');assert.equal(partial.wholeRevision.quality.crossChapterRecheck,undefined);
+  assert.equal(partial.wholeRevision.quality.crossChapterRecheckIncomplete.protocolFailures.length,2);
+  assert.ok(partial.wholeRevision.adoption.atomicGroups.every(group=>group.recommendation==='not_recommended'));
+  assert.equal(partial.wholeRevision.quality.crossChapterResolution.resolvedInCandidateCount,0);
+  assert.equal(partial.wholeRevision.modelCalls.crossChapterPrimaryCalls,4);
+  assert.equal(partial.wholeRevision.modelCalls.crossChapterFormatRepairCalls,2);
+  assert.equal(freshCalls,2);assert.equal(j.artifacts[`${prefix}protocol-failure:0`].code,'FORMAT_REPAIR_FAILED');
+  assert.equal(j.artifacts[`${prefix}protocol-failure:1`].code,'FORMAT_REPAIR_SEMANTIC_DRIFT');assert.equal(j.artifacts[`${prefix}bundle`],undefined);
+  assert.equal(Object.keys(j.artifacts).some(key=>key.startsWith(`${prefix}retry-2:`)),false);
+  let forbiddenCalls=0;const replay=await runCrossChapterAwareWholeManuscriptQualityRevision({request:request(),model:{complete(){forbiddenCalls++;throw Error('forbidden');}},
+    modelPolicy:'whole-manuscript-quality-json-1',reviewCrossChapter:retry.reviewer,artifacts:j.artifacts,checkpoint:j.checkpoint});
+  assert.deepEqual(replay,partial);
+  const forged=structuredClone(partial);forged.wholeRevision.quality.crossChapterRecheckIncomplete.sourceManuscriptSha256='a'.repeat(64);
+  assert.throws(()=>assertWholeQualityResult(forged,partial.wholeRevision.requestSpec),{code:'WHOLE_QUALITY_CROSS_RECHECK_INCOMPLETE'});
+  assert.equal(forbiddenCalls,0);assert.equal(Object.keys(j.artifacts).some(key=>key.startsWith(`${prefix}retry-2:`)),false);
+});
+
+test('cross retry refuses a frozen failure whose input no longer binds the candidate manuscript',async()=>{
+  const j=journal(),fixture=crossAwareFixture(),initial=await runCrossChapterAwareWholeManuscriptQualityRevision({request:request(),model:fixture.model,
+    modelPolicy:'whole-manuscript-quality-json-1',reviewCrossChapter:fixture.reviewCrossChapter,artifacts:j.artifacts,checkpoint:j.checkpoint});
+  const {prefix}=prepareCandidateCrossFailure(j,initial),sourceReview=j.artifacts['whole-quality:cross-chapter:source:bundle'].review;
+  j.artifacts[`${prefix}artifact:whole-quality:cross-chapter:extract:input`].input.manuscript.chapters[0].body+='tampered';
+  const retry=retryingCrossReviewer({sourceChapters:initial.wholeRevision.sourceChapters,sourceReview});let calls=0;
+  await assert.rejects(runCrossChapterAwareWholeManuscriptQualityRevision({request:request(),model:{complete(){calls++;throw Error('forbidden');}},
+    modelPolicy:'whole-manuscript-quality-json-1',reviewCrossChapter:retry.reviewer,artifacts:j.artifacts,checkpoint:j.checkpoint}),{code:'WHOLE_QUALITY_CROSS_CHAPTER_RETRY'});
+  assert.equal(calls,0);assert.equal(j.artifacts[`${prefix}retry-1:binding`],undefined);
+});
+
+test('cross-aware runner replays completed legacy no_change with zero calls and does not upgrade an unfinished legacy checkpoint',async()=>{const complete=journal(),legacyResult=await runWholeManuscriptQualityRevision({request:request(),model:modelFor({preserve:true}),checkpoint:complete.checkpoint});let modelCalls=0,reviewCalls=0;
+  const replay=await runCrossChapterAwareWholeManuscriptQualityRevision({request:request(),model:{complete(){modelCalls++;throw Error('forbidden');}},modelPolicy:'whole-manuscript-quality-json-1',reviewCrossChapter(){reviewCalls++;throw Error('forbidden');},artifacts:complete.artifacts,checkpoint:complete.checkpoint});
+  assert.deepEqual(replay,legacyResult);assert.equal(modelCalls,0);assert.equal(reviewCalls,0);assert.equal(replay.wholeRevision.requestSpec.crossChapterReview,undefined);
+  const partial=journal(),stop=Error('stop-after-legacy-request');await assert.rejects(runWholeManuscriptQualityRevision({request:request(),model:modelFor(),checkpoint:async(k,v)=>{partial.artifacts[k]=structuredClone(v);if(k==='requestSpec')throw stop;}}),error=>error===stop);
+  const resumedCalls=[],legacyModel=modelFor(),resumed=await runCrossChapterAwareWholeManuscriptQualityRevision({request:request(),model:{complete(args){resumedCalls.push(args);return legacyModel.complete(args);}},modelPolicy:'whole-manuscript-quality-json-1',reviewCrossChapter(){reviewCalls++;throw Error('forbidden');},artifacts:partial.artifacts,checkpoint:partial.checkpoint});
+  const legacyPlanCall=resumedCalls.find(item=>item.stage==='whole-quality:plan'),legacyRereadCall=resumedCalls.find(item=>item.stage==='whole-quality:reread'),legacyPlanInput=JSON.parse(legacyPlanCall.user),legacyRereadInput=JSON.parse(legacyRereadCall.user);
+  assert.equal(resumed.wholeRevision.requestSpec.crossChapterReview,undefined);assert.equal(reviewCalls,0);assert.equal(legacyPlanInput.confirmedConflicts,undefined);assert.equal(legacyPlanInput.responseContract.inputBoundary.confirmedConflicts,undefined);
+  assert.equal(legacyRereadInput.confirmedConflicts,undefined);assert.equal(legacyRereadInput.responseContract.properties.crossChapterChecks,undefined);assert.doesNotMatch(legacyPlanCall.system,/confirmed_conflict/);assert.doesNotMatch(legacyRereadCall.system,/confirmedConflicts/);
+});
+
+test('versioned factual reading admits one-scene conflicting positions but keeps multi-scene standards for effect hypotheses',async()=>{
+  const manuscript=[{id:'count',title:'清点',body:'仓门没有再开。\n清点员说：“现在只有两箱。”\n他接着写下：“这次共有三箱。”'}];
+  const makeReading=(u,claimType,overlap=false)=>({
+    ...u.responseBindings, inputHash:u.inputHash,coverage:{status:'complete',omissions:[]},synopsis:'同一次清点的口头数量与记录冲突。',
+    sceneChanges:[{id:'count-scene',chapterId:'count',sequence:1,entryEvidence:ev('count','仓门没有再开。','场景开始'),exitEvidence:ev('count','他接着写下：“这次共有三箱。”','场景结束'),beforeState:'仓门封闭',trigger:'现场清点',action:'口头报告并记录',afterState:'两种数量不一致',cost:'无法确认实数',narrativeFunction:'清点',preservedStrengths:[]}],
+    issues:[{...issue(),id:'count-issue',claimType,area:'knowledge_continuity',sceneIds:['count-scene'],observation:'同一清点没有出入而数量互斥。',evidence:[ev('count','清点员说：“现在只有两箱。”','口头两箱'),ev('count',overlap?'现在只有两箱。':'他接着写下：“这次共有三箱。”',overlap?'同一位置子串':'书面三箱')],counterEvidence:[ev('count','仓门没有再开。','没有出入，但仍需排除人物说谎')],preservation:[]}],strengths:[],unresolved:[]});
+  for(const variant of [{type:'textual_conflict',ok:true},{type:'reader_effect_hypothesis',ok:false},{type:'textual_conflict',overlap:true,ok:false}]){
+    const j=journal();let reviewed=false,modelCalls=0;
+    const model={complete:async args=>{modelCalls++;const raw=JSON.parse(args.user),u=raw.originalInput??raw;
+      assert.equal(u.responseBindings.schemaVersion,'whole-quality-reading-2');
+      assert.equal(u.responseContract.schemaVersion,'whole-quality-reading-response-contract-3');
+      return JSON.stringify(makeReading(u,variant.type,variant.overlap));}};
+    await assert.rejects(runCrossChapterAwareWholeManuscriptQualityRevision({request:{...request(),chapters:manuscript},model,modelPolicy:'whole-manuscript-quality-json-1',artifacts:j.artifacts,checkpoint:j.checkpoint,
+      reviewCrossChapter:async()=>{reviewed=true;throw Object.assign(Error('Reading validated; stop before independent cross model'),{code:'READING_ACCEPTED'});}}),e=>e.code===(variant.ok?'READING_ACCEPTED':'WHOLE_QUALITY_FORMAT_FAILED'));
+    assert.equal(reviewed,variant.ok);assert.equal(modelCalls,variant.ok?1:2);
+    assert.equal(Boolean(j.artifacts['whole-quality:reading:result']),variant.ok);
+  }
+});

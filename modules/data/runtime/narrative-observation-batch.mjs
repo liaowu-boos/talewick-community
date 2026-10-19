@@ -7,6 +7,10 @@ export const NARRATIVE_BATCH_ANALYSIS_VERSION = 'whole-revision-narrative-analys
 export const NARRATIVE_BATCH_REVIEW_VERSION = 'whole-revision-narrative-review-v2';
 export const NARRATIVE_BATCH_RUN_VERSION = 'whole-revision-narrative-batch-run-v1';
 export const NARRATIVE_BATCH_DEFAULT_MAX_LOGICAL_MODEL_ATTEMPTS = 80;
+export const NARRATIVE_OBSERVATION_PACKAGE_MANIFEST_VERSIONS = Object.freeze([
+  'legacy-sidecars-r02-package-manifest-v1',
+  'catalog-analysis-observation-package-manifest-v3',
+]);
 
 const FIELDS = Object.freeze(['intro_contract', 'chapter_1_change', 'chapter_2_change', 'chapter_3_change',
   'chapter_4_paywall', 'first_paid_payoff', 'midpoint_engine', 'ending_mechanism', 'prose_traits']);
@@ -20,7 +24,12 @@ const failure = (code, message) => Object.assign(new Error(message), {code});
 const check = (condition, code, message) => { if (!condition) throw failure(code, message); };
 
 async function exists(path) { try { await stat(path); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } }
-async function readJson(path) { return JSON.parse(await readFile(path, 'utf8')); }
+async function readReadyFile(path, encoding = undefined) {
+  const metadata = await stat(path);
+  check(metadata.isFile(), 'FILE_SHAPE', 'Expected a regular file');
+  return readFile(path, encoding);
+}
+async function readJson(path) { return JSON.parse(await readReadyFile(path, 'utf8')); }
 async function atomicJson(path, value) {
   await mkdir(dirname(path), {recursive: true});
   const temporary = `${path}.${randomUUID()}.tmp`;
@@ -387,7 +396,7 @@ export function createNarrativeObservationBatchDriver({libraryRoot, runRoot, sel
       const supersedeById = new Map(supersedeCompleted.map(item => [item.sourceId, structuredClone(item)]));
       check(supersedeById.size === supersedeCompleted.length && [...supersedeById.keys()].every(id => frozen.sources.some(item => item.sourceId === id)),
         'BATCH_SUPERSEDE', 'Supersede source must be unique and frozen');
-      const catalogBytes = await readFile(join(library, 'catalog.json'));
+      const catalogBytes = await readReadyFile(join(library, 'catalog.json'));
       if (frozen.activeBinding) check(hash(catalogBytes) === frozen.activeBinding.catalogSha256,
         'BATCH_ACTIVE_CATALOG', 'Active catalog digest differs from frozen selection binding');
       const catalog = JSON.parse(catalogBytes);
@@ -403,9 +412,9 @@ export function createNarrativeObservationBatchDriver({libraryRoot, runRoot, sel
         check(!supersede || prior?.status === 'completed', 'BATCH_SUPERSEDE', 'Only a completed source may be superseded');
         const row = rows.get(source.sourceId);
         check(row && row.sourceSha256 === source.sourceSha256 && row.textVersion === source.textVersion, 'BATCH_CATALOG_BINDING', `Catalog changed for ${source.sourceId}`);
-        const bytes = await readFile(join(library, 'objects', `${source.sourceSha256}.bin`));
+        const bytes = await readReadyFile(join(library, 'objects', `${source.sourceSha256}.bin`));
         check(hash(bytes) === source.sourceSha256, 'BATCH_SOURCE_SHA', `Source bytes changed for ${source.sourceId}`);
-        const sourceText = await readFile(join(library, 'objects', `${source.sourceSha256}.lf-v2.txt`), 'utf8');
+        const sourceText = await readReadyFile(join(library, 'objects', `${source.sourceSha256}.lf-v2.txt`), 'utf8');
         check(hash(sourceText) === (row.indexIntegrity?.sourceTextSha256 ?? source.sourceSha256), 'BATCH_TEXT_SHA', `Normalized text changed for ${source.sourceId}`);
         const attemptId = `${Date.now()}-${randomUUID()}`, attemptRoot = join(sourceRoot, 'attempts', attemptId);
         await mkdir(attemptRoot, {recursive: true});
@@ -476,7 +485,7 @@ export async function recoverNarrativeObservationAnalysisFromFailedAttempt({libr
   const source = frozen.sources.find(item => item.sourceId === sourceId);
   check(source, 'RECOVERY_SOURCE', 'Source is absent from the frozen selection');
   const sourceRoot = join(root, 'sources', sourceId), statusPath = join(sourceRoot, 'status.json');
-  const statusBytes = await readFile(statusPath), prior = JSON.parse(statusBytes);
+  const statusBytes = await readReadyFile(statusPath), prior = JSON.parse(statusBytes);
   if (prior.status === 'failed' && prior.code === 'BATCH_REVIEW_PENDING' && prior.analysisReusable === true && text(prior.analysisPath)) {
     return {schemaVersion: 'narrative-observation-analysis-raw-recovery-v1', sourceId, status: 'already_recovered',
       recoveryAttemptId: prior.attemptId, recoveredFromAttemptId: prior.recoveredFromAttemptId,
@@ -486,22 +495,22 @@ export async function recoverNarrativeObservationAnalysisFromFailedAttempt({libr
     'Only a terminal failed analysis attempt can be recovered');
   const originalAttemptRoot = join(sourceRoot, 'attempts', prior.attemptId);
   const requestPath = join(originalAttemptRoot, 'analysis.request.json'), rawPath = join(originalAttemptRoot, 'analysis.response.raw.txt');
-  const requestBytes = await readFile(requestPath), rawBytes = await readFile(rawPath), request = JSON.parse(requestBytes);
+  const requestBytes = await readReadyFile(requestPath), rawBytes = await readReadyFile(rawPath), request = JSON.parse(requestBytes);
   let requestUser;
   try { requestUser = JSON.parse(request.user); } catch { throw failure('RECOVERY_REQUEST', 'Original analysis request user payload is invalid'); }
   check(request.stage === 'narrative-observation-analysis' && requestUser.sourceId === sourceId
     && requestUser.outputContract?.exactExample?.schemaVersion === NARRATIVE_BATCH_ANALYSIS_VERSION
     && requestUser.outputContract?.evidenceWindowContract?.selectionKey === 'windowId',
   'RECOVERY_REQUEST', 'Original attempt did not use the current window-bound analysis contract');
-  const catalogBytes = await readFile(join(library, 'catalog.json'));
+  const catalogBytes = await readReadyFile(join(library, 'catalog.json'));
   if (frozen.activeBinding) check(hash(catalogBytes) === frozen.activeBinding.catalogSha256,
     'RECOVERY_CATALOG', 'Active catalog digest differs from the frozen selection binding');
   const catalog = JSON.parse(catalogBytes), row = catalog.sources.find(item => item.sourceId === sourceId);
   check(row && row.sourceSha256 === source.sourceSha256 && row.textVersion === source.textVersion,
     'RECOVERY_CATALOG', 'Catalog source binding changed');
-  const objectBytes = await readFile(join(library, 'objects', `${source.sourceSha256}.bin`));
+  const objectBytes = await readReadyFile(join(library, 'objects', `${source.sourceSha256}.bin`));
   check(hash(objectBytes) === source.sourceSha256, 'RECOVERY_SOURCE', 'Source bytes changed');
-  const sourceText = await readFile(join(library, 'objects', `${source.sourceSha256}.lf-v2.txt`), 'utf8');
+  const sourceText = await readReadyFile(join(library, 'objects', `${source.sourceSha256}.lf-v2.txt`), 'utf8');
   check(hash(sourceText) === (row.indexIntegrity?.sourceTextSha256 ?? source.sourceSha256),
     'RECOVERY_SOURCE', 'Normalized text changed');
   const analysis = inspectAnalysis(parsed(rawBytes.toString('utf8'), 'analysis'), source, sourceText, row.completeness ?? 'unknown');
@@ -561,7 +570,7 @@ async function walkFiles(root, current = root) {
 export async function publishNarrativeObservationBatch({libraryRoot, basePackageRoot, runRoot, outputRoot, selection} = {}) {
   const frozen = inspectNarrativeBatchSelection(selection), library = resolve(libraryRoot), base = resolve(basePackageRoot), run = resolve(runRoot), output = resolve(outputRoot);
   check(!(await exists(output)), 'PUBLISH_EXISTS', 'Publication output already exists');
-  const catalogBytes = await readFile(join(library, 'catalog.json'));
+  const catalogBytes = await readReadyFile(join(library, 'catalog.json'));
   if (frozen.activeBinding) check(hash(catalogBytes) === frozen.activeBinding.catalogSha256,
     'PUBLISH_ACTIVE_CATALOG', 'Active catalog digest differs from frozen selection binding');
   const catalog = JSON.parse(catalogBytes), rows = new Map(catalog.sources.map(row => [row.sourceId, row]));
@@ -576,7 +585,7 @@ export async function publishNarrativeObservationBatch({libraryRoot, basePackage
       check(status.status === 'completed', 'PUBLISH_INCOMPLETE', `Source ${source.sourceId} is not completed`);
       const row = rows.get(source.sourceId);
       check(row && row.sourceSha256 === source.sourceSha256 && row.textVersion === source.textVersion, 'PUBLISH_CATALOG', 'Catalog binding changed');
-      const sourceText = await readFile(join(library, 'objects', `${source.sourceSha256}.lf-v2.txt`), 'utf8');
+      const sourceText = await readReadyFile(join(library, 'objects', `${source.sourceSha256}.lf-v2.txt`), 'utf8');
       const analysis = inspectAnalysis(await readJson(join(run, status.analysisPath)), source, sourceText, row.completeness ?? 'unknown');
       const review = inspectReview(await readJson(join(run, status.reviewPath)), analysis);
       check(review.approved && review.analysisSha256 === hash(JSON.stringify(analysis)), 'PUBLISH_REVIEW', 'Approved strict-evidence review binding changed');
@@ -633,7 +642,7 @@ export async function publishNarrativeObservationBatch({libraryRoot, basePackage
     }
     const files = (await walkFiles(temporary)).sort((a, b) => relative(temporary, a).localeCompare(relative(temporary, b)));
     const entries = [];
-    for (const path of files) { const bytes = await readFile(path); entries.push({path: relative(temporary, path), bytes: bytes.length, sha256: hash(bytes)}); }
+    for (const path of files) { const bytes = await readReadyFile(path); entries.push({path: relative(temporary, path), bytes: bytes.length, sha256: hash(bytes)}); }
     const manifest = {schemaVersion: 'legacy-sidecars-r02-package-manifest-v1', root: output, entries, entryCount: entries.length,
       orderedEntryDigest: hash(entries.map(item => `${item.path}\t${item.bytes}\t${item.sha256}`).join('\n'))};
     await writeFile(join(temporary, 'package-manifest.json'), json(manifest));
@@ -646,12 +655,12 @@ export async function publishNarrativeObservationBatch({libraryRoot, basePackage
 
 async function verifyPackageManifest(packageRoot) {
   const root = resolve(packageRoot), manifestPath = join(root, 'package-manifest.json');
-  const manifestBytes = await readFile(manifestPath), manifest = JSON.parse(manifestBytes);
-  check(manifest.schemaVersion === 'legacy-sidecars-r02-package-manifest-v1' && Array.isArray(manifest.entries),
+  const manifestBytes = await readReadyFile(manifestPath), manifest = JSON.parse(manifestBytes);
+  check(NARRATIVE_OBSERVATION_PACKAGE_MANIFEST_VERSIONS.includes(manifest.schemaVersion) && Array.isArray(manifest.entries),
     'PACKAGE_MANIFEST', 'Unsupported narrative observation package manifest');
   const files = (await walkFiles(root)).sort((a, b) => relative(root, a).localeCompare(relative(root, b)));
   const actual = [];
-  for (const path of files) { const bytes = await readFile(path); actual.push({path: relative(root, path), bytes: bytes.length, sha256: hash(bytes)}); }
+  for (const path of files) { const bytes = await readReadyFile(path); actual.push({path: relative(root, path), bytes: bytes.length, sha256: hash(bytes)}); }
   check(JSON.stringify(actual) === JSON.stringify(manifest.entries), 'PACKAGE_CONTENT', 'Narrative observation package entries changed');
   check(manifest.entryCount === actual.length
     && manifest.orderedEntryDigest === hash(actual.map(item => `${item.path}\t${item.bytes}\t${item.sha256}`).join('\n')),

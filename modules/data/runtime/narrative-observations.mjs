@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {readFile, readdir} from 'node:fs/promises';
+import {readFile, readdir, stat} from 'node:fs/promises';
 import {join, relative, resolve, sep} from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
 import {queryTerms} from './retrieval.mjs';
@@ -29,6 +29,12 @@ const legacyFields = new Set(NARRATIVE_OBSERVATION_FIELDS.slice(0, 9));
 const analysisFields = new Set(NARRATIVE_OBSERVATION_FIELDS.slice(9));
 const fieldSet = new Set(NARRATIVE_OBSERVATION_FIELDS);
 const hashBytes = bytes => createHash('sha256').update(bytes).digest('hex');
+
+async function readReadyFile(path, encoding = undefined) {
+  const metadata = await stat(path);
+  if (!metadata.isFile()) throw new Error(`Not a regular file: ${path}`);
+  return readFile(path, encoding);
+}
 const hashText = value => hashBytes(Buffer.from(value, 'utf8'));
 const sha = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const plainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -199,7 +205,7 @@ function decodeSourceBytes(bytes) {
 async function loadSource(libraryRoot, row) {
   const path = join(libraryRoot, 'objects', `${row.sourceSha256}.bin`);
   let bytes;
-  try { bytes = await readFile(path); } catch { return {valid: false, reason: 'source_object_missing'}; }
+  try { bytes = await readReadyFile(path); } catch { return {valid: false, reason: 'source_object_missing'}; }
   if (hashBytes(bytes) !== row.sourceSha256) return {valid: false, reason: 'source_object_sha_mismatch'};
   const decoded = decodeSourceBytes(bytes);
   if (!decoded.valid) return decoded;
@@ -213,7 +219,7 @@ async function loadSource(libraryRoot, row) {
     textPath = join(libraryRoot, 'objects', `${row.sourceSha256}.txt`);
   } else return {valid: false, reason: 'source_text_version_binding_invalid'};
   let derivedText;
-  try { derivedText = await readFile(textPath, 'utf8'); } catch { return {valid: false, reason: 'derived_source_text_missing'}; }
+  try { derivedText = await readReadyFile(textPath, 'utf8'); } catch { return {valid: false, reason: 'derived_source_text_missing'}; }
   if (derivedText !== text) return {valid: false, reason: 'derived_source_text_mismatch'};
   const textSha = hashText(text);
   if (row.indexIntegrity?.sourceTextSha256 !== undefined && row.indexIntegrity.sourceTextSha256 !== textSha) return {valid: false, reason: 'catalog_index_source_identity_mismatch'};
@@ -225,7 +231,7 @@ async function validateArchive(sidecarRoot, sidecar) {
   const auditPath = safeArchivedPath(sidecarRoot, sidecar?.cardBinding?.archivedAuditPath);
   if (!cardPath || !auditPath) return {valid: false, reason: 'unsafe_or_missing_archive_path'};
   let cardBytes, auditBytes;
-  try { [cardBytes, auditBytes] = await Promise.all([readFile(cardPath), readFile(auditPath)]); }
+  try { [cardBytes, auditBytes] = await Promise.all([readReadyFile(cardPath), readReadyFile(auditPath)]); }
   catch { return {valid: false, reason: 'archived_card_or_audit_missing'}; }
   if (hashBytes(cardBytes) !== sidecar.cardBinding.cardSha256 || hashBytes(auditBytes) !== sidecar.cardBinding.auditSha256) return {valid: false, reason: 'archived_card_or_audit_sha_mismatch'};
   let card, audit;
@@ -459,7 +465,7 @@ export async function createNarrativeObservationService({libraryRoot, sidecarRoo
   const library = resolve(libraryRoot);
   const sidecarPackage = resolve(sidecarRoot);
   const catalogPath = join(library, 'catalog.json');
-  const catalogBytes = await readFile(catalogPath);
+  const catalogBytes = await readReadyFile(catalogPath);
   const catalog = JSON.parse(catalogBytes);
   if (!Array.isArray(catalog.sources)) fail('Invalid library catalog');
   const rows = new Map();
@@ -472,7 +478,7 @@ export async function createNarrativeObservationService({libraryRoot, sidecarRoo
   const sidecars = [];
   for (const path of sidecarFiles) {
     try {
-      const bytes = await readFile(path);
+      const bytes = await readReadyFile(path);
       const sha256 = hashBytes(bytes);
       try { sidecars.push({path, sha256, value: JSON.parse(bytes)}); }
       catch { sidecars.push({path, sha256, value: null, loadIssue: 'invalid_sidecar_json'}); }
@@ -487,14 +493,14 @@ export async function createNarrativeObservationService({libraryRoot, sidecarRoo
     snapshotFiles.set(item.path, item.sha256 ?? null);
     const cardPath = safeArchivedPath(sidecarPackage, item.value?.cardBinding?.archivedCardPath);
     const auditPath = safeArchivedPath(sidecarPackage, item.value?.cardBinding?.archivedAuditPath);
-    if (cardPath) snapshotFiles.set(cardPath, await readFile(cardPath).then(hashBytes).catch(() => null));
-    if (auditPath) snapshotFiles.set(auditPath, await readFile(auditPath).then(hashBytes).catch(() => null));
+    if (cardPath) snapshotFiles.set(cardPath, await readReadyFile(cardPath).then(hashBytes).catch(() => null));
+    if (auditPath) snapshotFiles.set(auditPath, await readReadyFile(auditPath).then(hashBytes).catch(() => null));
     const row = rows.get(item.value?.sourceBinding?.sourceId);
     if (row) {
       const objectPath = join(library, 'objects', `${row.sourceSha256}.bin`);
       const textPath = join(library, 'objects', `${row.sourceSha256}${row.textVersion.startsWith('text-v2-lf-') ? '.lf-v2' : ''}.txt`);
-      snapshotFiles.set(objectPath, await readFile(objectPath).then(hashBytes).catch(() => null));
-      snapshotFiles.set(textPath, await readFile(textPath).then(hashBytes).catch(() => null));
+      snapshotFiles.set(objectPath, await readReadyFile(objectPath).then(hashBytes).catch(() => null));
+      snapshotFiles.set(textPath, await readReadyFile(textPath).then(hashBytes).catch(() => null));
     }
   }
   const sidecarSetSha256 = hashText(sidecars.map(item => `${relative(sidecarPackage, item.path)}\t${item.sha256 ?? 'missing'}`).join('\n'));
@@ -504,7 +510,7 @@ export async function createNarrativeObservationService({libraryRoot, sidecarRoo
     const changedFiles = [];
     if (!isDeepStrictEqual(currentSidecarFiles, sidecarFiles)) changedFiles.push('sidecars/');
     for (const [path, expected] of snapshotFiles) {
-      const actual = await readFile(path).then(hashBytes).catch(() => null);
+      const actual = await readReadyFile(path).then(hashBytes).catch(() => null);
       if (actual !== expected) changedFiles.push(relative(path.startsWith(`${library}${sep}`) ? library : sidecarPackage, path));
     }
     if (changedFiles.length) {
@@ -589,6 +595,8 @@ export async function createNarrativeObservationService({libraryRoot, sidecarRoo
             withheld.push({sourceId, recordType: 'legacy_card_observation', field: observation.field, reason, hits: search.hits});
             continue;
           }
+          const catalogAnalysisProjection = observation.boundaryOrigin === 'catalog_analysis_unit'
+            && observation.originalFieldConfidence === 'reviewed_catalog_analysis';
           candidates.push({
             recordType: 'legacy_card_observation',
             id: `legacy:${sourceId}:${sidecar.cardBinding.storyId}:${observation.field}`,
@@ -609,7 +617,10 @@ export async function createNarrativeObservationService({libraryRoot, sidecarRoo
               automaticCreativeSupply: false,
               retrievalIntegrated: false,
             },
-            limitations: [
+            limitations: catalogAnalysisProjection ? [
+              '该观察是当前 catalog 已复核 analysis 单元的只读兼容投影；逐字证据已在包生成时重新核对。',
+              '投影不改变 analysis 复核状态，不预判文学质量；读者作用仍是假说。',
+            ] : [
               '该观察来自旧故事卡的 AI 分析，不是当前 DATA 分析单元。',
               '旧卡接受状态只说明归档审计结果；当前复核状态另列且不由本结果改变。',
             ],

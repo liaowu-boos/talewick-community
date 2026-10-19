@@ -34,7 +34,7 @@ export function comparableWholeQualityTask(project: Project) {
   const binding = project.runtime, task = binding?.task, whole = task?.result?.wholeRevision as Record<string, unknown> | undefined;
   const current = { title: project.title, chapters: project.chapters };
   return Boolean(binding && task?.status === 'completed' && task.revisionMode === 'whole-manuscript-v2'
-    && whole?.schemaVersion === 'whole-manuscript-quality-1' && ['candidate_ready', 'candidate_ready_reread_incomplete'].includes(String(whole.status))
+    && whole?.schemaVersion === 'whole-manuscript-quality-1' && ['candidate_ready', 'candidate_ready_reread_incomplete', 'candidate_ready_cross_check_incomplete'].includes(String(whole.status))
     && binding.request.baseRevision === manuscriptRevision(project) && JSON.stringify(current) === JSON.stringify(binding.baseManuscript));
 }
 

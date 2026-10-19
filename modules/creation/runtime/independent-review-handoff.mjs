@@ -27,7 +27,16 @@ function validateChapters(chapters, label) {
   return checked;
 }
 
-function requestFingerprint(request, sourceChapters) {
+function validateCrossChapterBinding(binding) {
+  ensure(object(binding) && binding.enabled === true
+    && binding.contractVersion === 'cross-chapter-review-result-1'
+    && binding.integrationVersion === 'whole-quality-cross-chapter-integration-1'
+    && typeof binding.modelPolicy === 'string' && binding.modelPolicy.trim(),
+  'HANDOFF_CROSS_CHAPTER_BINDING', '跨章核对请求绑定无效。');
+  return clone(binding);
+}
+
+function requestFingerprint(request, sourceChapters, runtimeCrossChapterReview) {
   ensure(object(request) && request.kind === 'revise' && request.revisionMode === 'whole-manuscript-v2',
     'HANDOFF_REQUEST_MODE', '只接受whole-manuscript-v2修订请求。');
   ensure(typeof request.baseRevision === 'string', 'HANDOFF_BASE_REVISION', '起点版本无效。');
@@ -37,10 +46,21 @@ function requestFingerprint(request, sourceChapters) {
   ensure(request.sourceIds === undefined || Array.isArray(request.sourceIds)
     && request.sourceIds.every(id => typeof id === 'string' && id.trim()),
   'HANDOFF_SOURCE_IDS', '指定来源无效。');
+  const persistedCrossChapterReview = request.crossChapterReview === undefined
+    ? undefined : validateCrossChapterBinding(request.crossChapterReview);
+  const normalizedCrossChapterReview = runtimeCrossChapterReview === undefined
+    ? undefined : validateCrossChapterBinding(runtimeCrossChapterReview);
+  ensure(persistedCrossChapterReview === undefined || normalizedCrossChapterReview === undefined
+    || sha256(persistedCrossChapterReview) === sha256(normalizedCrossChapterReview),
+  'HANDOFF_CROSS_CHAPTER_BINDING', '持久化请求与运行时跨章核对绑定不一致。');
+  const crossChapterReview = persistedCrossChapterReview ?? normalizedCrossChapterReview;
   const core = { kind: 'revise', revisionMode: 'whole-manuscript-v2', sourceBaseRevision: request.baseRevision,
     objective, chapters: sourceChapters,
-    ...(request.sourceIds !== undefined ? { sourceIds: [...new Set(request.sourceIds)] } : {}) };
-  return { objective, inputFingerprint: sha256(core) };
+    ...(request.sourceIds !== undefined ? { sourceIds: [...new Set(request.sourceIds)] } : {}),
+    ...(crossChapterReview !== undefined ? { crossChapterReview } : {}) };
+  return { objective, inputFingerprint: sha256(core),
+    bindingMode: persistedCrossChapterReview !== undefined ? 'persisted_exact'
+      : normalizedCrossChapterReview !== undefined ? 'runtime_normalized_cross_binding' : 'legacy_exact' };
 }
 
 function applyReplacements(sourceChapters, replacements) {
@@ -82,7 +102,10 @@ function citationList(items, sourceChapters, code) {
 function goalsForGroups(whole, selectedGroupIds, sourceChapters) {
   const reading = whole.quality?.independentReading;
   ensure(Array.isArray(reading?.issues), 'HANDOFF_READING', '缺少修订前冻结的独立阅读问题。');
-  const issueById = new Map(reading.issues.map(issue => [issue.id, issue]));
+  const confirmed = whole.quality?.crossChapterReview?.confirmedConflicts ?? [];
+  const crossIssues = confirmed.map(conflict => ({ id: conflict.id, claimType: 'textual_conflict',
+    evidence: conflict.evidence.slice(0,1), counterEvidence: conflict.evidence.slice(1) }));
+  const issueById = new Map([...reading.issues, ...crossIssues].map(issue => [issue.id, issue]));
   const itemById = new Map(whole.plan.items.map(item => [item.id, item]));
   return selectedGroupIds.map(groupId => {
     const item = itemById.get(groupId);
@@ -129,13 +152,46 @@ export function buildIndependentReviewRequest({ caseId, request, result, selecti
     && Array.isArray(whole.plan?.items) && object(whole.adoption), 'HANDOFF_RESULT', '全文质量结果版本或字段无效。');
   const sourceChapters = validateChapters(whole.sourceChapters, '原稿');
   const candidateChapters = validateChapters(result.chapters, '完整候选稿');
-  const requestBinding = requestFingerprint(request, sourceChapters);
+  const resultCrossChapterReview = whole.requestSpec.crossChapterReview === undefined
+    ? undefined : validateCrossChapterBinding(whole.requestSpec.crossChapterReview);
+  const persistedRequestHasCrossBinding = object(request) && request.crossChapterReview !== undefined;
+  const requestBinding = requestFingerprint(request, sourceChapters,
+    persistedRequestHasCrossBinding ? undefined : resultCrossChapterReview);
   ensure(whole.requestSpec.inputFingerprint === requestBinding.inputFingerprint
     && whole.requestSpec.objective === requestBinding.objective
     && whole.requestSpec.sourceBaseRevision === request.baseRevision
     && result.baseRevision === request.baseRevision
     && whole.requestSpec.sourceManuscriptSha256 === manuscriptFingerprint(sourceChapters),
   'HANDOFF_REQUEST_BINDING', '请求、原稿和结果绑定不一致。');
+  const crossEnabled = resultCrossChapterReview !== undefined;
+  ensure(!crossEnabled || request.crossChapterReview === undefined
+    || sha256(request.crossChapterReview) === sha256(resultCrossChapterReview),
+  'HANDOFF_CROSS_CHAPTER_BINDING', '请求与结果的跨章核对绑定不一致。');
+  ensure(crossEnabled || request.crossChapterReview === undefined,
+    'HANDOFF_CROSS_CHAPTER_BINDING', '旧结果不能接受新增的客户端跨章核对绑定。');
+  const crossReview = whole.quality?.crossChapterReview, crossResolution = whole.quality?.crossChapterResolution;
+  let confirmedConflictIds = [], unresolvedConfirmedConflictIds = [];
+  if (crossEnabled) {
+    ensure(object(crossReview) && crossReview.schemaVersion === 'whole-quality-cross-chapter-bundle-1'
+      && crossReview.sourceManuscriptSha256 === manuscriptFingerprint(sourceChapters) && Array.isArray(crossReview.confirmedConflicts),
+    'HANDOFF_CROSS_CHAPTER_REVIEW', '新路径缺少与原稿绑定的跨章事实核对证据。');
+    confirmedConflictIds = crossReview.confirmedConflicts.map(item => item.id);
+    ensure(new Set(confirmedConflictIds).size === confirmedConflictIds.length
+      && crossReview.confirmedConflicts.every(item => Array.isArray(item.evidence) && item.evidence.length >= 2),
+    'HANDOFF_CROSS_CHAPTER_REVIEW', 'confirmed_conflict 身份或双向证据无效。');
+    ensure(object(crossResolution) && crossResolution.schemaVersion === 'whole-quality-cross-chapter-outcome-1'
+      && Array.isArray(crossResolution.items) && crossResolution.items.length === confirmedConflictIds.length,
+    'HANDOFF_CROSS_CHAPTER_OUTCOME', 'confirmed_conflict 缺少逐项修复结果。');
+    const outcomeById = new Map(crossResolution.items.map(item => [item.conflictId,item]));
+    ensure(confirmedConflictIds.every(id => outcomeById.has(id)) && crossResolution.items.every(item => ['resolved_in_candidate','unresolved'].includes(item.repairStatus)),
+    'HANDOFF_CROSS_CHAPTER_OUTCOME', 'confirmed_conflict 修复状态不能重建。');
+    unresolvedConfirmedConflictIds = crossResolution.items.filter(item => item.repairStatus === 'unresolved').map(item => item.conflictId);
+    const accounted = new Set([...(whole.plan.items ?? []).filter(item => item.decision === 'revise').flatMap(item => item.issueIds ?? []),
+      ...(whole.plan.unresolved ?? []).map(item => item.issueId)]);
+    ensure(confirmedConflictIds.every(id => accounted.has(id))
+      && !(whole.plan.items ?? []).some(item => item.decision === 'preserve' && item.issueIds?.some(id => confirmedConflictIds.includes(id))),
+    'HANDOFF_CROSS_CHAPTER_GOAL', 'confirmed_conflict 未进入冻结修订目标或明确未决。');
+  }
   ensure(Array.isArray(whole.candidateRevision?.replacements) || whole.candidateRevision === null,
     'HANDOFF_CANDIDATE', '候选替换记录无效。');
   const replacements = whole.candidateRevision?.replacements ?? [];
@@ -177,6 +233,7 @@ export function buildIndependentReviewRequest({ caseId, request, result, selecti
       : explicitSelection ? 'selected_adopted' : 'full_candidate',
     sourceBaseRevision: whole.requestSpec.sourceBaseRevision,
     requestInputFingerprint: whole.requestSpec.inputFingerprint,
+    requestBindingMode: requestBinding.bindingMode,
     wholeRevisionResultSha256: sha256(result),
     sourceManuscriptSha256: manuscriptFingerprint(sourceChapters),
     fullCandidateManuscriptSha256: manuscriptFingerprint(candidateChapters),
@@ -192,6 +249,8 @@ export function buildIndependentReviewRequest({ caseId, request, result, selecti
     declinedGroupIds: allGroupIds.filter(id => !selected.has(id)),
     rereadScope: explicitSelection ? 'selected-groups-unchecked' : 'full-candidate',
     adjacencyEvidence,
+    ...(crossEnabled ? { confirmedConflictIds, unresolvedConfirmedConflictIds,
+      crossChapterResolutionSha256: sha256(crossResolution) } : {}),
     boundary: 'provenance只供产品控制器做版本绑定，不得进入盲读模型输入；完整候选审计全部修订前目标，未执行目标仍须进入独立核查；部分采纳只覆盖所选目标，declinedGroupIds不声称已落实；CREATION内部复读不是独立盲评结论。',
   };
   return { request: requestPayload, provenance: { ...provenanceBody, provenanceSha256: sha256(provenanceBody) } };

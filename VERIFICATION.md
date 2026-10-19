@@ -1,30 +1,34 @@
 # Public edition verification / 公开版验证
 
-Date: 2026-10-16 (UTC+08:00). Environment: macOS arm64, Node.js 24.14.0, Python 3.14.2. CI uses Node.js 24 and Python 3.10.
+Date: 2026-10-19 (UTC+08:00). Environment: macOS arm64, Node.js 24.14.0, Python 3.14.2. CI uses Node.js 24 and Python 3.10.
 
 | Check | Result |
 | --- | --- |
 | Clean dependency install from the public lockfile | Passed |
 | TypeScript + Vite production build | Passed; existing bundle-size warning remains |
-| Runtime, HTTP, creation, data, and validation tests | 1171 passed; 0 failed, cancelled, or skipped |
-| UI state and complete independent-review view tests | 109 passed |
+| Runtime, HTTP, creation, data, and validation tests | 1225 passed; 0 failed, cancelled, or skipped |
+| UI state and complete independent-review view tests | 118 passed |
 | Python review protocol tests | 53 passed |
 | Independent-review HTTP + Postman simulation | Two single-reading stages and seven no-change comparison stages passed; idempotency and conflicting submission checked |
 | Empty-library, no-key first start | Passed; sources and task lists empty, review capability available |
 | Fresh browser at 1440px and 390px | Passed; no horizontal overflow, page errors, failed resources, or external requests |
 | Public file boundaries and common credential patterns | Passed |
 
-本次同步包括 10 月 15–16 日的整稿质量模式、独立全文评阅、七阶段盲评、材料适用性及云文件等待保护。测试运行公开版实际服务和协议代码，模型输出来自合成替身；Postman 模拟经实际模型 HTTP 客户端运行。九个阶段的模拟请求已在本地日志中核对，日志不公开。本次发布没有新增真实模型调用。
+本次同步跨章事实抽取与裁定、确认问题修订与候选复查、盲评严重问题归属，以及 catalog 观察和候选分析批次。公开回归使用合成正反例和模拟模型响应，覆盖正常交接、不同轮次、歧义、引用边界恢复、失败保护及版本绑定。Postman 模拟通过实际 HTTP 客户端验证两次初读和七阶段无改动比较，九次请求均成功；未调用真实提供商。
 
-This sync includes October 15–16 whole-manuscript quality revision, independent reading, seven-stage comparison, material applicability, and cloud-file waiting states. Tests run the public implementation with synthetic model outputs. The Postman check uses the real model HTTP client; nine stage requests were verified in local simulation logs. Logs are not published. This release verification made no real-provider calls.
+This sync adds cross-chapter fact extraction and adjudication, confirmed-issue revision and candidate rechecking, blind-review harm attribution, catalog observations, and analysis candidate batches. Synthetic regressions cover normal handovers, distinct occurrences, ambiguity, quote-boundary recovery, failure preservation, and version binding. The real HTTP client completed two reading stages and seven no-change comparison stages against a local Postman simulation, with nine successful requests and no live-provider calls.
 
-**完成检查不代表文学合格。** 开发验收仍有同稿诊断不稳定和无修改候选，未证明质量提升。Full15 仍限于 C01–C06；分歧、无改动、目标未实现与旧版本报告均须保留。浏览器本轮验证首次启动和布局；新评阅链路由 HTTP 集成及界面状态测试覆盖，未声称完成浏览器点击式七阶段验收。
+开发验收在一篇私有稿件中实际修复了三类事实问题，两路反序 AI 盲评倾向候选。该结果只支持本稿事实一致性改善，不证明通用检出率、文学质量全面通过或真人读者效果。抽取格式失败、待核对项和旧任务失败历史均保留。Full15 仍限于 C01–C06；独立候选复查完整接回采纳流程仍有后续工作，不自动采纳。
 
-**Completed checks do not certify literary quality.** Development acceptance still found inconsistent diagnoses and unchanged candidates; quality improvement remains unproven. Full15 is limited to C01–C06. Disagreements, no-change outcomes, unmet goals, and stale reports remain visible. This round's browser check covers first start and layout; the new review workflow is covered by HTTP integration and UI-state tests, not a claimed seven-stage browser-click acceptance run.
+Development acceptance repaired three classes of factual issue in one private manuscript; both reversed-order AI readers preferred the candidate. This supports that manuscript's factual consistency, not general detection accuracy, comprehensive literary acceptance, or human-reader effects. Format failures, unresolved findings, and historical task failures remain visible. Full15 still covers only C01–C06; fully linking independent candidate rechecks into adoption remains follow-up work. Adoption is not automatic.
 
-公开包不包含私有原文库、分析数据、真实回包、历史任务或内部规则快照。失败恢复夹具通过合成输入现场生成。六篇既有阅读示例保持不变；内置资料为空。补齐测试模型的新规划字段，并修复最早版本任务缺少 baseRevision 时的只读兼容：仅允许无引擎版本的旧记录从已校验请求恢复该字段，现代记录仍严格校验。
+公开版本未复制私有原文、99份分析候选、历史运行数据或真实模型回包。跨章固定正反例为合成文本，四项私有任务回放与五项捕获响应回放未纳入公开测试；其他合成回归继续运行。六篇既有阅读示例保持原样。内置资料为空，显式 CLI 配置、公开规则、旧任务兼容及图标版本适配继续保留。修复一处测试清理顺序，等待任务持久化与服务关闭后才删除临时目录。
 
-The package excludes private source libraries, analysis datasets, captured provider outputs, historical tasks, and internal rule snapshots. Failure-recovery fixtures are generated from synthetic inputs. Existing reading examples and the empty built-in corpus are preserved. Test model responses now include required choice-causality fields. Earliest task records missing baseRevision recover that projection from their validated request without rewriting saved files; modern records retain strict binding checks.
+The public edition excludes private texts, analysis candidates, historical runs, and captured model responses. Cross-chapter fixtures are synthetic; four private-task replay tests and five captured-response replay tests are excluded from public test counts. Other synthetic regressions remain enabled. Six existing reading examples are unchanged. Empty built-in materials, explicit CLI configuration, public rules, legacy-task compatibility, and icon-version adaptations remain. One test cleanup race was fixed by closing and draining the task service before removing its temporary files.
+
+浏览器本轮检查首次启动与 1440/390 宽度布局；新跨章和盲评交互通过运行时、HTTP 和界面状态测试覆盖，未声称完成浏览器点击式全文修订验收。固定规模的 remaining99 与 catalog probe 为实验工具，仍要求指定来源规模和用户自己的路径，不附带数据，也不保证任意库一键运行。
+
+Browser checks cover first start and 1440/390 layouts. Runtime, HTTP, and UI-state tests cover new cross-chapter and blind-review behavior; this is not a claimed full browser-click manuscript-revision acceptance run. Fixed-size remaining99 and catalog probe tools retain explicit corpus-size assumptions and require user-supplied paths; they ship no data and are not general one-click importers.
 
 AGPL-3.0-only and the Apache-2.0 Remix Icon 4.6.0 pin remain unchanged. See [third-party notices](THIRD_PARTY_NOTICES.md). [GitHub Actions](https://github.com/liaowu-boos/talewick-community/actions) verifies pushed commits independently.
 

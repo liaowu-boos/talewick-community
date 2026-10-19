@@ -318,6 +318,7 @@ export class IndependentReviewService {
     if (old.status === 'interrupted' && old.runDir) { old.status = 'queued'; old.error = null; old.updatedAt = now(); await this.saveTask(old); this.schedule(); return publicTask(old); }
     const task = { ...structuredClone(old), id: randomUUID(), requestId: `retry-${randomUUID()}`, linkedAttemptId: old.id, status: 'queued', createdAt: now(), updatedAt: now(), report: null, error: null, progress: { phase: 'queued', completedStages: 0, totalStages: old.progress.totalStages } };
     delete task.runDir; delete task.result;
+    task.sealedStageIds = [];
     await this.write(task.id, 'request.json', task.frozen); await this.saveTask(task); this.tasks.set(task.id, task); this.schedule(); return publicTask(task);
   }
   async close() { this.closed = true; for (const controller of this.controllers.values()) controller.abort(); while (this.busy) await new Promise(resolve => setTimeout(resolve, 5)); await Promise.allSettled(this.writes.values()); }

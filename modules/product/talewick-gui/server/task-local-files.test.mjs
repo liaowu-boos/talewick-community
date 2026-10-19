@@ -101,6 +101,32 @@ test('startup skips dataless payloads, preserves bytes, and continues loading ot
   }
 });
 
+test('startup reads a completed pre-cross-chapter whole-quality task without scheduling new diagnosis', async t => {
+  const f = await fixture(t);
+  const id = '29292929-2929-4929-8929-292929292929';
+  const chapters = [{ id: 'c1', title: '第一章', body: '她把钥匙放回桌上。' }];
+  const input = request({ projectId: 'legacy-whole-project', requestId: 'legacy-whole-request', kind: 'revise', revisionMode: 'whole-manuscript-v2', chapters,
+    instruction: '检查全文，只修改证据充分的问题。', quote: '', materials: [], baseRevision: 'manuscript-v1-legacy' });
+  const legacyResult = { title: '钥匙', chapters, baseRevision: input.baseRevision, revisionApplied: false, warnings: ['旧任务结果。'],
+    wholeRevision: { schemaVersion: 'whole-manuscript-quality-1', status: 'no_change', quality: { independentReading: {}, unresolved: [] } } };
+  const folder = await seed(f.root, id, input, { status: 'completed', stage: '创作完成', revisionMode: 'whole-manuscript-v2', result: legacyResult });
+  const before = await snapshot(folder);
+  let modelCalls = 0, workflowCalls = 0;
+  const service = await new TaskService({ runsDir: f.root, model: { complete() { modelCalls++; throw new Error('model must not run'); } },
+    workflow: async () => { workflowCalls++; return result; }, taskFileState: f.taskFileState, taskFileRead: f.taskFileRead }).init();
+  f.services.push(service);
+  await new Promise(resolve => setImmediate(resolve));
+  const loaded = service.get(id);
+  assert.equal(loaded.status, 'completed');
+  assert.equal(loaded.result.wholeRevision.schemaVersion, 'whole-manuscript-quality-1');
+  assert.equal(loaded.result.wholeRevision.quality.crossChapterReview, undefined);
+  assert.equal(modelCalls, 0);
+  assert.equal(workflowCalls, 0);
+  await service.close();
+  const after = await snapshot(folder);
+  for (const name of Object.keys(before)) assert.deepEqual(after[name], before[name]);
+});
+
 test('resume and duplicate request ids stay blocked while local files await download', async t => {
   const f = await fixture(t);
   const id = '33333333-3333-4333-8333-333333333333';

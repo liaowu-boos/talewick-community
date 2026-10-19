@@ -21,3 +21,9 @@
 产品启动时只读加载资料库下的 `narrative-observations/active.json`，验证包与来源数量后启用附加层。缺包或包无效时报告不可用，普通资料库仍可工作。开发接口的历史默认数量不表示公开版自带材料，调用者应显式传入自己的 `expectedSourceCount`。
 
 测试见 `modules/data/tests/narrative-observations.test.mjs`、`narrative-observation-supply.test.mjs` 与 `narrative-observation-batch.test.mjs`，均使用合成文本和模型替身。
+
+## Catalog 单元与候选批次
+
+当前实现支持查询已复核 catalog 分析单元，精选摘要只作为浏览视图，不按等距位置自动认定开头、中段或结尾功能。`catalog-narrative-observation-package.mjs` 提供离线包构建和核验。
+
+`remaining99-*` 与 catalog probe 是固定规模实验工具，仍有 99/136 来源的前置要求，不能直接当作任意资料库的一键导入工具。它们不携带数据，须显式提供自己的路径；候选生成、独立复核、激活与创作效果验证是不同状态。公开版不附带这些分析包。

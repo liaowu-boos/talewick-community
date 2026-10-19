@@ -20,6 +20,8 @@ export const WHOLE_QUALITY_APPLICABILITY_STAGE_VERSION = 'whole-quality-applicab
 export const WHOLE_QUALITY_APPLICABILITY_BUNDLE_VERSION = 'whole-quality-applicability-bundle-1';
 export const WHOLE_QUALITY_FINAL_TEXT_STAGE_VERSION = 'whole-quality-final-text-stage-1';
 export const WHOLE_QUALITY_FINAL_TEXT_BUNDLE_VERSION = 'whole-quality-final-text-bundle-1';
+export const WHOLE_QUALITY_CROSS_CHAPTER_BUNDLE_VERSION = 'whole-quality-cross-chapter-bundle-1';
+export const WHOLE_QUALITY_CROSS_CHAPTER_OUTCOME_VERSION = 'whole-quality-cross-chapter-outcome-1';
 
 const LIMITS = Object.freeze({ chapters: 30, manuscriptChars: 200000, scenes: 80, issues: 24,
   majorIssues: 6, planItems: 10, evidence: 10, materialsPerIssue: 6, text: 8000,
@@ -32,6 +34,12 @@ const canonical = value => Array.isArray(value) ? value.map(canonical) : record(
 const hashText = value => createHash('sha256').update(value).digest('hex');
 const fingerprint = value => hashText(JSON.stringify(canonical(value)));
 const bodyFingerprint = body => hashText(body);
+const CROSS_CHAPTER_INTEGRATION_VERSION = 'whole-quality-cross-chapter-integration-1';
+const CROSS_CHAPTER_PROTOCOL_FAILURE_VERSION = 'whole-quality-cross-chapter-protocol-failure-1';
+const CROSS_CHAPTER_ATTEMPT_VERSION = 'whole-quality-cross-chapter-attempt-1';
+const CROSS_CHAPTER_RETRY_BINDING_VERSION = 'whole-quality-cross-chapter-retry-binding-1';
+const CROSS_CHAPTER_RETRYABLE_FAILURES = new Set(['FORMAT_REPAIR_FAILED','FORMAT_REPAIR_SEMANTIC_DRIFT']);
+const CROSS_CHAPTER_STAGE_ORDER = ['whole-quality:cross-chapter:extract','whole-quality:cross-chapter:adjudicate'];
 
 export class WholeQualityError extends Error {
   constructor(code, message) { super(message); this.name = 'WholeQualityError'; this.code = code; }
@@ -126,22 +134,37 @@ function requestCore(request, chapters) {
     requireThat(Array.isArray(request.sourceIds) && request.sourceIds.length <= 100 && request.sourceIds.every(id => typeof id === 'string' && id.trim()),
       'WHOLE_QUALITY_SOURCE_IDS', '指定来源无效。'); sourceIds = [...new Set(request.sourceIds)];
   }
+  let crossChapterReview;
+  if (request.crossChapterReview !== undefined) {
+    exact(request.crossChapterReview, ['enabled','contractVersion','integrationVersion','modelPolicy'], [], 'WHOLE_QUALITY_CROSS_CHAPTER_BINDING');
+    requireThat(request.crossChapterReview.enabled === true && request.crossChapterReview.contractVersion === 'cross-chapter-review-result-1'
+      && request.crossChapterReview.integrationVersion === CROSS_CHAPTER_INTEGRATION_VERSION, 'WHOLE_QUALITY_CROSS_CHAPTER_BINDING', '跨章核对请求绑定版本无效。');
+    text(request.crossChapterReview.modelPolicy, 'WHOLE_QUALITY_CROSS_CHAPTER_BINDING', 300); crossChapterReview = clone(request.crossChapterReview);
+  }
   return { kind: 'revise', revisionMode: WHOLE_QUALITY_MODE, sourceBaseRevision: request.baseRevision, objective, chapters,
-    ...(sourceIds !== undefined ? { sourceIds } : {}) };
+    ...(sourceIds !== undefined ? { sourceIds } : {}), ...(crossChapterReview !== undefined ? { crossChapterReview } : {}) };
 }
 export function createWholeQualityRequestSpec(request) {
   requireThat(record(request), 'WHOLE_QUALITY_REQUEST', '请求格式无效。'); const chapters = validateChapters(request.chapters); const core = requestCore(request, chapters);
   return { schemaVersion: WHOLE_QUALITY_REQUEST_VERSION, kind: core.kind, revisionMode: core.revisionMode,
     inputFingerprint: fingerprint(core), sourceManuscriptSha256: manuscriptFingerprint(chapters), sourceChapterIds: chapters.map(c => c.id),
-    sourceBaseRevision: core.sourceBaseRevision, objective: core.objective, ...(core.sourceIds !== undefined ? { sourceIds: core.sourceIds } : {}) };
+    sourceBaseRevision: core.sourceBaseRevision, objective: core.objective, ...(core.sourceIds !== undefined ? { sourceIds: core.sourceIds } : {}),
+    ...(core.crossChapterReview !== undefined ? { crossChapterReview: core.crossChapterReview } : {}) };
 }
 function validateRequestSpec(value, chapters) {
-  exact(value, ['schemaVersion', 'kind', 'revisionMode', 'inputFingerprint', 'sourceManuscriptSha256', 'sourceChapterIds', 'sourceBaseRevision', 'objective'], ['sourceIds'], 'WHOLE_QUALITY_REQUEST_SPEC');
+  exact(value, ['schemaVersion', 'kind', 'revisionMode', 'inputFingerprint', 'sourceManuscriptSha256', 'sourceChapterIds', 'sourceBaseRevision', 'objective'], ['sourceIds','crossChapterReview'], 'WHOLE_QUALITY_REQUEST_SPEC');
   requireThat(value.schemaVersion === WHOLE_QUALITY_REQUEST_VERSION && value.kind === 'revise' && value.revisionMode === WHOLE_QUALITY_MODE,
     'WHOLE_QUALITY_REQUEST_SPEC', '请求规格版本无效。'); requireThat(hex64.test(value.inputFingerprint) && hex64.test(value.sourceManuscriptSha256), 'WHOLE_QUALITY_REQUEST_SPEC', '请求指纹无效。');
   sameIds(value.sourceChapterIds, chapters.map(c => c.id), 'WHOLE_QUALITY_REQUEST_SPEC'); text(value.objective, 'WHOLE_QUALITY_REQUEST_SPEC', 12000);
+  if (value.crossChapterReview !== undefined) {
+    exact(value.crossChapterReview, ['enabled','contractVersion','integrationVersion','modelPolicy'], [], 'WHOLE_QUALITY_REQUEST_SPEC');
+    requireThat(value.crossChapterReview.enabled === true && value.crossChapterReview.contractVersion === 'cross-chapter-review-result-1'
+      && value.crossChapterReview.integrationVersion === CROSS_CHAPTER_INTEGRATION_VERSION, 'WHOLE_QUALITY_REQUEST_SPEC', '跨章核对请求规格无效。');
+    text(value.crossChapterReview.modelPolicy, 'WHOLE_QUALITY_REQUEST_SPEC', 300);
+  }
   const core = { kind: value.kind, revisionMode: value.revisionMode, sourceBaseRevision: value.sourceBaseRevision, objective: value.objective, chapters,
-    ...(value.sourceIds !== undefined ? { sourceIds: clone(value.sourceIds) } : {}) };
+    ...(value.sourceIds !== undefined ? { sourceIds: clone(value.sourceIds) } : {}),
+    ...(value.crossChapterReview !== undefined ? { crossChapterReview: clone(value.crossChapterReview) } : {}) };
   requireThat(manuscriptFingerprint(chapters) === value.sourceManuscriptSha256 && fingerprint(core) === value.inputFingerprint,
     'WHOLE_QUALITY_REQUEST_SPEC', '请求规格与原稿不一致。'); return clone(value);
 }
@@ -189,10 +212,20 @@ const readingContract = { schemaVersion: 'whole-quality-reading-response-contrac
     boundary: 'The two-scene evidence threshold applies only to an issue you choose to label major+investigate. Returning no major issue, or issues=[] when justified by the full reading, is valid; never invent or promote an issue to satisfy a quota.' },
   globalConstraints: ['sceneChanges covers every input chapter with at least one scene','scene IDs and issue IDs are unique','at most 6 issues may be major+investigate'],
   legalEmptyResult: { meaning: 'no safe issue found', shape: { issues: [], strengths: [], unresolved: [] }, stillRequired: ['one or more sceneChanges covering every chapter','coverage','synopsis'] } };
-function readingInput(requestSpec, chapters) {
-  const bindings = { schemaVersion: WHOLE_QUALITY_READING_VERSION, sourceManuscriptSha256: requestSpec.sourceManuscriptSha256,
+const FACT_READING_VERSION = 'whole-quality-reading-2';
+const factReadingContract = { ...readingContract, schemaVersion: 'whole-quality-reading-response-contract-3',
+  issueSchema: { ...readingContract.issueSchema,
+    conditionalConstraints: [
+      { if: { priority: 'major', disposition: 'investigate', claimType: 'textual_conflict' }, then: ['evidence contains at least 2 distinct non-overlapping verbatim positions inside the declared scenes; both may be in one scene', 'the quoted assertions must be mutually incompatible for the same fact, not merely different wording', 'counterEvidence contains at least 1 quote; explain why normal change, different rounds or dialogue uncertainty do not resolve the contradiction'] },
+      { if: { priority: 'major', disposition: 'investigate', claimType: ['reader_effect_hypothesis','editorial_preference'] }, then: ['sceneIds contains at least 2 scenes','evidence contains at least 2 quotes located across at least 2 declared scenes','counterEvidence contains at least 1 quote'] },
+    ],
+    boundary: 'A local textual contradiction can be evidenced within one scene. Cross-scene reader-effect or editorial-pattern claims still require two scenes. Exact quotation checks establish location, not semantic truth. Never invent scenes or promote claims to satisfy a quota.' } };
+function readingInput(requestSpec, chapters, version = WHOLE_QUALITY_READING_VERSION) {
+  requireThat([WHOLE_QUALITY_READING_VERSION, FACT_READING_VERSION].includes(version), 'WHOLE_QUALITY_READING_VERSION', '阅读证据策略版本无效。');
+
+  const bindings = { schemaVersion: version, sourceManuscriptSha256: requestSpec.sourceManuscriptSha256,
     checkedChapterIds: chapters.map(c => c.id) }; const example = responseExampleEvidence(chapters[0]);
-  return { schemaVersion: 'whole-quality-reading-input-1', requestSpec, chapters, responseBindings: bindings, responseContract: readingContract,
+  return { schemaVersion: version === FACT_READING_VERSION ? 'whole-quality-reading-input-2' : 'whole-quality-reading-input-1', requestSpec, chapters, responseBindings: bindings, responseContract: version === FACT_READING_VERSION ? factReadingContract : readingContract,
     responseExample: { ...bindings, inputHash: 'COPY_TOP_LEVEL_INPUT_HASH', coverage: { status: 'complete', omissions: [] }, synopsis: '全文梗概',
       sceneChanges: [{ id: 'scene-1', chapterId: chapters[0].id, sequence: 1, entryEvidence: example, exitEvidence: example,
         beforeState: '结构占位', trigger: '结构占位', action: '结构占位', afterState: '结构占位', cost: '结构占位', narrativeFunction: '结构占位', preservedStrengths: [example] }],
@@ -231,15 +264,182 @@ function validateReading(value, input) {
     const itemEvidence = evidenceList(item.evidence, chapters, code, { min: investigate ? 2 : 1, path: `issues[${issueIndex}].evidence` });
     const counterEvidence = evidenceList(item.counterEvidence, chapters, code, { min: investigate ? 1 : 0, path: `issues[${issueIndex}].counterEvidence` });
     const preservation = evidenceList(item.preservation, chapters, code, { path: `issues[${issueIndex}].preservation` }); stringList(item.limitations, code, 12, false);
-    if (investigate) requireThat(new Set(item.sceneIds).size >= 2 && new Set(itemEvidence.map(e => {
-      const containing = item.sceneIds.find(id => { const s = sceneById.get(id); return s.chapterId === e.chapterId && e.start >= s.entryEvidence.start && e.start <= s.exitEvidence.start + s.exitEvidence.quote.length; });
-      return containing;
-    }).filter(Boolean)).size >= 2, code, '主要候选问题须有至少两个场景的原文依据。');
+    if (investigate) {
+      const containingScenes = itemEvidence.map(e => item.sceneIds.find(id => { const scene = sceneById.get(id);
+        return scene.chapterId === e.chapterId && e.start >= scene.entryEvidence.start
+          && e.start + e.quote.length <= scene.exitEvidence.start + scene.exitEvidence.quote.length;
+      }));
+      if (input.responseBindings.schemaVersion === FACT_READING_VERSION && item.claimType === 'textual_conflict') {
+        requireThat(containingScenes.every(Boolean), code, '事实矛盾的全部证据须在声明场景内。');
+        requireThat(itemEvidence.some((left,index) => itemEvidence.slice(index+1).some(right => !rangesOverlap(left,right))), code, '事实矛盾须有两处不重叠的逐字证据，允许位于同一场景。');
+      } else {
+        // Keep the legacy containment test byte-for-byte in meaning for saved v1 artifacts.
+        const legacyScenes = itemEvidence.map(e => item.sceneIds.find(id => { const scene = sceneById.get(id);
+          return scene.chapterId === e.chapterId && e.start >= scene.entryEvidence.start && e.start <= scene.exitEvidence.start + scene.exitEvidence.quote.length;
+        }));
+        requireThat(new Set(item.sceneIds).size >= 2 && new Set(legacyScenes.filter(Boolean)).size >= 2, code, '主要候选问题须有至少两个场景的原文依据。');
+      }
+    }
     return { ...clone(item), evidence: itemEvidence, counterEvidence, preservation };
   });
   requireThat(issues.filter(item => item.priority === 'major' && item.disposition === 'investigate').length <= LIMITS.majorIssues, code, '主要问题超过上限。');
   const strengths = evidenceList(value.strengths, chapters, code, { path: 'strengths' }); stringList(value.unresolved, code, LIMITS.issues);
   return { ...clone(value), sceneChanges, issues, strengths };
+}
+
+function collectCrossChapterEvidence(value, chapters, path = 'finding', output = [], seen = new Set()) {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => collectCrossChapterEvidence(item, chapters, `${path}[${index}]`, output, seen));
+    return output;
+  }
+  if (!record(value)) return output;
+  if (typeof value.chapterId === 'string' && typeof value.quote === 'string' && Number.isSafeInteger(value.start)) {
+    const chapter = chapters.find(item => item.id === value.chapterId), key = `${value.chapterId}:${value.start}:${value.quote.length}`;
+    requireThat(chapter && value.start >= 0 && chapter.body.slice(value.start, value.start + value.quote.length) === value.quote,
+      'WHOLE_QUALITY_CROSS_CHAPTER', `跨章核对证据未逐字绑定：${path}`);
+    if (!seen.has(key)) {
+      seen.add(key);
+      output.push({ chapterId: value.chapterId, start: value.start, quote: value.quote,
+        purpose: typeof value.purpose === 'string' && value.purpose.trim() ? value.purpose : `跨章事实核对证据：${path}` });
+    }
+  }
+  for (const [key, child] of Object.entries(value)) collectCrossChapterEvidence(child, chapters, `${path}.${key}`, output, seen);
+  return output;
+}
+function lineParagraphs(body) {
+  return [...body.matchAll(/[^\r\n]+/g)]
+    .filter(match => match[0].trim())
+    .map(match => ({ start: match.index, end: match.index + match[0].length }));
+}
+function crossScopeOptions(conflictId, evidenceItems, chapters) {
+  const options = [], seen = new Set();
+  const add = (chapter, start, end, paragraphCount, evidenceKeys) => {
+    const quote = chapter.body.slice(start, end), key = `${chapter.id}:${start}:${end}`;
+    if (!quote.trim() || quote.length > 2000 || seen.has(key)) return;
+    seen.add(key); options.push({ id: `${conflictId}:scope-${options.length + 1}`, chapterId: chapter.id, start, quote, paragraphCount,
+      evidenceKeys: [...new Set(evidenceKeys)] });
+  };
+  for (const item of evidenceItems) {
+    const chapter = chapters.find(value => value.id === item.chapterId), spans = lineParagraphs(chapter.body), evidenceEnd = item.start + item.quote.length;
+    const indexes = spans.map((span, index) => ({ span, index })).filter(({ span }) => span.start < evidenceEnd && item.start < span.end).map(({ index }) => index);
+    const evidenceKey = `${item.chapterId}:${item.start}:${item.quote.length}`;
+    if (!indexes.length) { add(chapter, item.start, evidenceEnd, 1, [evidenceKey]); continue; }
+    const first = indexes[0], last = indexes.at(-1);
+    if (last - first + 1 <= 2) add(chapter, spans[first].start, spans[last].end, last - first + 1, [evidenceKey]);
+    if (first === last && first > 0) add(chapter, spans[first - 1].start, spans[first].end, 2, [evidenceKey]);
+    if (first === last && first + 1 < spans.length) add(chapter, spans[first].start, spans[first + 1].end, 2, [evidenceKey]);
+    add(chapter, item.start, evidenceEnd, 1, [evidenceKey]);
+  }
+  return options.slice(0, LIMITS.evidence * 3);
+}
+function crossFindingClaim(finding, id) {
+  for (const key of ['claim','observation','summary','reason','description']) if (typeof finding[key] === 'string' && finding[key].trim()) return finding[key];
+  return `跨章核对确认了事实冲突 ${id}。`;
+}
+function retryAttemptRecords(protocolFailure, review) {
+  return [
+    { schemaVersion: CROSS_CHAPTER_ATTEMPT_VERSION, attempt: 0, artifactNamespace: 'primary', status: 'protocol_failed',
+      protocolFailureSha256: fingerprint(protocolFailure) },
+    { schemaVersion: CROSS_CHAPTER_ATTEMPT_VERSION, attempt: 1, artifactNamespace: 'retry-1', status: 'completed',
+      reviewSha256: fingerprint(review), stageReceipts: clone(review.stageReceipts) },
+  ];
+}
+function validateCrossProtocolFailure(value, expectedAttempt) {
+  const code = 'WHOLE_QUALITY_CROSS_CHAPTER';
+  exact(value, ['schemaVersion','attempt','artifactNamespace','code','stage','inputHash','requestSha256','rawResponseSha256',
+    'formatRepairInputHash','formatRepairRequestSha256','formatRepairResponseSha256','completedStageReceipts'], ['causeCode'], code);
+  requireThat(value.schemaVersion === CROSS_CHAPTER_PROTOCOL_FAILURE_VERSION && value.attempt === expectedAttempt
+    && value.artifactNamespace === (expectedAttempt === 0 ? 'primary' : `retry-${expectedAttempt}`)
+    && CROSS_CHAPTER_RETRYABLE_FAILURES.has(value.code) && CROSS_CHAPTER_STAGE_ORDER.includes(value.stage), code, '跨章协议失败记录身份无效。');
+  for (const key of ['inputHash','requestSha256','rawResponseSha256','formatRepairInputHash','formatRepairRequestSha256','formatRepairResponseSha256'])
+    requireThat(hex64.test(value[key]), code, '跨章协议失败哈希无效。');
+  requireThat(value.causeCode === undefined || typeof value.causeCode === 'string', code, '跨章协议失败原因无效。');
+  requireThat(Array.isArray(value.completedStageReceipts), code, '跨章协议失败的已完成阶段无效。');
+  const failedIndex = CROSS_CHAPTER_STAGE_ORDER.indexOf(value.stage);
+  requireThat(value.completedStageReceipts.length === failedIndex, code, '跨章协议失败前的阶段数量无效。');
+  value.completedStageReceipts.forEach((receipt,index) => {
+    exact(receipt, ['stage','primaryResponseSha256'], ['formatRepairResponseSha256'], code);
+    requireThat(receipt.stage === CROSS_CHAPTER_STAGE_ORDER[index] && hex64.test(receipt.primaryResponseSha256)
+      && (receipt.formatRepairResponseSha256 === undefined || hex64.test(receipt.formatRepairResponseSha256)), code, '跨章协议失败前的阶段回执无效。');
+  });
+  return clone(value);
+}
+function validateCrossRetryMetadata(protocolFailures, attempts, review) {
+  const code = 'WHOLE_QUALITY_CROSS_CHAPTER';
+  requireThat(Array.isArray(protocolFailures) && protocolFailures.length === 1, code, '跨章协议重试必须只保留一次原失败。');
+  const failure = validateCrossProtocolFailure(protocolFailures[0], 0);
+  requireThat(Array.isArray(attempts) && attempts.length === 2, code, '跨章协议尝试记录数量无效。');
+  exact(attempts[0], ['schemaVersion','attempt','artifactNamespace','status','protocolFailureSha256'], [], code);
+  requireThat(attempts[0].schemaVersion === CROSS_CHAPTER_ATTEMPT_VERSION && attempts[0].attempt === 0
+    && attempts[0].artifactNamespace === 'primary' && attempts[0].status === 'protocol_failed'
+    && attempts[0].protocolFailureSha256 === fingerprint(failure), code, '跨章原失败尝试记录无效。');
+  exact(attempts[1], ['schemaVersion','attempt','artifactNamespace','status','reviewSha256','stageReceipts'], [], code);
+  requireThat(attempts[1].schemaVersion === CROSS_CHAPTER_ATTEMPT_VERSION && attempts[1].attempt === 1
+    && attempts[1].artifactNamespace === 'retry-1' && attempts[1].status === 'completed'
+    && attempts[1].reviewSha256 === fingerprint(review) && isDeepStrictEqual(attempts[1].stageReceipts, review.stageReceipts), code, '跨章成功重试记录无效。');
+  return { protocolFailures: [failure], attempts: clone(attempts) };
+}
+function normalizeCrossChapterReview(review, chapters, retryEvidence) {
+  const code = 'WHOLE_QUALITY_CROSS_CHAPTER';
+  requireThat(record(review) && review.schemaVersion === 'cross-chapter-review-result-1' && Array.isArray(review.findings), code, '跨章核对结果版本无效。');
+  requireThat(Array.isArray(review.stageReceipts) && review.stageReceipts.length === 2, code, '跨章核对必须保留抽取与裁定两阶段回执。');
+  review.stageReceipts.forEach(receipt => requireThat(record(receipt) && typeof receipt.stage === 'string' && hex64.test(receipt.primaryResponseSha256)
+    && (receipt.formatRepairResponseSha256 === undefined || hex64.test(receipt.formatRepairResponseSha256)), code, '跨章核对阶段回执无效。'));
+  const allowed = new Set(['confirmed_conflict','ambiguous','resolved']), ids = new Set();
+  const findings = review.findings.map((finding, index) => {
+    requireThat(record(finding) && allowed.has(finding.status), code, '跨章核对 finding 状态无效。');
+    const findingId = typeof finding.id === 'string' && finding.id.trim() ? finding.id
+      : typeof finding.groupId === 'string' && finding.groupId.trim() ? finding.groupId : `finding-${index + 1}`;
+    requireThat(!ids.has(findingId), code, '跨章核对 finding ID 重复。'); ids.add(findingId);
+    return { finding, findingId };
+  });
+  const confirmedConflicts = findings.filter(item => item.finding.status === 'confirmed_conflict').map(({ finding, findingId }) => {
+    const evidenceItems = collectCrossChapterEvidence(finding, chapters);
+    if (evidenceItems.length < 2 && Array.isArray(review.comparisons)) {
+      const refs = new Set([finding.comparisonId, ...(Array.isArray(finding.comparisonIds) ? finding.comparisonIds : []),
+        ...(Array.isArray(finding.candidateIds) ? finding.candidateIds : [])].filter(value => typeof value === 'string'));
+      const related = review.comparisons.filter(item => refs.has(item?.id) || item?.findingId === findingId
+        || (Array.isArray(item?.findingIds) && item.findingIds.includes(findingId)));
+      related.forEach((item, index) => collectCrossChapterEvidence(item, chapters, `comparisons[${index}]`, evidenceItems,
+        new Set(evidenceItems.map(value => `${value.chapterId}:${value.start}:${value.quote.length}`))));
+    }
+    requireThat(evidenceItems.length >= 2, code, 'confirmed_conflict 必须带有至少两侧逐字证据。');
+    const id = `cross-chapter:${findingId}`, scopeOptions = crossScopeOptions(id, evidenceItems, chapters);
+    requireThat(scopeOptions.length > 0, code, 'confirmed_conflict 没有可绑定的最小连续修订范围。');
+    return { id, findingId, claim: crossFindingClaim(finding, findingId), evidence: evidenceItems, scopeOptions,
+      limitations: Array.isArray(finding.limitations) ? finding.limitations.filter(value => typeof value === 'string' && value.trim()).slice(0, 12) : [] };
+  });
+  const bundle = { schemaVersion: WHOLE_QUALITY_CROSS_CHAPTER_BUNDLE_VERSION, sourceManuscriptSha256: manuscriptFingerprint(chapters),
+    review: clone(review), confirmedConflicts };
+  if (retryEvidence !== undefined) {
+    const protocolFailure = validateCrossProtocolFailure(retryEvidence, 0), attempts = retryAttemptRecords(protocolFailure, review);
+    return { ...bundle, protocolFailures: [protocolFailure], attempts };
+  }
+  return bundle;
+}
+function validateCrossChapterBundle(value, chapters) {
+  const code = 'WHOLE_QUALITY_CROSS_CHAPTER';
+  exact(value, ['schemaVersion','sourceManuscriptSha256','review','confirmedConflicts'], ['protocolFailures','attempts'], code);
+  requireThat(value.schemaVersion === WHOLE_QUALITY_CROSS_CHAPTER_BUNDLE_VERSION && value.sourceManuscriptSha256 === manuscriptFingerprint(chapters), code, '跨章核对包与原稿不一致。');
+  const rebuilt = normalizeCrossChapterReview(value.review, chapters);
+  requireThat(isDeepStrictEqual({ schemaVersion:value.schemaVersion, sourceManuscriptSha256:value.sourceManuscriptSha256,
+    review:value.review, confirmedConflicts:value.confirmedConflicts }, rebuilt), code, '跨章核对冻结目标不能由原始核对结果重建。');
+  const hasFailures = value.protocolFailures !== undefined, hasAttempts = value.attempts !== undefined;
+  requireThat(hasFailures === hasAttempts, code, '跨章协议失败与尝试记录必须同时存在。');
+  if (hasFailures) validateCrossRetryMetadata(value.protocolFailures,value.attempts,value.review);
+  return clone(value);
+}
+function crossConflictGoals(bundle, reading) {
+  if (!bundle) return [];
+  return bundle.confirmedConflicts.map(conflict => {
+    const chapterIds = new Set(conflict.evidence.map(item => item.chapterId));
+    const sceneIds = reading.sceneChanges.filter(scene => chapterIds.has(scene.chapterId)).map(scene => scene.id);
+    requireThat(sceneIds.length > 0, 'WHOLE_QUALITY_CROSS_CHAPTER', '跨章冲突证据没有对应的全文阅读场景。');
+    return { id: conflict.id, source: 'cross_chapter_confirmed', hardIssue: true, claimType: 'textual_conflict',
+      requiredDisposition: 'revise_or_unresolved', priority: 'major', disposition: 'investigate', area: 'knowledge_continuity',
+      observation: conflict.claim, sceneIds, evidence: clone(conflict.evidence), preservation: [],
+      limitations: conflict.limitations.length ? clone(conflict.limitations) : ['跨章事实核对只确认文本冲突，不预设唯一改法。'], scopeOptions: clone(conflict.scopeOptions) };
+  });
 }
 
 function retrievalIssue(issue, requestSpec) {
@@ -338,7 +538,14 @@ planContract.inputBoundary = { eligibleIssueIds: { type: 'array', exactValueFrom
 planContract.itemSchema.properties.issueIds.items.enumFrom = 'input.eligibleIssueIds for revise items; input.reading.issues[].id for preserve items';
 planContract.globalConstraints = [...planContract.globalConstraints,
   'revise item issueIds must be drawn only from input.eligibleIssueIds; secondary, preserve, and needs_evidence issues cannot be promoted by planning'];
-function eligibleIssueIds(reading) { return reading.issues.filter(i => i.priority === 'major' && i.disposition === 'investigate').map(i => i.id); }
+const crossPlanContract = clone(planContract);
+crossPlanContract.globalConstraints = [...crossPlanContract.globalConstraints,
+  'every input.confirmedConflicts item must be covered by a revise item or input-bound unresolved entry; confirmed conflicts cannot be silently preserved'];
+crossPlanContract.inputBoundary.confirmedConflicts = { type: 'array', exactValueFrom: 'host-normalized confirmed_conflict findings',
+  meaning: 'These are frozen factual repair goals. Targets for them must exactly match a supplied scopeOptions span; one- or two-paragraph options allow a necessary adjacent question/answer pair.' };
+function eligibleIssueIds(reading, confirmedConflicts = []) {
+  return [...reading.issues.filter(i => i.priority === 'major' && i.disposition === 'investigate').map(i => i.id), ...confirmedConflicts.map(item => item.id)];
+}
 function legacyPlanInput(requestSpec, chapters, reading, retrieval) {
   const bindings = { schemaVersion: WHOLE_QUALITY_PLAN_VERSION, sourceManuscriptSha256: requestSpec.sourceManuscriptSha256,
     readingSha256: fingerprint(reading), retrievalSha256: fingerprint(retrieval) };
@@ -350,12 +557,14 @@ function legacyPlanInput(requestSpec, chapters, reading, retrieval) {
     limits: { maxPlanItems: LIMITS.planItems, linkedSceneMinimum: 1, maxTargetsPerItem: LIMITS.evidence,
       boundary: '按问题需要使用一个或多个场景；跨场景影响必须全部列出，不得为满足数量而添加修改。' } };
 }
-function planInput(requestSpec, chapters, reading, retrieval, applicability) {
+function planInput(requestSpec, chapters, reading, retrieval, applicability, crossChapterBundle) {
   const bindings = { schemaVersion: WHOLE_QUALITY_PLAN_VERSION, sourceManuscriptSha256: requestSpec.sourceManuscriptSha256,
     readingSha256: fingerprint(reading), retrievalSha256: fingerprint(retrieval) };
+  const confirmedConflicts = crossConflictGoals(crossChapterBundle, reading);
   return { schemaVersion: 'whole-quality-plan-input-2', requestSpec, chapters, reading, retrieval,
-    ...(applicability === undefined ? {} : { applicability: clone(applicability) }), eligibleIssueIds: eligibleIssueIds(reading), responseBindings: bindings,
-    responseContract: planContract, responseExample: { ...bindings, inputHash: 'COPY_TOP_LEVEL_INPUT_HASH', decision: 'preserve_original',
+    ...(applicability === undefined ? {} : { applicability: clone(applicability) }),
+    ...(crossChapterBundle === undefined ? {} : { confirmedConflicts }), eligibleIssueIds: eligibleIssueIds(reading, confirmedConflicts), responseBindings: bindings,
+    responseContract: crossChapterBundle === undefined ? planContract : crossPlanContract, responseExample: { ...bindings, inputHash: 'COPY_TOP_LEVEL_INPUT_HASH', decision: 'preserve_original',
       summary: '没有安全的场景联动修改，保留原稿。', items: [], materialDecisions: retrieval.supplies.map(s => ({ supplyId: s.supplyId,
         materialId: s.materialId, issueId: s.issueId, decision: 'not_used', planItemIds: [], evidenceIds: [], reason: '结构占位',
         applicabilityBoundary: '结构占位', limitations: ['结构占位'] })), unresolved: [] },
@@ -364,15 +573,18 @@ function planInput(requestSpec, chapters, reading, retrieval, applicability) {
 }
 function validatePlan(value, input) {
   const code = 'WHOLE_QUALITY_PLAN', chapters = input.chapters, reading = input.reading, sceneById = new Map(reading.sceneChanges.map(s => [s.id, s]));
-  const derivedEligibleIssueIds = eligibleIssueIds(reading), frozenEligibleIssueIds = input.eligibleIssueIds ?? derivedEligibleIssueIds;
+  const activePlanContract = input.confirmedConflicts === undefined ? planContract : crossPlanContract;
+  const confirmedConflicts = input.confirmedConflicts ?? [], crossById = new Map(confirmedConflicts.map(item => [item.id, item]));
+  const derivedEligibleIssueIds = eligibleIssueIds(reading, confirmedConflicts), frozenEligibleIssueIds = input.eligibleIssueIds ?? derivedEligibleIssueIds;
   sameIds(frozenEligibleIssueIds, derivedEligibleIssueIds, code, '可修问题冻结列表与独立阅读不一致。');
-  exact(value, planContract.required, input.eligibleIssueIds === undefined ? [] : ['origin'], code); requireThat(value.schemaVersion === input.responseBindings.schemaVersion
+  exact(value, activePlanContract.required, input.eligibleIssueIds === undefined ? [] : ['origin'], code); requireThat(value.schemaVersion === input.responseBindings.schemaVersion
     && value.inputHash === fingerprint(input) && value.sourceManuscriptSha256 === input.responseBindings.sourceManuscriptSha256
     && value.readingSha256 === input.responseBindings.readingSha256 && value.retrievalSha256 === input.responseBindings.retrievalSha256, code, '方案绑定无效。');
   if (value.origin !== undefined) requireThat(['model','host_no_eligible_issues'].includes(value.origin), code, '方案来源无效。');
   requireThat(['revise','preserve_original'].includes(value.decision), code, '方案决定无效。'); text(value.summary, code);
   requireThat(Array.isArray(value.items) && value.items.length <= LIMITS.planItems, code, '方案项数量无效。');
-  const majorIssues = reading.issues.filter(i => i.priority === 'major' && i.disposition === 'investigate'); const issueById = new Map(reading.issues.map(i => [i.id, i]));
+  const majorIssues = [...reading.issues.filter(i => i.priority === 'major' && i.disposition === 'investigate'), ...confirmedConflicts];
+  const issueById = new Map([...reading.issues, ...confirmedConflicts].map(i => [i.id, i]));
   const protections = reading.issues.flatMap(i => [...i.preservation, ...(i.disposition === 'preserve' ? i.evidence : [])]);
   const itemIds = new Set(), targetIds = new Set(), requirementIds = new Set(), revisedIssueIds = new Set();
   const items = value.items.map((item, itemIndex) => {
@@ -384,7 +596,7 @@ function validatePlan(value, input) {
       requireThat(item.issueIds.every(id => frozenEligibleIssueIds.includes(id)), code, '修改只能处理冻结的主要候选问题。');
       requireThat(item.issueIds.every(id => !revisedIssueIds.has(id)), code, '同一主要问题的相互依赖目标不能拆到多个原子采纳组。');
       item.issueIds.forEach(id => revisedIssueIds.add(id));
-    }
+    } else requireThat(item.issueIds.every(id => !crossById.has(id)), code, 'confirmed_conflict 不能以 preserve 项静默结案。');
     requireThat(Array.isArray(item.sceneIds) && new Set(item.sceneIds).size === item.sceneIds.length && item.sceneIds.every(id => sceneById.has(id))
       && (item.decision !== 'revise' || item.sceneIds.length >= 1), code, '修改方案必须列出实际需要处理的一个或多个场景。');
     requireThat(Array.isArray(item.affectedChapterIds) && new Set(item.affectedChapterIds).size === item.affectedChapterIds.length
@@ -395,13 +607,17 @@ function validatePlan(value, input) {
       text(target.id, code, 200); requireThat(!targetIds.has(target.id), code, 'target ID 重复。'); targetIds.add(target.id);
       requireThat(item.sceneIds.includes(target.sceneId), code, 'target 场景不属于方案。');
       const checked = { id: target.id, sceneId: target.sceneId, ...evidence(Object.fromEntries(Object.entries(target).filter(([k]) => !['id','sceneId'].includes(k))), chapters, code, `items[${itemIndex}].targets[${targetIndex}]`) };
-      const scene = sceneById.get(target.sceneId); requireThat(scene.chapterId === checked.chapterId && checked.start >= scene.entryEvidence.start
-        && checked.start <= scene.exitEvidence.start + scene.exitEvidence.quote.length, code, 'target 不在声明场景范围。');
+      const scene = sceneById.get(target.sceneId), matchingCrossScopes = item.issueIds.filter(id => crossById.has(id)).flatMap(id => crossById.get(id).scopeOptions)
+        .filter(scope => scope.chapterId === checked.chapterId && scope.start === checked.start && scope.quote === checked.quote);
+      requireThat((scene.chapterId === checked.chapterId && checked.start >= scene.entryEvidence.start
+        && checked.start <= scene.exitEvidence.start + scene.exitEvidence.quote.length) || matchingCrossScopes.length > 0, code, 'target 不在声明场景或冻结跨章范围内。');
       requireThat(protections.every(p => !rangesOverlap(p, checked)), code, 'target 侵入独立阅读保护范围。'); return checked;
     });
     if (item.decision === 'revise') {
       requireThat(item.sceneIds.every(id => targets.some(t => t.sceneId === id)), code, '每个联动场景都须有 target。');
       requireThat(item.affectedChapterIds.length > 0 && item.affectedChapterIds.every(id => targets.some(t => t.chapterId === id)), code, '每个受影响章都须有 target。');
+      for (const conflictId of item.issueIds.filter(id => crossById.has(id))) requireThat(targets.some(target => crossById.get(conflictId).scopeOptions
+        .some(scope => scope.chapterId === target.chapterId && scope.start === target.start && scope.quote === target.quote)), code, 'confirmed_conflict 缺少冻结连续段落 target。');
     }
     requireThat(Array.isArray(item.actionRequirements) && (item.decision !== 'revise' || item.actionRequirements.length >= 1)
       && item.actionRequirements.length <= LIMITS.evidence, code, '可见行动要求数量无效。');
@@ -656,19 +872,36 @@ const rereadContract = { schemaVersion: 'whole-quality-reread-response-contract-
       limitations: stringArrayContract(8, { minItems: 1 }) }, constraints: ['a serious issue prevents eligible_for_user_choice for every related plan item'] },
   globalConstraints: ['Read all candidate chapters before judging.','Factual coherence and goal implementation are separate fields; consistency alone does not prove implementation.','A replacement existing in the candidate does not prove the intended visible effect.'],
   legalEmptyResult: { meaning: 'no revise items or no newly introduced issues', shape: { changeChecks: [], introducedIssues: [], unresolvedItems: [], preservedStrengths: [] }, note: 'changeChecks may be empty only when the plan has no revise items; coverage and summary remain required.' } };
-function rereadInput(requestSpec, sourceChapters, candidateChapters, reading, plan, feasibility, candidateRevision, actualChanges, diff) {
+const crossRereadContract = clone(rereadContract);
+crossRereadContract.optional = ['crossChapterChecks'];
+crossRereadContract.crossChapterCheck = ['conflictId','assessment','reason','evidence'];
+crossRereadContract.properties.crossChapterChecks = { type: 'array', exactItemCountFrom: 'input.confirmedConflicts.length', orderedBy: 'input.confirmedConflicts order', itemsRef: 'crossChapterCheckSchema' };
+crossRereadContract.crossChapterCheckSchema = { type: 'object', additionalProperties: false, required: ['conflictId','assessment','reason','evidence'],
+  properties: { conflictId: { type: 'string', exactFrom: 'corresponding input.confirmedConflicts[].id' },
+    assessment: { type: 'string', enum: ['resolved','unresolved','uncertain','not_attempted'] }, reason: textFieldContract(),
+    evidence: { type: 'array', minItems: 0, maxItems: LIMITS.evidence, items: rawEvidenceContract } },
+  conditionalConstraints: [{ if: { assessment: 'resolved' }, then: ['evidence has at least 1 exact candidate-text quote','owning revise group executionStatus=applied','owning changeCheck is implemented and consistent'] },
+    { if: { assessment: ['unresolved','uncertain','not_attempted'] }, then: ['owning revise group recommendation=not_recommended when a group exists'] }] };
+function rereadInput(requestSpec, sourceChapters, candidateChapters, reading, plan, feasibility, candidateRevision, actualChanges, diff, crossChapterBundle) {
   const execution = executionRows(plan, feasibility, candidateRevision); const bindings = { schemaVersion: WHOLE_QUALITY_REREAD_VERSION,
     sourceManuscriptSha256: requestSpec.sourceManuscriptSha256, candidateManuscriptSha256: manuscriptFingerprint(candidateChapters), checkedChapterIds: candidateChapters.map(c => c.id) };
+  const confirmedConflicts = crossConflictGoals(crossChapterBundle, reading);
   return { schemaVersion: 'whole-quality-reread-input-1', requestSpec, sourceChapters, candidateChapters, reading, plan, feasibility, execution, actualChanges, diff,
-    responseBindings: bindings, responseContract: rereadContract, responseExample: { ...bindings, inputHash: 'COPY_TOP_LEVEL_INPUT_HASH', coverage: { status: 'complete', omissions: [] },
+    ...(crossChapterBundle === undefined ? {} : { confirmedConflicts }),
+    responseBindings: bindings, responseContract: crossChapterBundle === undefined ? rereadContract : crossRereadContract, responseExample: { ...bindings, inputHash: 'COPY_TOP_LEVEL_INPUT_HASH', coverage: { status: 'complete', omissions: [] },
       summary: '全文复读摘要', changeChecks: plan.items.filter(i => i.decision === 'revise').map(i => { const status = execution.find(e => e.planItemId === i.id)?.status ?? 'blocked';
         return { planItemId: i.id, executionStatus: status, goalAssessment: status === 'applied' ? 'uncertain' : 'not_attempted', coherenceAssessment: status === 'applied' ? 'uncertain' : 'not_checked',
           reason: '结构占位', requirementChecks: i.actionRequirements.map(r => ({ requirementId: r.id, assessment: status === 'applied' ? 'uncertain' : 'not_attempted', reason: '结构占位', evidence: [] })),
-          risks: ['AI 阅读判断具有不确定性'], recommendation: status === 'applied' ? 'needs_judgment' : 'not_recommended' }; }), introducedIssues: [], unresolvedItems: [], preservedStrengths: [] } };
+          risks: ['AI 阅读判断具有不确定性'], recommendation: status === 'applied' ? 'needs_judgment' : 'not_recommended' }; }), introducedIssues: [], unresolvedItems: [], preservedStrengths: [],
+      ...(crossChapterBundle === undefined ? {} : { crossChapterChecks: confirmedConflicts.map(conflict => { const owner = plan.items.find(item => item.decision === 'revise' && item.issueIds.includes(conflict.id));
+        const status = owner ? execution.find(item => item.planItemId === owner.id)?.status : undefined;
+        return { conflictId: conflict.id, assessment: status === 'applied' ? 'uncertain' : 'not_attempted',
+          reason: status === 'applied' ? '须在候选全文中重新核对冲突两侧。' : '冲突未执行安全修订，明确保留为未决。', evidence: [] }; }) }) } };
 }
 function validateReread(value, input) {
   const code = 'WHOLE_QUALITY_REREAD', candidate = input.candidateChapters, revise = input.plan.items.filter(i => i.decision === 'revise');
-  exact(value, rereadContract.required, [], code); requireThat(value.schemaVersion === input.responseBindings.schemaVersion && value.inputHash === fingerprint(input)
+  const activeRereadContract = input.confirmedConflicts === undefined ? rereadContract : crossRereadContract;
+  exact(value, activeRereadContract.required, input.confirmedConflicts === undefined ? [] : activeRereadContract.optional, code); requireThat(value.schemaVersion === input.responseBindings.schemaVersion && value.inputHash === fingerprint(input)
     && value.sourceManuscriptSha256 === input.responseBindings.sourceManuscriptSha256 && value.candidateManuscriptSha256 === input.responseBindings.candidateManuscriptSha256
     && manuscriptFingerprint(candidate) === value.candidateManuscriptSha256, code, '复读绑定无效。');
   sameIds(value.checkedChapterIds, input.responseBindings.checkedChapterIds, code); coverage(value.coverage, code); text(value.summary, code);
@@ -705,8 +938,23 @@ function validateReread(value, input) {
   for (const issue of introducedIssues.filter(i => i.severity === 'serious')) for (const id of issue.relatedPlanItemIds) {
     requireThat(changeChecks.find(c => c.planItemId === id)?.recommendation !== 'eligible_for_user_choice', code, '严重误伤组不能进入推荐采纳。');
   }
+  let crossChapterChecks;
+  if (input.confirmedConflicts !== undefined) {
+    requireThat(Array.isArray(value.crossChapterChecks) && value.crossChapterChecks.length === input.confirmedConflicts.length, code, 'confirmed_conflict 复读未逐项覆盖。');
+    crossChapterChecks = value.crossChapterChecks.map((item, index) => {
+      exact(item, crossRereadContract.crossChapterCheck, [], code); const conflict = input.confirmedConflicts[index];
+      requireThat(item.conflictId === conflict.id && ['resolved','unresolved','uncertain','not_attempted'].includes(item.assessment), code, '跨章冲突复读状态无效。'); text(item.reason, code);
+      const checkedEvidence = evidenceList(item.evidence, candidate, code, { min: item.assessment === 'resolved' ? 1 : 0, path: `crossChapterChecks[${index}].evidence` });
+      const owner = revise.find(planItem => planItem.issueIds.includes(conflict.id)), ownerCheck = owner && changeChecks.find(check => check.planItemId === owner.id);
+      if (item.assessment === 'resolved') requireThat(ownerCheck?.executionStatus === 'applied' && ownerCheck.goalAssessment === 'implemented'
+        && ownerCheck.coherenceAssessment === 'consistent', code, '跨章冲突没有完成修订、目标复核和事实复核，不能标 resolved。');
+      else if (ownerCheck) requireThat(ownerCheck.recommendation === 'not_recommended', code, '跨章冲突仍未解决的修改组不能进入推荐采纳。');
+      if (!owner || ownerCheck?.executionStatus !== 'applied') requireThat(item.assessment !== 'resolved', code, '未执行跨章冲突不能标 resolved。');
+      return { ...clone(item), evidence: checkedEvidence };
+    });
+  } else requireThat(value.crossChapterChecks === undefined, code, '无跨章核对输入时不能伪造冲突复读。');
   stringList(value.unresolvedItems, code, LIMITS.issues); const preservedStrengths = evidenceList(value.preservedStrengths, candidate, code, { path: 'preservedStrengths' });
-  return { ...clone(value), changeChecks, introducedIssues, preservedStrengths };
+  return { ...clone(value), changeChecks, introducedIssues, preservedStrengths, ...(crossChapterChecks === undefined ? {} : { crossChapterChecks }) };
 }
 function validateIncompleteReread(value, input) {
   const code = 'WHOLE_QUALITY_REREAD_INCOMPLETE'; exact(value, ['schemaVersion','status','inputHash','sourceManuscriptSha256','candidateManuscriptSha256','failureCode','diagnostics'], [], code);
@@ -738,9 +986,54 @@ function materialUseObject(retrieval,plan){return { schemaVersion: 'whole-qualit
     unavailableIssueIds: retrieval.byIssue.filter(i => i.status === 'unavailable').map(i => i.issueId),
     notConnectedIssueIds: retrieval.byIssue.filter(i => i.status === 'not_connected').map(i => i.issueId),
     boundary: '逐问题保留 DATA 供应与用材账本；未连接或不可用不等于无相关材料，used 也不证明正文效果。' };}
-function qualityObject(reading, retrieval, plan, feasibility, reread, {applicability,finalTextMaterialEvidence,c06References}={}) {
+function candidateConflictRelation(source, candidate) {
+  const sharedEvidenceKeys = candidate.evidence.flatMap(item => source.evidence
+    .filter(original => original.chapterId === item.chapterId && original.quote === item.quote)
+    .map(original => `${original.chapterId}:${original.start}:${original.quote.length}`));
+  if (sharedEvidenceKeys.length) return { matchedBy: 'shared_verbatim_evidence', evidenceKeys: [...new Set(sharedEvidenceKeys)] };
+  if (candidate.claim === source.claim) return { matchedBy: 'exact_source_claim', evidenceKeys: [] };
+  return null;
+}
+function crossChapterOutcome(bundle, recheckBundle, reading, plan, feasibility, candidateRevision, reread, incomplete, crossRecheckIncomplete) {
+  if (!bundle) return undefined;
+  const goals = crossConflictGoals(bundle, reading), checkById = new Map((reread.crossChapterChecks ?? []).map(item => [item.conflictId, item]));
+  const feasibilityById = new Map(feasibility.checks.map(item => [item.planItemId, item])), skipped = new Map((candidateRevision?.skippedPlanItems ?? []).map(item => [item.planItemId, item.reason]));
+  const relatedCandidateConflicts = source => (recheckBundle?.confirmedConflicts ?? []).flatMap(candidate => {
+    const relation = candidateConflictRelation(source,candidate); return relation ? [{ candidate, relation }] : [];
+  });
+  const items = goals.map(goal => {
+    const source = bundle.confirmedConflicts.find(item => item.id === goal.id), related = relatedCandidateConflicts(source);
+    const owner = plan.items.find(item => item.decision === 'revise' && item.issueIds.includes(goal.id)), planUnresolved = plan.unresolved.find(item => item.issueId === goal.id), check = checkById.get(goal.id);
+    let repairStatus = 'unresolved', reason = planUnresolved?.reason;
+    if (!reason && crossRecheckIncomplete) reason = CROSS_RECHECK_INCOMPLETE_MESSAGE;
+    if (!reason && incomplete) reason = '修后全文复读未完成，confirmed_conflict 不能视为已修复。';
+    if (!reason && !owner) reason = 'confirmed_conflict 没有进入修订组，明确保留为未决。';
+    if (!reason && feasibilityById.get(owner.id)?.assessment !== 'feasible') reason = feasibilityById.get(owner.id)?.reason || '冻结修订范围未通过可行性检查。';
+    if (!reason && skipped.has(owner.id)) reason = skipped.get(owner.id);
+    if (!reason && check?.assessment === 'resolved' && recheckBundle && related.length === 0) { repairStatus = 'resolved_in_candidate'; reason = check.reason; }
+    else if (!reason && related.length) reason = `候选稿事实复查仍检出与原冲突相关的 confirmed_conflict（${related.map(item => item.candidate.findingId).join('、')}），原冲突不能结案。`;
+    else if (!reason) reason = check?.reason || 'confirmed_conflict 没有获得 resolved 复读结论。';
+    return { conflictId: goal.id, findingId: source.findingId, hardIssue: true, repairStatus, reason,
+      planItemIds: owner ? [owner.id] : [], targetIds: owner ? owner.targets.map(target => target.id) : [],
+      rereadAssessment: check?.assessment ?? (incomplete ? 'incomplete' : 'not_attempted'), candidateRelatedFindingIds: related.map(item => item.candidate.findingId),
+      candidateRelations: related.map(item => ({ findingId: item.candidate.findingId, ...item.relation })) };
+  });
+  return { schemaVersion: WHOLE_QUALITY_CROSS_CHAPTER_OUTCOME_VERSION, sourceManuscriptSha256: bundle.sourceManuscriptSha256,
+    candidateReviewManuscriptSha256: recheckBundle?.sourceManuscriptSha256 ?? null,
+    confirmedCount: items.length, resolvedInCandidateCount: items.filter(item => item.repairStatus === 'resolved_in_candidate').length,
+    unresolvedCount: items.filter(item => item.repairStatus === 'unresolved').length, items,
+    candidateConfirmedRisks: (recheckBundle?.confirmedConflicts ?? []).map(candidate => { const sourceRelations = bundle.confirmedConflicts.flatMap(source => {
+      const relation = candidateConflictRelation(source,candidate); return relation ? [{ conflictId: source.id, ...relation }] : [];
+    }); return { findingId: candidate.findingId, claim: candidate.claim, sourceConflictIds: sourceRelations.map(item => item.conflictId), sourceRelations }; }),
+    boundary: 'no_change、跳过、未执行、复读不确定或复读失败均不算修复；每个 confirmed_conflict 独立结案，候选稿其他 confirmed 风险另行保留，不能抹掉已修项。' };
+}
+function qualityObject(reading, retrieval, plan, feasibility, reread, {applicability,finalTextMaterialEvidence,c06References,crossChapterBundle,crossChapterRecheck,crossRecheckIncomplete,crossChapterResolution,candidateRevision}={}) {
   const priorities = reading.issues.map(({ id, priority, disposition, area, observation, expectedEffect, failureCriteria }) => ({ id, priority, disposition, area, observation, expectedEffect, failureCriteria }));
-  const unresolved = [...reading.unresolved, ...plan.unresolved.map(i => i.reason), ...feasibility.checks.filter(c => c.assessment !== 'feasible').flatMap(c => [c.reason, ...c.blockingReasons]), ...(reread.unresolvedItems ?? [])];
+  const legacyUnresolved = [...reading.unresolved, ...plan.unresolved.map(i => i.reason), ...feasibility.checks.filter(c => c.assessment !== 'feasible').flatMap(c => [c.reason, ...c.blockingReasons]), ...(reread.unresolvedItems ?? [])];
+  const unresolved = crossChapterResolution === undefined ? legacyUnresolved : [...new Set([...legacyUnresolved,
+    ...(crossRecheckIncomplete ? [CROSS_RECHECK_INCOMPLETE_MESSAGE] : []),
+    ...(candidateRevision?.skippedPlanItems?.map(item => item.reason) ?? []),
+    ...crossChapterResolution.items.filter(item => item.repairStatus === 'unresolved').map(item => item.reason)])];
   const materialUse = materialUseObject(retrieval,plan);
   const last = reading.sceneChanges.at(-1); const guidance = createWholeQualityDraftGuidance({ premise: reading.synopsis, ending: last.afterState,
     sceneChanges: reading.sceneChanges.map(s => ({ id: s.id, beforeState: s.beforeState, trigger: s.trigger, action: s.action, afterState: s.afterState, cost: s.cost,
@@ -748,6 +1041,10 @@ function qualityObject(reading, retrieval, plan, feasibility, reread, {applicabi
     priorities: reading.issues.map(i => ({ id: i.id, problem: i.observation, expectedEffect: i.expectedEffect, failureCriterion: i.failureCriteria })),
     materialDecisions: plan.materialDecisions.map(d => ({ materialId: d.materialId, decision: d.decision === 'used' ? 'adopt' : 'decline', reason: d.reason, applicabilityBoundary: d.applicabilityBoundary })), unresolved });
   return { independentReading: clone(reading), sceneChanges: clone(reading.sceneChanges), issuePriorities: priorities,
+    ...(crossChapterBundle===undefined?{}:{crossChapterReview:clone(crossChapterBundle)}),
+    ...(crossChapterRecheck===undefined?{}:{crossChapterRecheck:clone(crossChapterRecheck)}),
+    ...(crossRecheckIncomplete===undefined?{}:{crossChapterRecheckIncomplete:clone(crossRecheckIncomplete)}),
+    ...(crossChapterResolution===undefined?{}:{crossChapterResolution:clone(crossChapterResolution)}),
     retrieval: clone(retrieval), ...(applicability===undefined?{}:{applicability:clone(applicability)}), materialUse,
     ...(finalTextMaterialEvidence===undefined?{}:{finalTextMaterialEvidence:clone(finalTextMaterialEvidence)}),
     ...(c06References===undefined?{}:{c06References:clone(c06References)}),feasibility: clone(feasibility), unresolved, newDraftGuidance: guidance };
@@ -881,7 +1178,7 @@ export function inspectStoredWholeQualityReadingFailure(artifacts) {
     requireThat(record(storedInput.input) && storedInput.inputHash === fingerprint(storedInput.input), 'WHOLE_QUALITY_CHECKPOINT_MISMATCH', '阅读输入保存点哈希无效。');
     const chapters = validateChapters(storedInput.input.chapters, 'WHOLE_QUALITY_CHECKPOINT_MISMATCH');
     const requestSpec = validateRequestSpec(artifacts.requestSpec, chapters);
-    requireThat(isDeepStrictEqual(storedInput.input, readingInput(requestSpec, chapters)), 'WHOLE_QUALITY_CHECKPOINT_MISMATCH', '阅读输入不能由请求绑定重建。');
+    requireThat(isDeepStrictEqual(storedInput.input, readingInput(requestSpec, chapters, storedInput.input.responseBindings?.schemaVersion)), 'WHOLE_QUALITY_CHECKPOINT_MISMATCH', '阅读输入不能由请求绑定重建。');
     const primary = responseRecord(artifacts['whole-quality:reading:primary-response'], storedInput.inputHash, 'WHOLE_QUALITY_CHECKPOINT_MISMATCH');
     let primaryError; try { validateReading(parseResponse(primary.rawResponse, 'whole-quality:reading'), storedInput.input); }
     catch (error) { primaryError = error; }
@@ -1013,76 +1310,244 @@ function validateNoFeasibility(value,requestSpec,plan){const code='WHOLE_QUALITY
 const BINDING_SYSTEM=`严格遵守 responseContract；逐字复制 responseBindings，不计算 SHA、inputHash 或 UTF-16 位置。所有 quote 必须从对应章节正文选取短而连续的逐字片段，保留原文全部字符、空格和换行；不得省略词语、拼接片段、改写或做空白归一化。responseExample 只是结构占位，须依据本次正文改写或删除。只返回完整 JSON。`;
 const READING_SYSTEM=`${BINDING_SYSTEM}\n你是独立全文阅读者。逐章阅读全部正文，先记录每章实际场景变化，再判断主要问题；不要读取或猜测修改方案。每个主要候选问题必须有至少两个场景的原文依据、真实反证、预期作用、失败判据、保留范围和限制。区分文本事实、读者效果假说与编辑偏好。保护克制、有效反复、停顿、心理、抒情和留白；没有主要安全问题可以不提出修改。`;
 const APPLICABILITY_SYSTEM=`${BINDING_SYSTEM}\n你是检索材料的功能适用审查者。逐份材料只按当前问题、所需叙事功能、真实来源证据和迁移边界判断 direct_fit、mechanism_only、inapplicable 或 insufficient_context。题材、职业、道具不同本身不是拒绝理由；高词面相似也不是直接适用证据。direct_fit 必须引用本供应已有 evidenceId 并写清不可迁移条件；mechanism_only 只能提示宽泛组织机制，不能授权规划采用。每个没有 direct_fit 的问题须给 noSuitableReason，并明确可以不用材料、依据原稿证据提出原创方案。不得编造来源全文、文学效果或采用结论。`;
+const FACT_READING_SYSTEM=`${BINDING_SYSTEM}\n你是全文阅读者。逐章阅读全部正文，先记录实际场景变化。区分文本事实、读者效果假说与编辑偏好。文本事实矛盾必须有至少两处不同、不重叠且互斥的逐字证据，可以在同一场景内；不得为了跨场景配额虚构场景或丢弃局部矛盾。情绪模式或读者效果的主要判断仍须至少两个场景的证据。两类都要有真实反证、预期作用、失败判据、保留范围和限制。修改目标只是待核查编辑请求，必须独立验证正文；不能把指令本身当作证据。保护克制、有效反复、停顿、心理、抒情和留白。`;
 const PLAN_SYSTEM=`${BINDING_SYSTEM}\n你是场景联动修订方案作者。只处理独立阅读列出的 major/investigate 问题。每个 revise 组按问题需要列出一个或多个真实 sceneId、精确 target 和可见动作要求；跨场景影响必须全部列出，禁止为满足数量凑场景或过度修改。target 是允许整体替换的原文 span：替换文本可保留原句并在同一位置补写合理动作、对白或物件状态，也可比原 span 更长；actionRequirement 的全部文字变化必须能仅靠其 targetIds 的替换完成。若要求改写 target 之后的另一句回答或事件，必须把那句本身另列为 target，不能把前一句当作越界修改的锚点。所有互相依赖才能成立的 targets 必须归入同一个 plan item 原子组；同组较早 target 可以建立物件或状态，较后 target 再兑现，规划时须按正文顺序检查中间未改文字不冲突。每组用 independentAdoption 说明为什么不采纳其他组时本组仍可独立成立，不能把同一主要问题拆组。写清预期作用、失败判据、风险和逐字保护。逐一按 DATA 证据 ID 决定真实检索供应 used/not_used，说明适用边界；只有 input.applicability.directSupplyIds 中的供应可标 used，mechanism_only 不能冒充直接适用。没有 direct_fit 时允许完全不用材料、依据原稿证据写原创方案，不得为展示使用资料而强制套用。没有安全方案就 preserve。`;
+const CROSS_PLAN_SYSTEM=`${BINDING_SYSTEM}\n你是场景联动修订方案作者。只处理独立阅读列出的 major/investigate 问题和 input.confirmedConflicts 中由事实核对冻结的问题。confirmed_conflict 必须进入 revise 项，或在 unresolved 中逐项写明无法安全解决的理由；不得 preserve、忽略或用 no_change 冒充修复。其 target 必须逐字选自对应 scopeOptions；scopeOptions 已把证据所在最小段落和必要的相邻问答两段列为连续选项，只选择完成修复所需的最小范围，不得自行扩张。每个 revise 组按问题需要列出一个或多个真实 sceneId、精确 target 和可见动作要求；跨场景影响必须全部列出，禁止为满足数量凑场景或过度修改。target 是允许整体替换的原文 span：替换文本可保留原句并在同一位置补写合理动作、对白或物件状态，也可比原 span 更长；actionRequirement 的全部文字变化必须能仅靠其 targetIds 的替换完成。若要求改写 target 之后的另一句回答或事件，必须把那句本身另列为 target，不能把前一句当作越界修改的锚点。所有互相依赖才能成立的 targets 必须归入同一个 plan item 原子组；同组较早 target 可以建立物件或状态，较后 target 再兑现，规划时须按正文顺序检查中间未改文字不冲突。每组用 independentAdoption 说明为什么不采纳其他组时本组仍可独立成立，不能把同一主要问题拆组。写清预期作用、失败判据、风险和逐字保护。逐一按 DATA 证据 ID 决定真实检索供应 used/not_used，说明适用边界；只有 input.applicability.directSupplyIds 中的供应可标 used，mechanism_only 不能冒充直接适用。没有 direct_fit 时允许完全不用材料、依据原稿证据写原创方案，不得为展示使用资料而强制套用。普通候选问题没有安全方案可以 preserve；confirmed_conflict 只能明确 unresolved。`;
 const FEASIBILITY_SYSTEM=`${BINDING_SYSTEM}\n你是修订前可行性审查者。只检查方案目标能否由已授权 target 的替换实际完成，不替方案补 target。逐项核对每个 actionRequirement。target 引文是可被整体替换的 source span，不是要求拟新增内容已存在的证据；replacement 可以比原句更长，可以保留原句并在同一位置新增合理动作、对白、物件或状态。不得仅因旧引文没有布、口袋、收纳、触碰等拟新增内容就判 unsupported。responseContract 中 noun-only coverage 只指 target 本身或其 purpose 把授权限制为某个名词 token 的情形；一个作为整体替换落点的完整状态句，不会因为原句尚无拟新增动作而自动变成 noun-only。同一 plan item 的 targets 是原子组，须按正文顺序联合判断：较早 target 的替换可以先建立物件或状态，较后 target 的替换再使用它，不能要求后者原文预先已有该物件。若 target 是“两件都坏了”一类完整落点，将其替换为原句加包起并收好物件的动作可以受授权；后续同组 target 可再加入触碰该包裹的动作。相反，若唯一 target 只覆盖问句，而 requirement 明确要求改写其后未被 target 覆盖的回答句，则必须判 unsupported，因为替换问句不能删除或改写那句未授权回答。仍须检查保护证据冲突、相邻归属、未改文字矛盾和 target 外改动；事实可能自洽不等于目标落实。`;
 const REVISION_SYSTEM=`${BINDING_SYSTEM}\n你是有限候选修订者。只能处理 eligiblePlanItemIds；每组须返回全部 target 替换或整组跳过。结合联动场景落实 actionRequirements，但不能扩张 target、返回整章、损伤保护文字或用说明句冒充行动。target 的 replacement 可以比 sourceQuote 更长，并可在该位置保留原句后补写获准的新动作、对白、物件或状态；同组较早 target 建立的状态可由较后 target 使用，但不得删除或修改 target 外原文。每次插入、删除或替换对话与动作后，必须把 target 和前后相邻的保留句连读，并对照原稿核实代词所指、对话说话人及视角归属没有因最近主语改变而漂移；不能只检查新增段落或只核对计划落实。必要时在获准 target 的替换文本中写明实名或明确主语；若只有改动 target 外保留句才能消歧，则整组跳过，不得越界。没有安全写法就跳过。`;
 const REREAD_SYSTEM=`${BINDING_SYSTEM}\n你是修后全文复读者。阅读全文，分别核对每组执行状态、事实自洽、目标落实和每条 actionRequirement；事实自洽不等于目标落实。还要把每处替换和原稿同位置的前后保留句对照，逐句核对代词指向、对话说话人和视角归属；插入或删除动作与对白可能改变相邻保留句的最近主语，不能只检查新增段落或只看计划落实。发现归属漂移须按既有 introducedIssues 记录为 textual_conflict；若它改变说话人或视角含义，须标为 serious，并使关联修改组不得进入推荐采纳。检查新增严重误伤及有效克制/留白是否保留。未执行组必须 not_attempted；发生替换不能自动算 implemented。读者效果仍是假说，不给总分或质量通过票。`;
+const CROSS_REREAD_SYSTEM=`${BINDING_SYSTEM}\n你是修后全文复读者。阅读全文，分别核对每组执行状态、事实自洽、目标落实和每条 actionRequirement；事实自洽不等于目标落实。若 input.confirmedConflicts 存在，必须逐项返回 crossChapterChecks：只有候选全文中原互斥事实已消除、修改目标落实且没有用删漏遮蔽问题时才可 resolved；未改、跳过、不确定或仍矛盾必须明确 unresolved、uncertain 或 not_attempted。还要把每处替换和原稿同位置的前后保留句对照，逐句核对代词指向、对话说话人和视角归属；插入或删除动作与对白可能改变相邻保留句的最近主语，不能只检查新增段落或只看计划落实。发现归属漂移须按既有 introducedIssues 记录为 textual_conflict；若它改变说话人或视角含义，须标为 serious，并使关联修改组不得进入推荐采纳。检查新增严重误伤及有效克制/留白是否保留。未执行组必须 not_attempted；发生替换不能自动算 implemented。读者效果仍是假说，不给总分或质量通过票。`;
 const FINAL_TEXT_SYSTEM=`${BINDING_SYSTEM}\n你是最终正文用材定位员。只依据候选正文、已冻结used账本、修改组和来源evidenceId逐项寻找最终正文中的精确逐字落点；start使用JS UTF-16位置。每个finding须绑定合法修改组和来源证据，并区分visible_application与context_only。作者声明used、来源相似或材料曾进入提示都不能证明正文存在对应作用；找不到唯一且准确的逐字位置时必须返回not_located及具体原因，不能改写正文、补造引文或宣称文学效果。`;
 
-function adoptionObject(requestSpec,plan,reread,incomplete){const checks=new Map((reread.changeChecks??[]).map(c=>[c.planItemId,c]));return{status:'not_applied',requiredBaseRevision:requestSpec.sourceBaseRevision,
-  sourceManuscriptSha256:requestSpec.sourceManuscriptSha256,atomicGroups:plan.items.filter(i=>i.decision==='revise').map(item=>{const c=checks.get(item.id);return{planItemId:item.id,chapterIds:clone(item.affectedChapterIds),targetIds:item.targets.map(t=>t.id),
-    independentAdoption:item.independentAdoption,recommendation:incomplete?'not_recommended':c?.recommendation??'not_recommended',reason:incomplete?'修后全文复读未完成。':c?.reason??'该组未完成复读。'};})};}
-function warningsFor(changed,incomplete){return['整稿质量结果是独立候选，未自动覆盖当前工作稿；采纳前须核对起点版本和当前用户编辑。','独立阅读、材料适用性和读者效果仍是 AI 编辑判断；逐字引文或检索命中不证明文学改善。',
-  ...(!changed?['本轮没有形成安全的正文改动；原稿已逐字保留。']:[]),...(incomplete?['候选稿已生成，但目标落实复读未完成；所有修改组均不得进入推荐采纳。']:[])];}
+function frozenCrossResponseRecord(value,{stage,inputHash,requestSha256},code) {
+  exact(value,['stage','inputHash','requestSha256','rawResponse','responseSha256'],['providerReceipt','providerReceiptSha256'],code);
+  requireThat(value.stage===stage&&value.inputHash===inputHash&&value.requestSha256===requestSha256
+    &&typeof value.rawResponse==='string'&&value.rawResponse.trim()&&value.responseSha256===hashText(value.rawResponse),code,'跨章冻结响应绑定无效。');
+  requireThat((value.providerReceipt===undefined)===(value.providerReceiptSha256===undefined)
+    &&(value.providerReceipt===undefined||value.providerReceiptSha256===fingerprint(value.providerReceipt)),code,'跨章 provider 回执绑定无效。');
+  return clone(value);
+}
+function frozenCrossProtocolFailure({store,error,chapters,modelPolicy,attempt,artifactNamespace}) {
+  const code='WHOLE_QUALITY_CROSS_CHAPTER_RETRY';
+  requireThat(CROSS_CHAPTER_RETRYABLE_FAILURES.has(error?.code),code,'仅格式修正失败或语义漂移允许协议重试。');
+  const failedStages=CROSS_CHAPTER_STAGE_ORDER.filter(stage=>Object.hasOwn(store,`${stage}:input`)
+    &&Object.hasOwn(store,`${stage}:primary-response`)&&Object.hasOwn(store,`${stage}:repair-input`)
+    &&Object.hasOwn(store,`${stage}:repair-response`)&&!Object.hasOwn(store,`${stage}:result`));
+  requireThat(failedStages.length===1,code,'协议重试前必须冻结且只能冻结一个失败阶段的 raw 与 repair。');
+  const stage=failedStages[0],failedIndex=CROSS_CHAPTER_STAGE_ORDER.indexOf(stage),inputRecord=store[`${stage}:input`];
+  exact(inputRecord,['inputHash','requestSha256','input'],[],code);
+  requireThat(hex64.test(inputRecord.inputHash)&&hex64.test(inputRecord.requestSha256)
+    &&inputRecord.input?.modelPolicy===modelPolicy,code,'跨章失败输入哈希或 modelPolicy 绑定无效。');
+  const inputChapters=inputRecord.input?.manuscript?.chapters;
+  requireThat(Array.isArray(inputChapters)&&isDeepStrictEqual(inputChapters.map(item=>({id:item.id,title:item.title,body:item.body})),chapters),code,'跨章失败输入与当前正文不一致。');
+  const primary=frozenCrossResponseRecord(store[`${stage}:primary-response`],{stage,inputHash:inputRecord.inputHash,requestSha256:inputRecord.requestSha256},code);
+  const repairInputRecord=store[`${stage}:repair-input`];exact(repairInputRecord,['repairInputHash','repairInput','requestSha256'],[],code);
+  requireThat(repairInputRecord.repairInputHash===fingerprint(repairInputRecord.repairInput)&&hex64.test(repairInputRecord.requestSha256)
+    &&repairInputRecord.repairInput?.schemaVersion==='cross-chapter-format-repair-1'
+    &&repairInputRecord.repairInput?.stage===stage&&repairInputRecord.repairInput?.originalInputHash===inputRecord.inputHash
+    &&repairInputRecord.repairInput?.invalidResponseSha256===primary.responseSha256,code,'跨章格式修正输入绑定无效。');
+  const repair=frozenCrossResponseRecord(store[`${stage}:repair-response`],{stage:`${stage}:format-repair`,inputHash:repairInputRecord.repairInputHash,
+    requestSha256:repairInputRecord.requestSha256},code);
+  requireThat(!Object.hasOwn(store,`${stage}:receipt`),code,'失败阶段不能伪装为已完成阶段。');
+  const completedStageReceipts=CROSS_CHAPTER_STAGE_ORDER.slice(0,failedIndex).map(completedStage=>{
+    const completedInput=store[`${completedStage}:input`],completedPrimary=store[`${completedStage}:primary-response`],receipt=store[`${completedStage}:receipt`];
+    requireThat(record(completedInput)&&Object.hasOwn(store,`${completedStage}:result`)&&record(receipt),code,'失败前阶段缺少完整结果或回执。');
+    const checkedPrimary=frozenCrossResponseRecord(completedPrimary,{stage:completedStage,inputHash:completedInput.inputHash,requestSha256:completedInput.requestSha256},code);
+    exact(receipt,['stage','inputHash','requestSha256','primaryResponseSha256'],['formatRepairResponseSha256'],code);
+    requireThat(receipt.stage===completedStage&&receipt.inputHash===completedInput.inputHash&&receipt.requestSha256===completedInput.requestSha256
+      &&receipt.primaryResponseSha256===checkedPrimary.responseSha256,code,'失败前阶段回执绑定无效。');
+    if(receipt.formatRepairResponseSha256!==undefined)requireThat(hex64.test(receipt.formatRepairResponseSha256),code,'失败前阶段格式修正回执无效。');
+    return {stage:receipt.stage,primaryResponseSha256:receipt.primaryResponseSha256,
+      ...(receipt.formatRepairResponseSha256===undefined?{}:{formatRepairResponseSha256:receipt.formatRepairResponseSha256})};
+  });
+  return validateCrossProtocolFailure({schemaVersion:CROSS_CHAPTER_PROTOCOL_FAILURE_VERSION,attempt,artifactNamespace,code:error.code,stage,
+    inputHash:inputRecord.inputHash,requestSha256:inputRecord.requestSha256,rawResponseSha256:primary.responseSha256,
+    formatRepairInputHash:repairInputRecord.repairInputHash,formatRepairRequestSha256:repairInputRecord.requestSha256,
+    formatRepairResponseSha256:repair.responseSha256,completedStageReceipts,...(typeof error.causeCode==='string'?{causeCode:error.causeCode}:{})},attempt);
+}
+async function saveBoundArtifact(saved,checkpoint,key,value,code='WHOLE_QUALITY_CHECKPOINT_MISMATCH') {
+  if(Object.hasOwn(saved,key))requireThat(isDeepStrictEqual(saved[key],value),code,'跨章协议恢复记录不一致。');
+  else{await checkpoint(key,clone(value));saved[key]=clone(value);}return clone(value);
+}
+function crossAttemptArtifacts({prefix,attempt,saved,checkpoint}) {
+  const artifactPrefix=attempt===0?`${prefix}:artifact:`:`${prefix}:retry-${attempt}:artifact:`,store={};
+  for(const [key,value] of Object.entries(saved))if(key.startsWith(artifactPrefix))store[key.slice(artifactPrefix.length)]=clone(value);
+  return {artifactPrefix,store,artifacts:{store,checkpoint:async(key,value)=>{const outerKey=`${artifactPrefix}${key}`;await checkpoint(outerKey,clone(value));saved[outerKey]=clone(value);}}};
+}
+async function runBoundCrossChapterReview({ phase, chapters, requestSpec, reviewer, model, saved, checkpoint, progress, signal }) {
+  const code = 'WHOLE_QUALITY_CROSS_CHAPTER', prefix = `whole-quality:cross-chapter:${phase}`, inputKey = `${prefix}:binding`, resultKey = `${prefix}:bundle`;
+  const binding = { integrationVersion: CROSS_CHAPTER_INTEGRATION_VERSION, phase, sourceManuscriptSha256: manuscriptFingerprint(chapters),
+    modelPolicy: requestSpec.crossChapterReview.modelPolicy, chapterIds: chapters.map(item => item.id) };
+  if (Object.hasOwn(saved,inputKey)) requireThat(isDeepStrictEqual(saved[inputKey],binding), 'WHOLE_QUALITY_CHECKPOINT_MISMATCH', '跨章核对恢复绑定与当前正文不一致。');
+  else { await checkpoint(inputKey,clone(binding)); saved[inputKey]=clone(binding); }
+  requireThat(typeof reviewer === 'function', code, '启用跨章核对的新请求必须提供 reviewCrossChapter 实现。');
+  const retryBindingKey=`${prefix}:retry-1:binding`,failureKey=`${prefix}:protocol-failure:0`,retryFailureKey=`${prefix}:protocol-failure:1`;
+  let attempt=Object.hasOwn(saved,retryBindingKey)?1:0,protocolFailure;
+  if(attempt===1){
+    protocolFailure=validateCrossProtocolFailure(saved[failureKey],0);
+    const expectedRetryBinding={schemaVersion:CROSS_CHAPTER_RETRY_BINDING_VERSION,attempt:1,phase,sourceManuscriptSha256:binding.sourceManuscriptSha256,
+      modelPolicy:binding.modelPolicy,priorProtocolFailureSha256:fingerprint(protocolFailure)};
+    requireThat(isDeepStrictEqual(saved[retryBindingKey],expectedRetryBinding),'WHOLE_QUALITY_CHECKPOINT_MISMATCH','跨章协议重试绑定无效。');
+  }
+  const invoke=async activeAttempt=>{const scoped=crossAttemptArtifacts({prefix,attempt:activeAttempt,saved,checkpoint});
+    try{return await reviewer({manuscript:{chapters:clone(chapters)},model,modelPolicy:requestSpec.crossChapterReview.modelPolicy,artifacts:scoped.artifacts,
+      options:{signal,progress:detail=>progress?.(typeof detail?.stage==='string'?detail.stage:`${prefix}:progress`)}});}
+    catch(error){if(!CROSS_CHAPTER_RETRYABLE_FAILURES.has(error?.code))throw error;
+      const frozen=frozenCrossProtocolFailure({store:scoped.store,error,chapters,modelPolicy:binding.modelPolicy,attempt:activeAttempt,
+        artifactNamespace:activeAttempt===0?'primary':`retry-${activeAttempt}`});
+      await saveBoundArtifact(saved,checkpoint,activeAttempt===0?failureKey:retryFailureKey,frozen);throw Object.assign(error,{frozenProtocolFailure:frozen});}};
+  let review;
+  if(attempt===1)review=await invoke(1);
+  else try{review=await invoke(0);}catch(error){
+    if(!CROSS_CHAPTER_RETRYABLE_FAILURES.has(error?.code)||!error.frozenProtocolFailure)throw error;
+    protocolFailure=error.frozenProtocolFailure;
+    const retryBinding={schemaVersion:CROSS_CHAPTER_RETRY_BINDING_VERSION,attempt:1,phase,sourceManuscriptSha256:binding.sourceManuscriptSha256,
+      modelPolicy:binding.modelPolicy,priorProtocolFailureSha256:fingerprint(protocolFailure)};
+    await saveBoundArtifact(saved,checkpoint,retryBindingKey,retryBinding);attempt=1;review=await invoke(1);
+  }
+  requireThat(review?.modelPolicy === requestSpec.crossChapterReview.modelPolicy, code, '跨章核对结果未绑定 whole-quality modelPolicy。');
+  const bundle = normalizeCrossChapterReview(review,chapters,attempt===1?protocolFailure:undefined);
+  if (Object.hasOwn(saved,resultKey)) {
+    const existing = validateCrossChapterBundle(saved[resultKey],chapters);
+    requireThat(isDeepStrictEqual(existing,bundle), 'WHOLE_QUALITY_CHECKPOINT_MISMATCH', '跨章核对包不能由保存的原始响应重建。'); return existing;
+  }
+  await checkpoint(resultKey,clone(bundle)); saved[resultKey]=clone(bundle); return bundle;
+}
+function crossReviewCallCounts(...bundles) {
+  const reviews = bundles.filter(Boolean).map(bundle => bundle.review).filter(Boolean), receipts = reviews.flatMap(review => Array.isArray(review.stageReceipts) ? review.stageReceipts : []);
+  const failures=bundles.filter(Boolean).flatMap(bundle=>bundle.protocolFailures??[]),completedBeforeFailure=failures.flatMap(failure=>failure.completedStageReceipts);
+  return { primaryCalls: receipts.length+failures.length+completedBeforeFailure.length,
+    formatRepairCalls: receipts.filter(receipt=>receipt?.formatRepairResponseSha256).length+failures.length
+      +completedBeforeFailure.filter(receipt=>receipt?.formatRepairResponseSha256).length,
+    maxPrimaryCalls: reviews.length*2+failures.length*2,maxFormatRepairCalls: reviews.length*2+failures.length*2 };
+}
 
-export async function runWholeManuscriptQualityRevision({request,model,retrieveKnowledge,queryNarrativeObservations,artifacts={},checkpoint=async()=>{},progress=async()=>{},signal}={}){
+const CROSS_RECHECK_INCOMPLETE_MESSAGE='候选稿跨章事实核查未完成，已保留两次协议失败；实际修改可独立评阅，但不能视为事实核查通过或推荐采纳。';
+function validateCrossRecheckIncomplete(value,chapters,modelPolicy){
+  const code='WHOLE_QUALITY_CROSS_RECHECK_INCOMPLETE';
+  exact(value,['schemaVersion','status','sourceManuscriptSha256','modelPolicy','protocolFailures','retryBinding'],[],code);
+  requireThat(value.schemaVersion==='whole-quality-cross-recheck-incomplete-1'&&value.status==='incomplete'
+    &&value.sourceManuscriptSha256===manuscriptFingerprint(chapters)&&value.modelPolicy===modelPolicy,code,'未完成跨章核查与候选稿绑定不一致。');
+  requireThat(Array.isArray(value.protocolFailures)&&value.protocolFailures.length===2,code,'未完成报告必须保留两次有界失败。');
+  value.protocolFailures.forEach((failure,index)=>validateCrossProtocolFailure(failure,index));
+  requireThat(isDeepStrictEqual(value.retryBinding,{schemaVersion:CROSS_CHAPTER_RETRY_BINDING_VERSION,attempt:1,phase:'candidate',
+    sourceManuscriptSha256:value.sourceManuscriptSha256,modelPolicy,priorProtocolFailureSha256:fingerprint(value.protocolFailures[0])}),code,'未完成报告的重试绑定无效。');
+  return clone(value);
+}
+function adoptionObject(requestSpec,plan,reread,incomplete,crossChapterResolution,crossRecheckIncomplete){const checks=new Map((reread.changeChecks??[]).map(c=>[c.planItemId,c])),crossByPlan=new Map((crossChapterResolution?.items??[]).flatMap(item=>item.planItemIds.map(id=>[id,item])));return{status:'not_applied',requiredBaseRevision:requestSpec.sourceBaseRevision,
+  sourceManuscriptSha256:requestSpec.sourceManuscriptSha256,atomicGroups:plan.items.filter(i=>i.decision==='revise').map(item=>{const c=checks.get(item.id);return{planItemId:item.id,chapterIds:clone(item.affectedChapterIds),targetIds:item.targets.map(t=>t.id),
+    independentAdoption:item.independentAdoption,recommendation:crossRecheckIncomplete||incomplete||crossByPlan.get(item.id)?.repairStatus==='unresolved'?'not_recommended':c?.recommendation??'not_recommended',
+    reason:crossRecheckIncomplete?CROSS_RECHECK_INCOMPLETE_MESSAGE:incomplete?'修后全文复读未完成。':crossByPlan.get(item.id)?.repairStatus==='unresolved'?crossByPlan.get(item.id).reason:c?.reason??'该组未完成复读。'};})};}
+function warningsFor(changed,incomplete,crossChapterResolution,crossRecheckIncomplete){return['整稿质量结果是独立候选，未自动覆盖当前工作稿；采纳前须核对起点版本和当前用户编辑。','独立阅读、材料适用性和读者效果仍是 AI 编辑判断；逐字引文或检索命中不证明文学改善。',
+  ...(crossRecheckIncomplete?[CROSS_RECHECK_INCOMPLETE_MESSAGE]:[]),
+  ...(!changed?['本轮没有形成安全的正文改动；原稿已逐字保留。']:[]),...(incomplete?['候选稿已生成，但目标落实复读未完成；所有修改组均不得进入推荐采纳。']:[]),
+  ...(crossChapterResolution?.unresolvedCount?['仍有 confirmed_conflict 未解决；no_change、跳过或不确定复读均未被记作修复。']:[])];}
+
+export async function runWholeManuscriptQualityRevision({request,model,retrieveKnowledge,queryNarrativeObservations,reviewCrossChapter,artifacts={},checkpoint=async()=>{},progress=async()=>{},signal}={}){
   requireThat(typeof model?.complete==='function'&&typeof checkpoint==='function','WHOLE_QUALITY_RUNTIME','需要模型适配器和保存点回调。');const sourceChapters=validateChapters(request?.chapters),requestSpec=createWholeQualityRequestSpec(request),saved=jsonCopy(artifacts);
   if(Object.keys(saved).length&&!saved.requestSpec)fail('WHOLE_QUALITY_CHECKPOINT_MISMATCH','进度缺少请求绑定。');if(saved.requestSpec&&!isDeepStrictEqual(saved.requestSpec,requestSpec))fail('WHOLE_QUALITY_CHECKPOINT_MISMATCH','恢复请求与原稿、目标或模式不一致。');
   if(saved.requestSpec)validateRequestSpec(saved.requestSpec,sourceChapters);else{await checkpoint('requestSpec',clone(requestSpec));saved.requestSpec=clone(requestSpec);}
-  const readingBound=readingInput(requestSpec,sourceChapters),readingRun=await structuredStage({prefix:'whole-quality:reading',stage:'whole-quality:reading',input:readingBound,system:READING_SYSTEM,maxTokens:14000,validate:validateReading,model,saved,checkpoint,progress,signal}),reading=readingRun.value;
+  const readingVersion=saved['whole-quality:reading:input']?.input?.responseBindings?.schemaVersion ?? (requestSpec.crossChapterReview ? FACT_READING_VERSION : WHOLE_QUALITY_READING_VERSION);
+  const readingBound=readingInput(requestSpec,sourceChapters,readingVersion),readingRun=await structuredStage({prefix:'whole-quality:reading',stage:'whole-quality:reading',input:readingBound,system:readingVersion===FACT_READING_VERSION?FACT_READING_SYSTEM:READING_SYSTEM,maxTokens:14000,validate:validateReading,model,saved,checkpoint,progress,signal}),reading=readingRun.value;
+  const crossChapterBundle=requestSpec.crossChapterReview===undefined?undefined:await runBoundCrossChapterReview({phase:'source',chapters:sourceChapters,requestSpec,reviewer:reviewCrossChapter,model,saved,checkpoint,progress,signal});
   const retrieval=await retrieveForReading({reading,requestSpec,retrieveKnowledge,queryNarrativeObservations,saved,checkpoint,signal});
   const applicabilityRun=await runApplicability({requestSpec,reading,retrieval,model,saved,checkpoint,progress,signal}),applicability=applicabilityRun.value,
-    planBound=planInput(requestSpec,sourceChapters,reading,retrieval,applicability);
+    planBound=planInput(requestSpec,sourceChapters,reading,retrieval,applicability,crossChapterBundle);
   let plan,planReceipt,planProvenanceRecord;
   if(planBound.eligibleIssueIds.length===0){const run=await hostPlanStage({input:planBound,saved,checkpoint});plan=run.value;planProvenanceRecord=run.provenance;}
-  else {const run=await structuredStage({prefix:'whole-quality:plan',stage:'whole-quality:plan',input:planBound,system:PLAN_SYSTEM,maxTokens:14000,validate:validatePlan,model,saved,checkpoint,progress,signal});plan=run.value;planReceipt=run.receipt;planProvenanceRecord=planProvenance('model',planBound,plan);}
+  else {const run=await structuredStage({prefix:'whole-quality:plan',stage:'whole-quality:plan',input:planBound,system:crossChapterBundle===undefined?PLAN_SYSTEM:CROSS_PLAN_SYSTEM,maxTokens:14000,validate:validatePlan,model,saved,checkpoint,progress,signal});plan=run.value;planReceipt=run.receipt;planProvenanceRecord=planProvenance('model',planBound,plan);}
   let feasibility,feasibilityReceipt;if(plan.decision==='revise'){const bound=feasibilityInput(requestSpec,sourceChapters,reading,plan),run=await structuredStage({prefix:'whole-quality:feasibility',stage:'whole-quality:feasibility',input:bound,system:FEASIBILITY_SYSTEM,maxTokens:10000,validate:validateFeasibility,model,saved,checkpoint,progress,signal});feasibility=run.value;feasibilityReceipt=run.receipt;}else feasibility=noFeasibility(requestSpec,plan);
   const eligible=feasibility.checks.filter(c=>c.assessment==='feasible').map(c=>c.planItemId);let candidateRevision=null,revisionReceipt;
   if(eligible.length){const bound=revisionInput(requestSpec,sourceChapters,plan,feasibility),run=await structuredStage({prefix:'whole-quality:revision',stage:'whole-quality:revision',input:bound,system:REVISION_SYSTEM,maxTokens:16000,validate:validateCandidate,model,saved,checkpoint,progress,signal});candidateRevision=run.value;revisionReceipt=run.receipt;}
-  const candidateChapters=assembleCandidate(sourceChapters,candidateRevision),{actualChanges,diff}=buildChanges(sourceChapters,candidateChapters,plan),rereadBound=rereadInput(requestSpec,sourceChapters,candidateChapters,reading,plan,feasibility,candidateRevision,actualChanges,diff);
+  const candidateChapters=assembleCandidate(sourceChapters,candidateRevision),{actualChanges,diff}=buildChanges(sourceChapters,candidateChapters,plan),rereadBound=rereadInput(requestSpec,sourceChapters,candidateChapters,reading,plan,feasibility,candidateRevision,actualChanges,diff,crossChapterBundle);
   let reread,rereadReceipt;if(saved['whole-quality:reread:incomplete']){reread=validateIncompleteReread(saved['whole-quality:reread:incomplete'],rereadBound);rereadReceipt=await recoverStageReceipt({prefix:'whole-quality:reread',stage:'whole-quality:reread',inputHash:fingerprint(rereadBound),saved,checkpoint});}
-  else try{const run=await structuredStage({prefix:'whole-quality:reread',stage:'whole-quality:reread',input:rereadBound,system:REREAD_SYSTEM,maxTokens:16000,validate:validateReread,model,saved,checkpoint,progress,signal});reread=run.value;rereadReceipt=run.receipt;}catch(error){if(error?.code!=='WHOLE_QUALITY_FORMAT_FAILED')throw error;
+  else try{const run=await structuredStage({prefix:'whole-quality:reread',stage:'whole-quality:reread',input:rereadBound,system:crossChapterBundle===undefined?REREAD_SYSTEM:CROSS_REREAD_SYSTEM,maxTokens:16000,validate:validateReread,model,saved,checkpoint,progress,signal});reread=run.value;rereadReceipt=run.receipt;}catch(error){if(error?.code!=='WHOLE_QUALITY_FORMAT_FAILED')throw error;
     reread=validateIncompleteReread({schemaVersion:WHOLE_QUALITY_REREAD_INCOMPLETE_VERSION,status:'incomplete',inputHash:fingerprint(rereadBound),sourceManuscriptSha256:requestSpec.sourceManuscriptSha256,candidateManuscriptSha256:manuscriptFingerprint(candidateChapters),failureCode:error.code,diagnostics:[safeDiagnostic(error)]},rereadBound);
     await checkpoint('whole-quality:reread:incomplete',clone(reread));saved['whole-quality:reread:incomplete']=clone(reread);rereadReceipt={stage:'whole-quality:reread',inputHash:fingerprint(rereadBound),primaryResponseSha256:saved['whole-quality:reread:primary-response']?.responseSha256,...(saved['whole-quality:reread:repair-response']?{formatRepairResponseSha256:saved['whole-quality:reread:repair-response'].responseSha256}:{})};validateReceipt(rereadReceipt,'whole-quality:reread',fingerprint(rereadBound));await checkpoint('whole-quality:reread:receipt',clone(rereadReceipt));saved['whole-quality:reread:receipt']=clone(rereadReceipt);}
+  let crossChapterRecheck,crossRecheckIncomplete;
+  if(crossChapterBundle&&diff.changedChapterIds.length>0)try{
+    crossChapterRecheck=await runBoundCrossChapterReview({phase:'candidate',chapters:candidateChapters,requestSpec,reviewer:reviewCrossChapter,model,saved,checkpoint,progress,signal});
+  }catch(error){
+    const prefix='whole-quality:cross-chapter:candidate';
+    if(!CROSS_CHAPTER_RETRYABLE_FAILURES.has(error?.code)||!error.frozenProtocolFailure||!saved[`${prefix}:protocol-failure:1`])throw error;
+    crossRecheckIncomplete=validateCrossRecheckIncomplete({schemaVersion:'whole-quality-cross-recheck-incomplete-1',status:'incomplete',
+      sourceManuscriptSha256:manuscriptFingerprint(candidateChapters),modelPolicy:requestSpec.crossChapterReview.modelPolicy,
+      protocolFailures:[saved[`${prefix}:protocol-failure:0`],saved[`${prefix}:protocol-failure:1`]],retryBinding:saved[`${prefix}:retry-1:binding`]},candidateChapters,requestSpec.crossChapterReview.modelPolicy);
+    await saveBoundArtifact(saved,checkpoint,`${prefix}:incomplete`,crossRecheckIncomplete);
+  }
   const materialUse=materialUseObject(retrieval,plan),finalTextRun=await runFinalTextEvidence({requestSpec,candidateChapters,materialUse,model,saved,checkpoint,progress,signal}),
     finalTextMaterialEvidence=finalTextRun.value,c06References=c06ReferenceBundle(retrieval,materialUse);
   const incomplete=reread.schemaVersion===WHOLE_QUALITY_REREAD_INCOMPLETE_VERSION,changed=diff.changedChapterIds.length>0,stageReceipts=[readingRun.receipt,
     ...(applicabilityRun.receipt?[applicabilityRun.receipt]:[]),...(planReceipt?[planReceipt]:[]),...(feasibilityReceipt?[feasibilityReceipt]:[]),...(revisionReceipt?[revisionReceipt]:[]),rereadReceipt,
     ...(finalTextRun.receipt?[finalTextRun.receipt]:[])];
-  const quality=qualityObject(reading,retrieval,plan,feasibility,reread,{applicability,finalTextMaterialEvidence,c06References}),unresolvedItems=clone(quality.unresolved),adoption=adoptionObject(requestSpec,plan,reread,incomplete);
-  const wholeRevision={schemaVersion:WHOLE_QUALITY_RESULT_VERSION,status:incomplete?'candidate_ready_reread_incomplete':changed?'candidate_ready':'no_change',requestSpec,sourceChapters,plan,planProvenance:planProvenanceRecord,candidateRevision,actualChanges,diff,reread,unresolvedItems,stageReceipts,
-    modelCalls:{primaryCalls:stageReceipts.length,formatRepairCalls:stageReceipts.filter(r=>r.formatRepairResponseSha256).length,maxPrimaryCalls:7,maxFormatRepairCalls:7},adoption,quality};
-  const result={title:typeof request.projectTitle==='string'&&request.projectTitle.trim()?request.projectTitle:'整稿质量修订候选',chapters:candidateChapters,warnings:warningsFor(changed,incomplete),baseRevision:requestSpec.sourceBaseRevision,revisionApplied:changed,...(incomplete?{qualityCheckStatus:'incomplete'}:{}),wholeRevision};
+  const crossChapterResolution=crossChapterOutcome(crossChapterBundle,crossChapterRecheck,reading,plan,feasibility,candidateRevision,reread,incomplete,crossRecheckIncomplete);
+  const quality=qualityObject(reading,retrieval,plan,feasibility,reread,{applicability,finalTextMaterialEvidence,c06References,crossChapterBundle,crossChapterRecheck,crossRecheckIncomplete,crossChapterResolution,candidateRevision}),unresolvedItems=clone(quality.unresolved),adoption=adoptionObject(requestSpec,plan,reread,incomplete,crossChapterResolution,crossRecheckIncomplete);
+  const crossCalls=crossReviewCallCounts(crossChapterBundle,crossChapterRecheck,crossRecheckIncomplete),baseMax=applicability!==undefined?7:5;
+  const wholeRevision={schemaVersion:WHOLE_QUALITY_RESULT_VERSION,status:crossRecheckIncomplete?'candidate_ready_cross_check_incomplete':incomplete?'candidate_ready_reread_incomplete':changed?'candidate_ready':'no_change',requestSpec,sourceChapters,plan,planProvenance:planProvenanceRecord,candidateRevision,actualChanges,diff,reread,unresolvedItems,stageReceipts,
+    modelCalls:{primaryCalls:stageReceipts.length+crossCalls.primaryCalls,formatRepairCalls:stageReceipts.filter(r=>r.formatRepairResponseSha256).length+crossCalls.formatRepairCalls,
+      maxPrimaryCalls:baseMax+crossCalls.maxPrimaryCalls,maxFormatRepairCalls:baseMax+crossCalls.maxFormatRepairCalls,
+      ...(crossChapterBundle===undefined?{}:{crossChapterPrimaryCalls:crossCalls.primaryCalls,crossChapterFormatRepairCalls:crossCalls.formatRepairCalls})},adoption,quality};
+  const result={title:typeof request.projectTitle==='string'&&request.projectTitle.trim()?request.projectTitle:'整稿质量修订候选',chapters:candidateChapters,warnings:warningsFor(changed,incomplete,crossChapterResolution,crossRecheckIncomplete),baseRevision:requestSpec.sourceBaseRevision,revisionApplied:changed,...(incomplete||crossRecheckIncomplete?{qualityCheckStatus:'incomplete'}:{}),wholeRevision};
   return assertWholeQualityResult(result,requestSpec);
 }
 
+export async function runCrossChapterAwareWholeManuscriptQualityRevision({ request, modelPolicy, reviewCrossChapter, artifacts = {}, ...options } = {}) {
+  if (artifacts?.requestSpec && artifacts.requestSpec.crossChapterReview === undefined) {
+    return runWholeManuscriptQualityRevision({ request, artifacts, ...options });
+  }
+  text(modelPolicy, 'WHOLE_QUALITY_CROSS_CHAPTER_BINDING', 300);
+  const binding = { enabled: true, contractVersion: 'cross-chapter-review-result-1', integrationVersion: CROSS_CHAPTER_INTEGRATION_VERSION, modelPolicy };
+  const boundRequest = { ...clone(request), crossChapterReview: binding };
+  if (request?.crossChapterReview !== undefined) requireThat(isDeepStrictEqual(request.crossChapterReview,binding), 'WHOLE_QUALITY_CROSS_CHAPTER_BINDING', '请求中的跨章核对绑定与运行时 modelPolicy 不一致。');
+  let reviewer = reviewCrossChapter;
+  if (typeof reviewer !== 'function') ({ reviewCrossChapter: reviewer } = await import('../../validation/runtime/cross-chapter-review.mjs'));
+  return runWholeManuscriptQualityRevision({ request: boundRequest, modelPolicy, reviewCrossChapter: reviewer, model: options.model ?? undefined, artifacts, ...options });
+}
+
 export function assertWholeQualityResult(result,suppliedRequestSpec){const before=clone(result),code='WHOLE_QUALITY_RESULT';exact(result,['title','chapters','warnings','baseRevision','revisionApplied','wholeRevision'],['qualityCheckStatus'],code);text(result.title,code,2000);const candidateChapters=validateChapters(result.chapters,code);stringList(result.warnings,code,12,false);requireThat(typeof result.baseRevision==='string'&&typeof result.revisionApplied==='boolean',code,'结果状态无效。');
-  const whole=result.wholeRevision;exact(whole,['schemaVersion','status','requestSpec','sourceChapters','plan','candidateRevision','actualChanges','diff','reread','unresolvedItems','stageReceipts','modelCalls','adoption','quality'],['planProvenance'],code);requireThat(whole.schemaVersion===WHOLE_QUALITY_RESULT_VERSION&&['candidate_ready','candidate_ready_reread_incomplete','no_change'].includes(whole.status),code,'结果版本或状态无效。');
+  const whole=result.wholeRevision;exact(whole,['schemaVersion','status','requestSpec','sourceChapters','plan','candidateRevision','actualChanges','diff','reread','unresolvedItems','stageReceipts','modelCalls','adoption','quality'],['planProvenance'],code);requireThat(whole.schemaVersion===WHOLE_QUALITY_RESULT_VERSION&&['candidate_ready','candidate_ready_reread_incomplete','candidate_ready_cross_check_incomplete','no_change'].includes(whole.status),code,'结果版本或状态无效。');
   const sourceChapters=validateChapters(whole.sourceChapters,code),requestSpec=validateRequestSpec(whole.requestSpec,sourceChapters);requireThat(isDeepStrictEqual(requestSpec,suppliedRequestSpec),code,'请求规格不一致。');
-  exact(whole.quality,['independentReading','sceneChanges','issuePriorities','retrieval','materialUse','feasibility','unresolved','newDraftGuidance'],['applicability','finalTextMaterialEvidence','c06References'],code);const reading=validateReading(whole.quality.independentReading,readingInput(requestSpec,sourceChapters));
+  exact(whole.quality,['independentReading','sceneChanges','issuePriorities','retrieval','materialUse','feasibility','unresolved','newDraftGuidance'],['applicability','finalTextMaterialEvidence','c06References','crossChapterReview','crossChapterRecheck','crossChapterRecheckIncomplete','crossChapterResolution'],code);const reading=validateReading(whole.quality.independentReading,readingInput(requestSpec,sourceChapters,whole.quality.independentReading?.schemaVersion));
   requireThat(isDeepStrictEqual(whole.quality.sceneChanges,reading.sceneChanges),code,'场景变化派生不一致。');const retrieval=validateRetrievalBundle(whole.quality.retrieval,reading,requestSpec);
+  const crossEnabled=requestSpec.crossChapterReview!==undefined;
+  requireThat(crossEnabled===Object.hasOwn(whole.quality,'crossChapterReview'),code,'跨章核对结果与请求绑定不一致。');
+  const crossChapterBundle=crossEnabled?validateCrossChapterBundle(whole.quality.crossChapterReview,sourceChapters):undefined;
+  if(crossEnabled)requireThat(crossChapterBundle.review.modelPolicy===requestSpec.crossChapterReview.modelPolicy,code,'跨章核对 modelPolicy 与请求规格不一致。');
   const hasDataStages=whole.quality.applicability!==undefined;
   requireThat(hasDataStages===(whole.quality.finalTextMaterialEvidence!==undefined&&whole.quality.c06References!==undefined),code,'DATA适用性、最终正文证据与C06清单须作为同一版本交付。');
   const applicability=hasDataStages?validateApplicabilityBundle(whole.quality.applicability,requestSpec,reading,retrieval):undefined;
-  const currentPlanBound=planInput(requestSpec,sourceChapters,reading,retrieval,applicability),legacyPlanBound=legacyPlanInput(requestSpec,sourceChapters,reading,retrieval),hasPlanProvenance=whole.planProvenance!==undefined;
+  const currentPlanBound=planInput(requestSpec,sourceChapters,reading,retrieval,applicability,crossChapterBundle),legacyPlanBound=legacyPlanInput(requestSpec,sourceChapters,reading,retrieval),hasPlanProvenance=whole.planProvenance!==undefined;
   const boundPlanInput=hasPlanProvenance?currentPlanBound:legacyPlanBound,plan=validatePlan(whole.plan,boundPlanInput);
   const checkedPlanProvenance=hasPlanProvenance?validatePlanProvenance(whole.planProvenance,currentPlanBound,plan):null;
   const feasibility=plan.decision==='revise'?validateFeasibility(whole.quality.feasibility,feasibilityInput(requestSpec,sourceChapters,reading,plan)):validateNoFeasibility(whole.quality.feasibility,requestSpec,plan);const eligible=feasibility.checks.filter(c=>c.assessment==='feasible').map(c=>c.planItemId);
   const candidateRevision=eligible.length?validateCandidate(whole.candidateRevision,revisionInput(requestSpec,sourceChapters,plan,feasibility)):null;requireThat(eligible.length||whole.candidateRevision===null,code,'无可行组时不能含候选修订。');
   const rebuilt=assembleCandidate(sourceChapters,candidateRevision);requireThat(isDeepStrictEqual(candidateChapters,rebuilt),code,'候选含未授权变化。');const changes=buildChanges(sourceChapters,rebuilt,plan);requireThat(isDeepStrictEqual(whole.actualChanges,changes.actualChanges)&&isDeepStrictEqual(whole.diff,changes.diff),code,'差异派生不一致。');
-  const rereadBound=rereadInput(requestSpec,sourceChapters,rebuilt,reading,plan,feasibility,candidateRevision,changes.actualChanges,changes.diff),incomplete=whole.reread?.schemaVersion===WHOLE_QUALITY_REREAD_INCOMPLETE_VERSION;
+  const rereadBound=rereadInput(requestSpec,sourceChapters,rebuilt,reading,plan,feasibility,candidateRevision,changes.actualChanges,changes.diff,crossChapterBundle),incomplete=whole.reread?.schemaVersion===WHOLE_QUALITY_REREAD_INCOMPLETE_VERSION;
   const reread=incomplete?validateIncompleteReread(whole.reread,rereadBound):validateReread(whole.reread,rereadBound),changed=changes.diff.changedChapterIds.length>0;requireThat(result.revisionApplied===changed&&result.baseRevision===requestSpec.sourceBaseRevision,code,'修改状态或起点不一致。');
-  requireThat(whole.status===(incomplete?'candidate_ready_reread_incomplete':changed?'candidate_ready':'no_change')&&(incomplete?result.qualityCheckStatus==='incomplete':result.qualityCheckStatus===undefined),code,'完成状态不一致。');requireThat(isDeepStrictEqual(result.warnings,warningsFor(changed,incomplete)),code,'警告不一致。');
   const materialUse=materialUseObject(retrieval,plan);requireThat(isDeepStrictEqual(whole.quality.materialUse,materialUse),code,'用材账本派生不一致。');
   const finalTextMaterialEvidence=hasDataStages?validateFinalTextBundle(whole.quality.finalTextMaterialEvidence,rebuilt,materialUse):undefined;
   const c06References=hasDataStages?c06ReferenceBundle(retrieval,materialUse):undefined;
   if(hasDataStages)requireThat(isDeepStrictEqual(whole.quality.c06References,c06References),code,'C06有限参考清单派生不一致。');
-  const quality=qualityObject(reading,retrieval,plan,feasibility,reread,{applicability,finalTextMaterialEvidence,c06References});requireThat(isDeepStrictEqual(whole.quality,quality)&&isDeepStrictEqual(whole.unresolvedItems,quality.unresolved),code,'质量证据或未决项不一致。');requireThat(isDeepStrictEqual(whole.adoption,adoptionObject(requestSpec,plan,reread,incomplete)),code,'采纳组派生不一致。');
-  const expectedStages=[['whole-quality:reading',fingerprint(readingInput(requestSpec,sourceChapters))],
+  const expectsRecheck=Boolean(crossChapterBundle&&changed),hasRecheck=Object.hasOwn(whole.quality,'crossChapterRecheck'),hasIncomplete=Object.hasOwn(whole.quality,'crossChapterRecheckIncomplete');
+  requireThat(expectsRecheck===(hasRecheck||hasIncomplete)&&!(hasRecheck&&hasIncomplete),code,'候选跨章复查必须恰有一份完整报告或明确失败记录。');
+  const crossChapterRecheck=hasRecheck?validateCrossChapterBundle(whole.quality.crossChapterRecheck,rebuilt):undefined;
+  const crossRecheckIncomplete=hasIncomplete?validateCrossRecheckIncomplete(whole.quality.crossChapterRecheckIncomplete,rebuilt,requestSpec.crossChapterReview.modelPolicy):undefined;
+  requireThat(whole.status===(crossRecheckIncomplete?'candidate_ready_cross_check_incomplete':incomplete?'candidate_ready_reread_incomplete':changed?'candidate_ready':'no_change')&&((incomplete||crossRecheckIncomplete)?result.qualityCheckStatus==='incomplete':result.qualityCheckStatus===undefined),code,'完成状态不一致。');
+  if(crossChapterRecheck)requireThat(crossChapterRecheck.review.modelPolicy===requestSpec.crossChapterReview.modelPolicy,code,'候选跨章复查 modelPolicy 与请求规格不一致。');
+  const crossChapterResolution=crossChapterOutcome(crossChapterBundle,crossChapterRecheck,reading,plan,feasibility,candidateRevision,reread,incomplete,crossRecheckIncomplete);
+  requireThat((crossEnabled&&Object.hasOwn(whole.quality,'crossChapterResolution'))||(!crossEnabled&&!Object.hasOwn(whole.quality,'crossChapterResolution')),code,'跨章修复结果与请求绑定不一致。');
+  const quality=qualityObject(reading,retrieval,plan,feasibility,reread,{applicability,finalTextMaterialEvidence,c06References,crossChapterBundle,crossChapterRecheck,crossRecheckIncomplete,crossChapterResolution,candidateRevision});requireThat(isDeepStrictEqual(whole.quality,quality)&&isDeepStrictEqual(whole.unresolvedItems,quality.unresolved),code,'质量证据或未决项不一致。');requireThat(isDeepStrictEqual(whole.adoption,adoptionObject(requestSpec,plan,reread,incomplete,crossChapterResolution,crossRecheckIncomplete)),code,'采纳组派生不一致。');
+  requireThat(isDeepStrictEqual(result.warnings,warningsFor(changed,incomplete,crossChapterResolution,crossRecheckIncomplete)),code,'警告不一致。');
+  const expectedStages=[['whole-quality:reading',fingerprint(readingInput(requestSpec,sourceChapters,reading.schemaVersion))],
     ...(applicability?.modelStageDispatched?[['whole-quality:applicability',fingerprint(applicabilityInput(requestSpec,reading,retrieval))]]:[]),
     ...(!hasPlanProvenance||checkedPlanProvenance.producer==='model'?[['whole-quality:plan',fingerprint(boundPlanInput)]]:[]),
     ...(plan.decision==='revise'?[['whole-quality:feasibility',fingerprint(feasibilityInput(requestSpec,sourceChapters,reading,plan))]]:[]),...(eligible.length?[['whole-quality:revision',fingerprint(revisionInput(requestSpec,sourceChapters,plan,feasibility))]]:[]),['whole-quality:reread',fingerprint(rereadBound)],
     ...(finalTextMaterialEvidence?.modelStageDispatched?[['whole-quality:material-evidence',fingerprint(finalTextInput(requestSpec,rebuilt,materialUse))]]:[])];
-  requireThat(Array.isArray(whole.stageReceipts)&&whole.stageReceipts.length===expectedStages.length,code,'阶段回执数量无效。');expectedStages.forEach(([stage,h],i)=>validateReceipt(whole.stageReceipts[i],stage,h));exact(whole.modelCalls,['primaryCalls','formatRepairCalls','maxPrimaryCalls','maxFormatRepairCalls'],[],code);
-  const maxCalls=hasDataStages?7:5;requireThat(whole.modelCalls.primaryCalls===expectedStages.length&&whole.modelCalls.formatRepairCalls===whole.stageReceipts.filter(r=>r.formatRepairResponseSha256).length&&whole.modelCalls.maxPrimaryCalls===maxCalls&&whole.modelCalls.maxFormatRepairCalls===maxCalls,code,'模型计数无效。');
+  requireThat(Array.isArray(whole.stageReceipts)&&whole.stageReceipts.length===expectedStages.length,code,'阶段回执数量无效。');expectedStages.forEach(([stage,h],i)=>validateReceipt(whole.stageReceipts[i],stage,h));
+  exact(whole.modelCalls,['primaryCalls','formatRepairCalls','maxPrimaryCalls','maxFormatRepairCalls'],crossEnabled?['crossChapterPrimaryCalls','crossChapterFormatRepairCalls']:[],code);
+  const maxCalls=hasDataStages?7:5,crossCalls=crossReviewCallCounts(crossChapterBundle,crossChapterRecheck,crossRecheckIncomplete);
+  requireThat(whole.modelCalls.primaryCalls===expectedStages.length+crossCalls.primaryCalls
+    &&whole.modelCalls.formatRepairCalls===whole.stageReceipts.filter(r=>r.formatRepairResponseSha256).length+crossCalls.formatRepairCalls
+    &&whole.modelCalls.maxPrimaryCalls===maxCalls+crossCalls.maxPrimaryCalls&&whole.modelCalls.maxFormatRepairCalls===maxCalls+crossCalls.maxFormatRepairCalls
+    &&(!crossEnabled||(whole.modelCalls.crossChapterPrimaryCalls===crossCalls.primaryCalls&&whole.modelCalls.crossChapterFormatRepairCalls===crossCalls.formatRepairCalls)),code,'模型计数无效。');
   requireThat(isDeepStrictEqual(result,before),code,'结果门不应修改输入。');return clone(result);}

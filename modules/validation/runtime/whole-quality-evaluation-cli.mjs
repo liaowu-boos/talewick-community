@@ -12,7 +12,7 @@ const usage=`Offline whole-manuscript quality protocol (JSON on stdout):
   node modules/validation/runtime/whole-quality-evaluation-cli.mjs finalize INPUT.json
 
 validate input: {"stage":"independent|pair|goal","bundle":{...},"record":{...}}
-finalize input: {"bundle":{...},"independentRecords":[...],"pairRecords":[...],"goalRecord":{...}}
+finalize input: {"bundle":{...},"privateBinding":{...},"independentRecords":[...],"pairRecords":[...],"goalRecord":{...}}
 No model, network, API key, service, or implicit file write is used.`;
 
 try{

@@ -12,14 +12,16 @@ The project separates the writing interface, source material management, writing
 
 ![Talewick workspace](examples/workspace.png)
 
-## Latest update · 2026-10-16
+## Latest update · 2026-10-19
 
-- **Independent manuscript reading**: request two isolated readings from the manuscript view, inspect complete opinions and history, and follow exact quotations into the frozen draft. Reports indicate whether they match the current version.
-- **Blind revision comparison**: four single-draft readings, two comparisons in reversed order, and one goal audit. Disagreements, stage evidence, and failures remain visible; adoption is the author's decision.
-- **Whole-manuscript quality revision**: prioritize major issues, inspect evidence and counterevidence, assess material applicability and editing scope, then revise and reread. Grouped adoption and original preservation protect manual edits from stale candidates.
-- **Materials and recovery**: narrative observation windows participate in retrieval, with separate direct-fit, mechanism-only, inapplicable, and insufficient-context decisions. Final-text material references are checked. Cloud-only iCloud files produce a waiting state instead of blocking startup.
+- **Cross-chapter factual review**: separate extraction and adjudication for time, actors, event occurrences, and object states, with exact evidence, counterevidence, and unresolved findings. Speculation about lying or faulty memory cannot dismiss a conflict by itself.
+- **Revision and candidate rechecking**: carry confirmed factual issues into whole-manuscript revision, including adjacent question/answer edits, then recheck the candidate. Preserve failed attempts, the original, and editing evidence; a failed recheck never becomes a pass.
+- **Blind-review risk attribution**: distinguish problems in the baseline from candidate damage and unresolved attribution. Historical reports keep their original protocol; retries reset stale progress.
+- **Material processing**: query reviewed catalog analysis units, build offline observation packages, and prepare evidence-bound analysis candidates. Candidate generation, independent review, activation, and writing benefit remain separate states. The public library remains empty.
 
-The workflow and evidence chain are connected, but live development runs still showed inconsistent diagnoses and unchanged candidates. **Literary quality improvement has not been demonstrated.** Full15 remains limited to C01–C06 assistance; completion, zero findings, or model preferences do not certify literary quality. Private source libraries, analysis samples, and captured provider responses are excluded. The six existing [reading examples](examples/README.md) remain available. See the [verification record](VERIFICATION.md) for the checks actually run.
+Development acceptance repaired three types of factual issue in one manuscript, with both reversed-order AI readers preferring the candidate. This supports improved factual consistency in that manuscript, not general detection accuracy, overall literary quality, or human-reader outcomes. Extraction format failures and unresolved candidate findings remain recorded. The separate Full15 entry still covers only C01–C06. Linking independent candidate rechecks back into adoption remains follow-up work; adoption is never automatic.
+
+Private source texts, analysis samples, historical tasks, and captured provider responses are excluded. The six existing [reading examples](examples/README.md) are unchanged. Public code uses synthetic regression fixtures; see the [verification record](VERIFICATION.md) for the checks actually run.
 
 ## What you can do
 

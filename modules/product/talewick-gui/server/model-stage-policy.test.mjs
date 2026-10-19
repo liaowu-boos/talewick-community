@@ -1,8 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createModel } from './model.mjs';
-import { isBusinessStage, isWholeQualityStage, isWholeRevisionStage, outputTokenLimit, WHOLE_QUALITY_MODEL_POLICY, WHOLE_REVISION_MODEL_POLICY, wholeQualityReasoningEffort, wholeRevisionReasoningEffort } from './model-policy.mjs';
-import { agentCallSettings } from './agent-ai-sdk.mjs';
+import { independentReviewReasoningEffort, INDEPENDENT_REVIEW_MODEL_POLICY, isBusinessStage, isCrossChapterReviewStage, isWholeQualityStage, isWholeRevisionStage, outputTokenLimit, WHOLE_QUALITY_MODEL_POLICY, WHOLE_REVISION_MODEL_POLICY, wholeQualityReasoningEffort, wholeRevisionReasoningEffort } from './model-policy.mjs';
 
 const config = { baseURL: 'https://api.deepseek.com', apiKey: 'synthetic-stage-private-key', model: 'deepseek-v4-flash', timeoutMs: 3000, idleTimeoutMs: 2500 };
 const stages = [
@@ -19,9 +18,10 @@ const privateReasoning = 'synthetic-private-reasoning';
 const partial = 'synthetic-discarded-partial';
 const completeText = '第六章完整合成正文，独立于已丢弃的截断响应。';
 const event = (delta, finish_reason = null) => `data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason }] })}\n\n`;
-function response(content, finish = 'stop', reasoning = undefined) {
-  return new Response(event({ content, ...(reasoning === undefined ? {} : { reasoning_content: reasoning }) })
-    + event({}, finish) + 'data: [DONE]\n\n', { headers: { 'Content-Type': 'text/event-stream' } });
+function response(content, finish = 'stop', reasoning = undefined, requestId = undefined) {
+  const chunk = (delta, finish_reason = null) => `data: ${JSON.stringify({ ...(requestId ? { id: requestId } : {}), choices: [{ index: 0, delta, finish_reason }] })}\n\n`;
+  return new Response(chunk({ content, ...(reasoning === undefined ? {} : { reasoning_content: reasoning }) })
+    + chunk({}, finish) + 'data: [DONE]\n\n', { headers: { 'Content-Type': 'text/event-stream' } });
 }
 const input = (stage, maxTokens = 6500) => ({ stage, system, user, maxTokens });
 
@@ -83,6 +83,46 @@ test('whole-quality stages use the isolated JSON policy without transport recove
   }
 });
 
+test('cross-chapter stages use their dedicated JSON, thinking and 32768-token policy', async () => {
+  const crossConfig = { ...config, model: 'deepseek-flash' };
+  const actualStages = [
+    { stage: 'whole-quality:cross-chapter:extract', thinking: 'enabled', reasoningEffort: 'low' },
+    { stage: 'whole-quality:cross-chapter:adjudicate', thinking: 'enabled', reasoningEffort: 'low' },
+    { stage: 'whole-quality:cross-chapter:extract:format-repair', thinking: 'disabled' },
+    { stage: 'whole-quality:cross-chapter:adjudicate:format-repair', thinking: 'disabled' },
+  ];
+  for (const { stage, thinking, reasoningEffort } of actualStages) {
+    assert.equal(isCrossChapterReviewStage(stage), true, stage);
+    assert.equal(isBusinessStage(stage), true, stage);
+    assert.equal(wholeQualityReasoningEffort(crossConfig, stage, WHOLE_QUALITY_MODEL_POLICY), reasoningEffort, stage);
+    assert.equal(outputTokenLimit(crossConfig, 12000, stage, WHOLE_QUALITY_MODEL_POLICY), 32768, stage);
+    const sent = [], receipts = [];
+    const model = createModel(crossConfig, async (_url, init) => {
+      sent.push(JSON.parse(init.body));
+      return response('{"partial":true}', 'length', privateReasoning, `cross-stage-${stage}`);
+    });
+    await assert.rejects(model.complete({ ...input(stage, 12000), modelPolicy: WHOLE_QUALITY_MODEL_POLICY, onReceipt: value => receipts.push(value) }), /长度上限/);
+    assert.equal(sent.length, 1, `${stage} recovery is owned by the cross-chapter runtime`);
+    assert.equal(sent[0].model, 'deepseek-flash', stage);
+    assert.equal(sent[0].max_tokens, 32768, stage);
+    assert.deepEqual(sent[0].thinking, { type: thinking }, stage);
+    assert.equal(sent[0].reasoning_effort, reasoningEffort, stage);
+    assert.deepEqual(sent[0].response_format, { type: 'json_object' }, stage);
+    assert.deepEqual(receipts, [{ provider: 'deepseek', invocationId: `cross-stage-${stage}`, contextId: `cross-stage-${stage}` }], stage);
+  }
+  for (const stage of ['whole-quality:cross-chapter', 'whole-quality:cross-chapter:', 'whole-quality:cross-chapter:repair', 'whole-quality:cross-chapter:extract:format-repair:extra']) {
+    assert.equal(isCrossChapterReviewStage(stage), false, stage);
+  }
+});
+
+test('cross-chapter cost controls leave existing whole-quality and blind-review budgets unchanged', () => {
+  const actualConfig = { ...config, model: 'deepseek-flash' };
+  assert.equal(wholeQualityReasoningEffort(actualConfig, 'whole-quality:reading', WHOLE_QUALITY_MODEL_POLICY), 'low');
+  assert.equal(outputTokenLimit(actualConfig, 12000, 'whole-quality:reading', WHOLE_QUALITY_MODEL_POLICY), 65536);
+  assert.equal(independentReviewReasoningEffort(actualConfig, 'independent-review:blind-pair', INDEPENDENT_REVIEW_MODEL_POLICY), 'low');
+  assert.equal(outputTokenLimit(actualConfig, 12000, 'independent-review:blind-pair', INDEPENDENT_REVIEW_MODEL_POLICY), 65536);
+});
+
 test('whole-quality provider receipts survive known length and empty-content failures', async () => {
   for (const [finish_reason, content] of [['length', '{"partial":true}'], ['stop', '']]) {
     const receipts = [];
@@ -95,6 +135,7 @@ test('whole-quality provider receipts survive known length and empty-content fai
 });
 
 test('flash and pro use the full bounded thinking allowance throughout a novel and its controller', async t => {
+  const { agentCallSettings } = await import('./agent-ai-sdk.mjs');
   for (const name of ['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp', 'deepseek-v4-pro']) await t.test(name, async () => {
     const sent = [];
     const model = createModel({ ...config, model: name }, async (_url, init) => {

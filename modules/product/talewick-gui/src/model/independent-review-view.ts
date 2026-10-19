@@ -39,6 +39,7 @@ export interface IndependentReviewView {
   headline: string;
   boundary: string;
   readerLines: string[];
+  attributionLines: string[];
   summaryFindings: string[];
   findings: string[];
   sections: IndependentReviewSection[];
@@ -208,7 +209,17 @@ function findingsForRecord(value: UnknownRecord, readerId: string | undefined, s
     add(`entry-${entryIndex}-impression`, entry.overallImpression, undefined, undefined, detail);
     if (Array.isArray(entry.claims)) entry.claims.filter(record).forEach((claim, claimIndex) => add(`entry-${entryIndex}-claim-${text(claim.id) || claimIndex}`, claim.statement, claim.evidence, claim.claimType, detail));
   });
-  if (Array.isArray(value.comparisons)) value.comparisons.filter(record).forEach((comparison, index) => add(`comparison-${text(comparison.id) || index}`, comparison.statement, comparison.evidence, comparison.severeHarm === true ? '严重伤害风险' : comparison.claimType));
+  if (Array.isArray(value.comparisons)) value.comparisons.filter(record).forEach((comparison, index) => {
+    const harm = comparison.severeHarm;
+    let status: unknown = comparison.claimType;
+    if (harm === true) status = '严重问题 · 旧版归属未区分';
+    else if (record(harm) && harm.status === 'unknown') status = '严重问题 · 归属待核对';
+    else if (record(harm) && harm.status === 'attributed') {
+      const labels = texts(harm.blindIds).map(id => roleLabel(completionRoles.get(id) ?? 'unknown', id));
+      status = `严重问题 · ${labels.join('、')}`;
+    }
+    add(`comparison-${text(comparison.id) || index}`, comparison.statement, [comparison.evidence, record(harm) ? harm.evidence : []], status);
+  });
   if (Array.isArray(value.goalAssessments)) value.goalAssessments.filter(record).forEach((goal, goalIndex) => {
     const goalId = text(goal.goalId), goalStatement = goalLabels.statements.get(goalId);
     add(`goal-${goalId || goalIndex}`, goal.rationale, goal, goal.status, goalStatement ? `目标：${goalStatement}` : goalId ? `目标 ${goalId}` : '目标核查');
@@ -250,7 +261,15 @@ export function independentReviewView(report: unknown, mode: 'single' | 'compare
   const evidence = sections.flatMap(section => section.findings.flatMap(finding => finding.evidence));
   const findings = sections.flatMap(section => section.findings.map(finding => finding.statement));
   const boundaryName: Record<string, string> = { preserve_original: '建议保留原稿并核对严重伤害', goals_not_achieved: '预定目标尚未落实', narrowed_recheck_required: '存在分歧或部分落实，需要缩小范围复核', eligible_for_editorial_consideration: '可进入编辑选择，仍需用户决定', no_change: '本轮没有质量增益主张' };
-  const boundary = boundaryName[text(source.adoptionBoundary)] || (mode === 'single' ? '单稿意见已经保存，不产生版本胜负。' : '比较结论只作为内部编辑证据。');
+  const legacyAttribution = mode === 'compare' && source.schemaVersion === 'whole-quality-evaluation-result-1';
+  const attribution = source.schemaVersion === 'whole-quality-evaluation-result-2' && record(source.severeHarmAttribution) ? source.severeHarmAttribution : null;
+  const attributionLines = legacyAttribution ? ['旧版归属未区分：历史报告没有区分原稿问题与候选损伤，保留原始结论，请结合新评阅查看。'] : attribution ? [
+    `原稿严重问题记录：${Array.isArray(attribution.baselineIssues) ? attribution.baselineIssues.length : 0} 条`,
+    `候选严重损伤记录：${Array.isArray(attribution.candidateRisks) ? attribution.candidateRisks.length : 0} 条`,
+    `问题归属待核对：${Array.isArray(attribution.unknown) ? attribution.unknown.length : 0} 条`,
+    '以上按评阅记录计数，同一问题可能重复出现；两稿均有的问题分别列入两类。',
+  ] : [];
+  const boundary = legacyAttribution && source.adoptionBoundary === 'preserve_original' ? '历史建议：保留原稿；严重问题的稿件归属未区分。' : boundaryName[text(source.adoptionBoundary)] || (mode === 'single' ? '单稿意见已经保存，不产生版本胜负。' : '比较结论只作为内部编辑证据。');
   const readerLines = Array.isArray(source.readerViews) ? source.readerViews.filter(record).map(item => {
     const nested = record(item.record) ? item.record : {}, id = text(item.readerId) || text(nested.readerId), preference = text(item.preference) || text(nested.preference);
     if (preference === 'first' || preference === 'second') {
@@ -264,5 +283,5 @@ export function independentReviewView(report: unknown, mode: 'single' | 'compare
     return verdict ? `${readerLabel(id || undefined)}：${verdict}` : '';
   }).filter(Boolean) : [];
   const limitations = [...texts(source.limitations).map(item => limitationNames[item] ?? item), ...(source.literaryPass === 'NOT_COMPUTED' ? ['本任务不计算文学质量通过。'] : []), ...(source.automaticAdoption === false ? ['评阅结果不会自动采用或改写正文。'] : [])];
-  return { headline: mode === 'single' ? '两路独立全文初读' : '原稿与候选的隔离盲评', boundary, readerLines, summaryFindings: findings.slice(0, 4), findings, sections, evidence, snapshots, limitations: [...new Set(limitations)] };
+  return { headline: mode === 'single' ? '两路独立全文初读' : '原稿与候选的隔离盲评', boundary, readerLines, attributionLines, summaryFindings: findings.slice(0, 4), findings, sections, evidence, snapshots, limitations: [...new Set(limitations)] };
 }

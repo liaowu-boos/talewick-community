@@ -279,6 +279,10 @@ export function runtimeStage(task: RuntimeTask): string {
   if (task.stage.startsWith('followup:')) return '查找补充参考';
   if (task.stage.startsWith('knowledge-returned:')) return '整理本次写作结果';
   if (task.stage.startsWith('knowledge-use:')) return '准备本次写作材料';
+  if (task.stage === 'whole-quality:cross-chapter:extract') return '正在提取跨章事实与证据';
+  if (task.stage === 'whole-quality:cross-chapter:adjudicate') return '正在裁定跨章冲突与待澄清项';
+  if (task.stage === 'whole-quality:cross-chapter:extract:format-repair') return '正在校正跨章事实报告格式';
+  if (task.stage === 'whole-quality:cross-chapter:adjudicate:format-repair') return '正在校正跨章裁定报告格式';
   if (task.stage.startsWith('whole-quality:')) return task.stage.includes('reread') || task.stage.includes('check') ? '正在复核修改目标与风险' : task.stage.includes('reading') ? '正在独立阅读全文' : task.stage.includes('retrieval') || task.stage.includes('material') ? '正在核对问题所需材料' : task.stage.includes('plan') ? '正在形成场景联动方案' : task.stage.includes('revision') ? '正在执行有限改写' : '正在处理整稿质量步骤';
   const chapter = task.stage.match(/^(draft|revision):ch-(\d+)$/);
   if (chapter) return `${chapter[1] === 'draft' ? '正在撰写' : '正在修改'}第 ${chapter[2]} 章`;

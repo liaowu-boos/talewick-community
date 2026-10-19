@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFile, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { appendFile, cp, mkdtemp, readFile, readdir, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -8,6 +8,10 @@ import {
   resumeIndependentReview,
   readIndependentReviewProgress,
 } from '../runtime/independent-review-task.mjs';
+import {
+  validateWholeQualityProtocolArtifacts,
+  wholeQualitySha256,
+} from '../runtime/whole-quality-evaluation.mjs';
 
 const baseline = [
   { id: 'ch-1', title: '门口', body: '林遥站在门口。她没有回答母亲的问题。雨水沿着伞骨落下。' },
@@ -46,9 +50,9 @@ function responseFor(input) {
       entries: [{ blindId: 'M', readScope: 'whole', overallImpression: '完整阅读全文后形成的独立意见。', claims: [{ id: `claim-${protocol.readerId}-${protocol.packetSha256.slice(0, 6)}`, claimType: 'hard_fact', statement: '开篇明确写出人物所处位置。', evidence: [firstQuote(protocol.manuscripts[0])] }] }] };
   }
   if (input.stage === 'blind_pair') {
-    return { schemaVersion: 'whole-quality-blind-pair-1', packetSha256: protocol.packetSha256, readerId: protocol.readerId,
+    return { schemaVersion: protocol.schemaVersion, packetSha256: protocol.packetSha256, readerId: protocol.readerId,
       independentRecordSha256: input.packet.independentRecordSha256, preference: 'no_clear_preference',
-      comparisons: [{ id: `comparison-${protocol.readerId}`, claimType: 'editorial_hypothesis', statement: '两稿在主动选择的显性程度上不同。', severeHarm: false, evidence: protocol.manuscripts.map(firstQuote) }] };
+      comparisons: [{ id: `comparison-${protocol.readerId}`, claimType: 'editorial_hypothesis', statement: '两稿在主动选择的显性程度上不同。', severeHarm: protocol.schemaVersion.endsWith('-2') ? { status: 'none', blindIds: [], evidence: [] } : false, evidence: protocol.manuscripts.map(firstQuote) }] };
   }
   const baselineManuscript = protocol.baseline, candidateManuscript = protocol.candidate;
   if (protocol.goals.length === 0) return { schemaVersion: 'whole-quality-goal-audit-1', packetSha256: protocol.packetSha256, blindPairRecordSha256s: input.packet.blindPairRecordSha256s, goalAssessments: [] };
@@ -68,6 +72,19 @@ function fixtureAnalyze({ context = index => `context-${index}`, beforeReturn } 
     return { outputText: JSON.stringify(responseFor(input)), receipt: { provider: 'fixture', invocationId: `invoke-${index}`, contextId: context(index), inputHash: input.inputHash } };
   };
   return { analyze, calls };
+}
+
+function downgradeProtocolArtifacts(bundle, privateBinding) {
+  const body = structuredClone(bundle); delete body.bundleSha256; body.schemaVersion = 'whole-quality-evaluation-1';
+  body.blindPairPackets = body.blindPairPackets.map(packet => {
+    const next = structuredClone(packet); delete next.packetSha256;
+    next.schemaVersion = 'whole-quality-blind-pair-1'; delete next.instructions.severeHarmAttributionRequired;
+    return { ...next, packetSha256: wholeQualitySha256(next) };
+  });
+  const legacyBundle = { ...body, bundleSha256: wholeQualitySha256(body) };
+  const legacyBinding = { ...privateBinding, schemaVersion: 'whole-quality-private-binding-1', bundleSha256: legacyBundle.bundleSha256 };
+  validateWholeQualityProtocolArtifacts({ protocolVersion: legacyBundle.schemaVersion, bundle: legacyBundle, privateBinding: legacyBinding });
+  return { legacyBundle, legacyBinding };
 }
 
 function recursivelyHasKey(value, forbidden) {
@@ -108,9 +125,11 @@ test('compare mode runs exactly four isolated single reads, two blind pairs, the
   const firstHashes = fixture.calls.slice(0, 2).map(call => call.packet.protocolPacket.manuscripts[0].manuscriptSha256);
   assert.notEqual(firstHashes[0], firstHashes[1], 'reader order must be reversed');
   assert.equal(result.report.adoptionBoundary, 'eligible_for_editorial_consideration');
+  assert.equal(result.report.schemaVersion, 'whole-quality-evaluation-result-2');
   assert.equal(result.report.automaticAdoption, false); assert.equal(result.report.literaryPass, 'NOT_COMPUTED');
   assert.equal(result.report.divergentReadings.preferenceDivergence, false);
   const evidence = result.report.completionEvidence;
+  assert.equal(evidence.schemaVersion, 'independent-review-compare-completion-evidence-2');
   assert.equal(evidence.disclosurePhase, 'after_all_stages_completed');
   assert.equal(evidence.independentReadings.length, 2); assert.equal(evidence.blindPairReviews.length, 2);
   assert.equal(evidence.independentReadings.every(item => item.record.entries.length === 2), true);
@@ -129,6 +148,39 @@ test('compare mode runs exactly four isolated single reads, two blind pairs, the
     assert.deepEqual(snapshot.chapters, expected);
     assert.equal(snapshot.blindId === 'A' || snapshot.blindId === 'B', true);
   }
+}));
+
+test('a v2 task cannot resume with a self-consistent v1 bundle and private binding', async () => withRoot(async root => {
+  const initial = fixtureAnalyze({ beforeReturn: () => { throw Object.assign(new Error('not sent'), { definitelyNotDispatched: true }); } });
+  const interrupted = await startIndependentReview({ runRoot: root, request: compareRequest(), analyze: initial.analyze });
+  assert.equal(interrupted.status, 'interrupted'); assert.equal(initial.calls.length, 1);
+  const bundlePath = join(interrupted.runDir, 'controller', 'bundle.json');
+  const bindingPath = join(interrupted.runDir, 'controller', 'private-binding.json');
+  const bundle = JSON.parse(await readFile(bundlePath, 'utf8'));
+  const privateBinding = JSON.parse(await readFile(bindingPath, 'utf8'));
+  const { legacyBundle, legacyBinding } = downgradeProtocolArtifacts(bundle, privateBinding);
+  await writeFile(bundlePath, `${JSON.stringify(legacyBundle, null, 2)}\n`);
+  await writeFile(bindingPath, `${JSON.stringify(legacyBinding, null, 2)}\n`);
+  let resumeCalls = 0;
+  const resumed = await resumeIndependentReview({ runDir: interrupted.runDir, requestHash: interrupted.requestHash, analyze: async () => { resumeCalls += 1; } });
+  assert.equal(resumed.status, 'needs_attention');assert.equal(resumed.error.code, 'TASK_PROTOCOL_BINDING');assert.equal(resumeCalls, 0);
+  assert.equal((await readIndependentReviewProgress({ runDir: interrupted.runDir, requestHash: interrupted.requestHash })).error.code, 'TASK_PROTOCOL_BINDING');
+}));
+
+test('completed v2 reports cannot be read as v1 result and completion evidence', async () => withRoot(async root => {
+  const fixture = fixtureAnalyze();
+  const completed = await startIndependentReview({ runRoot: root, request: compareRequest(), analyze: fixture.analyze });
+  assert.equal(completed.status, 'complete');assert.equal(fixture.calls.length, 7);
+  const resultPath = join(completed.runDir, 'result.json'), report = JSON.parse(await readFile(resultPath, 'utf8'));
+  report.schemaVersion = 'whole-quality-evaluation-result-1';
+  report.completionEvidence.schemaVersion = 'independent-review-compare-completion-evidence-1';
+  await writeFile(resultPath, `${JSON.stringify(report, null, 2)}\n`);
+  const read = await readIndependentReviewProgress({ runDir: completed.runDir, requestHash: completed.requestHash });
+  assert.equal(read.status, 'needs_attention');assert.equal(read.error.code, 'TASK_PROTOCOL_BINDING');assert.deepEqual(read.report, report);
+  report.schemaVersion = 'whole-quality-evaluation-result-2'; delete report.completionEvidence;
+  await writeFile(resultPath, `${JSON.stringify(report, null, 2)}\n`);
+  const missingCompletion = await readIndependentReviewProgress({ runDir: completed.runDir, requestHash: completed.requestHash });
+  assert.equal(missingCompletion.status, 'needs_attention');assert.equal(missingCompletion.error.code, 'TASK_PROTOCOL_BINDING');
 }));
 
 test('completion evidence and identity bindings do not exist before all seven compare stages finish', async () => withRoot(async root => {

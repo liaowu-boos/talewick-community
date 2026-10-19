@@ -85,7 +85,7 @@ function observationQuoteSeed(result, quote) {
   check(object(source) && nonempty(source.sourceId,160) && sha(source.sourceSha256) && nonempty(source.textVersion,240), 'observation source binding is invalid');
   check(object(current) && nonempty(current.analysisVersion,240), 'observation analysis version is missing');
   if (result.recordType === 'checked_analysis_unit') check(nonempty(current.reviewRecordId,240), 'checked observation review binding is missing');
-  check(object(quote) && boundedContent(quote.quote,2000) && Number.isSafeInteger(quote.lineStart) && Number.isSafeInteger(quote.lineEnd)
+  check(object(quote) && boundedContent(quote.quote,1000000) && Number.isSafeInteger(quote.lineStart) && Number.isSafeInteger(quote.lineEnd)
     && quote.lineStart >= 1 && quote.lineEnd >= quote.lineStart && Number.isSafeInteger(quote.lineWindowUtf16Start)
     && Number.isSafeInteger(quote.lineWindowUtf16End) && quote.lineWindowUtf16Start >= 0 && quote.lineWindowUtf16End >= quote.lineWindowUtf16Start
     && sha(quote.lineWindowBodySha256), 'observation quote binding is invalid');
@@ -115,11 +115,18 @@ export function buildWholeQualityObservationRecall(issue, observationResult, {ma
     && sha(observationResult.queryHash) && ['covered','partial','uncovered'].includes(observationResult.status)
     && object(observationResult.request) && observationResult.request.query === checked.question && Array.isArray(observationResult.results),
   'observation result is not bound to the exact issue question');
-  const available = [];
+  const available = [], excludedQuotes = [];
   for (const result of observationResult.results) {
     check(object(result) && nonempty(result.id,240) && ['legacy_card_observation','checked_analysis_unit'].includes(result.recordType)
       && Array.isArray(result.quotes), 'observation result item is invalid');
-    for (const quote of result.quotes) available.push({...observationQuoteSeed(result,quote),observationQueryHash:observationResult.queryHash});
+    for (const quote of result.quotes) {
+      const seed = observationQuoteSeed(result,quote);
+      if (seed.quote.length > 2000) {
+        excludedQuotes.push({observationId:result.id,sourceId:seed.sourceId,quoteSha256:seed.quoteSha256,characters:seed.quote.length,reason:'recall_seed_quote_budget_exceeded'});
+        continue;
+      }
+      available.push({...seed,observationQueryHash:observationResult.queryHash});
+    }
   }
   const bySource = new Map();
   for (const seed of available) if (!bySource.has(seed.sourceId)) bySource.set(seed.sourceId,seed);
@@ -127,7 +134,7 @@ export function buildWholeQualityObservationRecall(issue, observationResult, {ma
   for (const seed of available) if (!selected.includes(seed)) selected.push(seed);
   const seeds = selected.slice(0,maxSeeds);
   return {schemaVersion:WHOLE_QUALITY_OBSERVATION_RECALL_VERSION,issueId:checked.issueId,observationQueryHash:observationResult.queryHash,
-    observationStatus:observationResult.status,availableSeedCount:available.length,seeds,sourceIds:[...new Set(seeds.map(seed=>seed.sourceId))],
+    observationStatus:observationResult.status,availableSeedCount:available.length,...(excludedQuotes.length?{excludedQuotes,maxSeedQuoteChars:2000}:{}),seeds,sourceIds:[...new Set(seeds.map(seed=>seed.sourceId))],
     boundary:'叙事观察只提供绑定当前原文版本的候选入口；不自动供应、不继承旧分析的文学判断，仍须经过当前问题的功能适用筛选。'};
 }
 

@@ -1,9 +1,25 @@
 import {createHash} from 'node:crypto';
 
-export const WHOLE_QUALITY_EVALUATION_VERSION='whole-quality-evaluation-1';
+export const LEGACY_WHOLE_QUALITY_EVALUATION_VERSION='whole-quality-evaluation-1';
+export const WHOLE_QUALITY_EVALUATION_VERSION='whole-quality-evaluation-2';
 export const INDEPENDENT_READING_VERSION='whole-quality-independent-reading-1';
-export const BLIND_PAIR_VERSION='whole-quality-blind-pair-1';
+export const LEGACY_BLIND_PAIR_VERSION='whole-quality-blind-pair-1';
+export const BLIND_PAIR_VERSION='whole-quality-blind-pair-2';
 export const GOAL_AUDIT_VERSION='whole-quality-goal-audit-1';
+export const WHOLE_QUALITY_PROTOCOL_COMPATIBILITY=Object.freeze({
+  [LEGACY_WHOLE_QUALITY_EVALUATION_VERSION]:Object.freeze({
+    pairVersion:LEGACY_BLIND_PAIR_VERSION,
+    privateBindingVersion:'whole-quality-private-binding-1',
+    resultVersion:'whole-quality-evaluation-result-1',
+    completionEvidenceVersion:'independent-review-compare-completion-evidence-1',
+  }),
+  [WHOLE_QUALITY_EVALUATION_VERSION]:Object.freeze({
+    pairVersion:BLIND_PAIR_VERSION,
+    privateBindingVersion:'whole-quality-private-binding-2',
+    resultVersion:'whole-quality-evaluation-result-2',
+    completionEvidenceVersion:'independent-review-compare-completion-evidence-2',
+  }),
+});
 
 export class WholeQualityEvaluationError extends Error{
   constructor(code,message=code){super(message);this.name='WholeQualityEvaluationError';this.code=code;}
@@ -102,7 +118,7 @@ export function prepareWholeQualityEvaluation({caseId,baselineChapters,candidate
     return {...packet,packetSha256:packetSha256(packet)};
   });
   const blindPairPackets=readerIds.map((readerId,index)=>{
-    const packet={schemaVersion:BLIND_PAIR_VERSION,caseId,readerId,stage:'blind_pair',instructions:{identityHidden:true,goalsHidden:true,knownIssuesHidden:true,order:orders[index],scoresForbidden:true,votingForbidden:true,severeHarmMustBeReported:true},manuscripts:orders[index].map(id=>manuscripts[id])};
+    const packet={schemaVersion:BLIND_PAIR_VERSION,caseId,readerId,stage:'blind_pair',instructions:{identityHidden:true,goalsHidden:true,knownIssuesHidden:true,order:orders[index],scoresForbidden:true,votingForbidden:true,severeHarmMustBeReported:true,severeHarmAttributionRequired:true},manuscripts:orders[index].map(id=>manuscripts[id])};
     return {...packet,packetSha256:packetSha256(packet)};
   });
   const goalPacket={schemaVersion:GOAL_AUDIT_VERSION,caseId,stage:'goal_audit',candidateMode:candidate.mode,bindings,baseline:manuscripts[baselineIsA?'A':'B'],candidate:manuscripts[baselineIsA?'B':'A'],goals,
@@ -110,12 +126,14 @@ export function prepareWholeQualityEvaluation({caseId,baselineChapters,candidate
   const publicGoalPacket={...goalPacket,packetSha256:packetSha256(goalPacket)};
   const publicBundleBody={schemaVersion:WHOLE_QUALITY_EVALUATION_VERSION,caseId,independentMergeTargets,blindPairPackets,goalPacket:publicGoalPacket};
   const publicBundle={...publicBundleBody,bundleSha256:wholeQualitySha256(publicBundleBody)};
-  return {publicBundle,privateBinding:{schemaVersion:'whole-quality-private-binding-1',caseId,bindings,baselineManuscriptSha256:baselineHash,candidateManuscriptSha256:candidateHash,bundleSha256:publicBundle.bundleSha256}};
+  return {publicBundle,privateBinding:{schemaVersion:'whole-quality-private-binding-2',caseId,bindings,baselineManuscriptSha256:baselineHash,candidateManuscriptSha256:candidateHash,bundleSha256:publicBundle.bundleSha256}};
 }
 
 function validateBundle(bundle){
-  ensure(object(bundle)&&bundle.schemaVersion===WHOLE_QUALITY_EVALUATION_VERSION&&nonempty(bundle.bundleSha256),'BUNDLE_VERSION');
+  ensure(object(bundle)&&[LEGACY_WHOLE_QUALITY_EVALUATION_VERSION,WHOLE_QUALITY_EVALUATION_VERSION].includes(bundle.schemaVersion)&&nonempty(bundle.bundleSha256),'BUNDLE_VERSION');
   const {bundleSha256,...body}=bundle;ensure(bundleSha256===wholeQualitySha256(body),'BUNDLE_TAMPERED');
+  const pairVersion=WHOLE_QUALITY_PROTOCOL_COMPATIBILITY[bundle.schemaVersion].pairVersion;
+  ensure(Array.isArray(bundle.blindPairPackets)&&bundle.blindPairPackets.length===2&&bundle.blindPairPackets.every(packet=>packet.schemaVersion===pairVersion),'BUNDLE_PAIR_VERSION');
 }
 
 function findPacket(bundle,stage,readerId){
@@ -131,6 +149,55 @@ function findPacket(bundle,stage,readerId){
 function verifyPacket(packet,version){
   ensure(object(packet)&&packet.schemaVersion===version&&Array.isArray(packet.manuscripts),'PACKET_VERSION');
   const {packetSha256:stored,...body}=packet;ensure(stored===packetSha256(body),'PACKET_TAMPERED');return packet;
+}
+
+function compatibilityFor(protocolVersion){
+  const compatibility=WHOLE_QUALITY_PROTOCOL_COMPATIBILITY[protocolVersion];
+  ensure(compatibility,'PROTOCOL_VERSION_UNSUPPORTED');return compatibility;
+}
+
+function pairManuscripts(bundle,compatibility){
+  const snapshots=bundle.blindPairPackets.map(packet=>{
+    verifyPacket(packet,compatibility.pairVersion);
+    ensure(packet.manuscripts.length===2,'PRIVATE_BINDING_INVALID');
+    const byId=new Map();
+    for(const manuscript of packet.manuscripts){
+      ensure(object(manuscript)&&nonempty(manuscript.blindId)&&nonempty(manuscript.manuscriptSha256)&&!byId.has(manuscript.blindId),'PRIVATE_BINDING_INVALID');
+      ensure(manuscript.manuscriptSha256===manuscriptSha256(manuscript.chapters),'PRIVATE_BINDING_INVALID');
+      byId.set(manuscript.blindId,manuscript);
+    }
+    return byId;
+  });
+  const blindIds=[...snapshots[0].keys()].sort();
+  ensure(blindIds.length===2&&snapshots.every(snapshot=>canonicalJson([...snapshot.keys()].sort())===canonicalJson(blindIds)
+    &&blindIds.every(id=>snapshot.get(id).manuscriptSha256===snapshots[0].get(id).manuscriptSha256)),'PRIVATE_BINDING_INVALID');
+  return snapshots[0];
+}
+
+/** Validate the exact task/bundle/private/result/completion version row and manuscript identity binding. */
+export function validateWholeQualityProtocolArtifacts({protocolVersion,bundle,privateBinding,result,completionEvidence}={}){
+  const compatibility=compatibilityFor(protocolVersion);
+  validateBundle(bundle);ensure(bundle.schemaVersion===protocolVersion,'BUNDLE_PROTOCOL_VERSION');
+  const manuscripts=pairManuscripts(bundle,compatibility),blindIds=[...manuscripts.keys()].sort();
+  exact(privateBinding,['schemaVersion','caseId','bindings','baselineManuscriptSha256','candidateManuscriptSha256','bundleSha256'],'PRIVATE_BINDING_FIELDS');
+  ensure(privateBinding.schemaVersion===compatibility.privateBindingVersion&&privateBinding.caseId===bundle.caseId
+    &&privateBinding.bundleSha256===bundle.bundleSha256&&object(privateBinding.bindings),'PRIVATE_BINDING_INVALID');
+  const bindingIds=Object.keys(privateBinding.bindings).sort(),roles=Object.values(privateBinding.bindings).sort();
+  ensure(canonicalJson(bindingIds)===canonicalJson(blindIds)&&canonicalJson(roles)===canonicalJson(['baseline','candidate'])
+    &&object(bundle.goalPacket?.bindings)&&canonicalJson(privateBinding.bindings)===canonicalJson(bundle.goalPacket.bindings),'PRIVATE_BINDING_INVALID');
+  for(const blindId of blindIds){
+    const role=privateBinding.bindings[blindId],manuscript=manuscripts.get(blindId),expectedHash=role==='baseline'?privateBinding.baselineManuscriptSha256:privateBinding.candidateManuscriptSha256;
+    ensure(manuscript.manuscriptSha256===expectedHash,'PRIVATE_BINDING_INVALID');
+  }
+  for(const role of ['baseline','candidate']){
+    const blindId=bindingIds.find(id=>privateBinding.bindings[id]===role),goalManuscript=bundle.goalPacket?.[role],manuscript=manuscripts.get(blindId);
+    ensure(goalManuscript?.blindId===blindId&&goalManuscript.manuscriptSha256===manuscript.manuscriptSha256
+      &&goalManuscript.manuscriptSha256===manuscriptSha256(goalManuscript.chapters),'PRIVATE_BINDING_INVALID');
+  }
+  if(result!==undefined)ensure(object(result)&&result.schemaVersion===compatibility.resultVersion&&result.caseId===bundle.caseId
+    &&completionEvidence!==undefined,'RESULT_PROTOCOL_VERSION');
+  if(completionEvidence!==undefined)ensure(object(completionEvidence)&&completionEvidence.schemaVersion===compatibility.completionEvidenceVersion,'COMPLETION_PROTOCOL_VERSION');
+  return structuredClone(compatibility);
 }
 
 /** Create an identity/goal-free first-reading packet before a candidate exists. */
@@ -204,18 +271,31 @@ export function mergeStandaloneIndependentReading({bundle,standalonePacket,stand
 export function validateBlindPairReview(bundle,record){
   assertNoScoreOrVote(record);
   exact(record,['schemaVersion','packetSha256','readerId','independentRecordSha256','preference','comparisons'],'PAIR_RECORD_FIELDS');
-  ensure(record.schemaVersion===BLIND_PAIR_VERSION,'PAIR_RECORD_VERSION');
   const packet=findPacket(bundle,'pair',record.readerId);
+  ensure(record.schemaVersion===packet.schemaVersion&&[LEGACY_BLIND_PAIR_VERSION,BLIND_PAIR_VERSION].includes(record.schemaVersion),'PAIR_RECORD_VERSION');
   ensure(record.packetSha256===packet.packetSha256&&/^[a-f0-9]{64}$/.test(record.independentRecordSha256),'PAIR_BINDING');
   ensure(['first','second','mixed','no_clear_preference'].includes(record.preference)&&Array.isArray(record.comparisons)&&record.comparisons.length>0,'PAIR_VALUE');
   const ids=new Set();
   for(const comparison of record.comparisons){
     exact(comparison,['id','claimType','statement','severeHarm','evidence'],'PAIR_COMPARISON_FIELDS');
-    ensure(nonempty(comparison.id)&&!ids.has(comparison.id)&&['hard_fact','editorial_hypothesis'].includes(comparison.claimType)&&nonempty(comparison.statement)&&typeof comparison.severeHarm==='boolean'&&Array.isArray(comparison.evidence)&&comparison.evidence.length>0,'PAIR_COMPARISON');
+    const legacy=record.schemaVersion===LEGACY_BLIND_PAIR_VERSION;
+    ensure(nonempty(comparison.id)&&!ids.has(comparison.id)&&['hard_fact','editorial_hypothesis'].includes(comparison.claimType)&&nonempty(comparison.statement)&&(legacy?typeof comparison.severeHarm==='boolean':object(comparison.severeHarm))&&Array.isArray(comparison.evidence)&&comparison.evidence.length>0,'PAIR_COMPARISON');
     ids.add(comparison.id);
     comparison.evidence.forEach(item=>{const manuscript=packet.manuscripts.find(entry=>entry.blindId===item.blindId);ensure(manuscript,'PAIR_BLIND_ID');citation(item,manuscript,'PAIR_EVIDENCE');});
     ensure(new Set(comparison.evidence.map(item=>item.blindId)).size===2,'PAIR_TWO_SIDED_EVIDENCE');
-    if(comparison.severeHarm)ensure(comparison.evidence.length>=1,'SEVERE_HARM_EVIDENCE');
+    if(legacy){if(comparison.severeHarm)ensure(comparison.evidence.length>=1,'SEVERE_HARM_EVIDENCE');continue;}
+    exact(comparison.severeHarm,['status','blindIds','evidence'],'SEVERE_HARM_FIELDS');
+    const harm=comparison.severeHarm,validIds=new Set(packet.manuscripts.map(item=>item.blindId));
+    ensure(['none','attributed','unknown'].includes(harm.status)&&Array.isArray(harm.blindIds)&&Array.isArray(harm.evidence),'SEVERE_HARM_VALUE');
+    ensure(harm.blindIds.every(id=>validIds.has(id))&&new Set(harm.blindIds).size===harm.blindIds.length,'SEVERE_HARM_BLIND_IDS');
+    harm.evidence.forEach(item=>{const manuscript=packet.manuscripts.find(entry=>entry.blindId===item.blindId);ensure(manuscript,'SEVERE_HARM_BLIND_ID');citation(item,manuscript,'SEVERE_HARM_EVIDENCE');});
+    if(harm.status==='none')ensure(harm.blindIds.length===0&&harm.evidence.length===0,'SEVERE_HARM_NONE');
+    if(harm.status==='attributed'){
+      ensure(harm.blindIds.length>0&&harm.evidence.length>0,'SEVERE_HARM_ATTRIBUTION');
+      const evidenceIds=new Set(harm.evidence.map(item=>item.blindId));
+      ensure(harm.evidence.every(item=>harm.blindIds.includes(item.blindId))&&harm.blindIds.every(id=>evidenceIds.has(id)),'SEVERE_HARM_ATTRIBUTION_EVIDENCE');
+    }
+    if(harm.status==='unknown')ensure(harm.blindIds.length===0&&new Set(harm.evidence.map(item=>item.blindId)).size===2,'SEVERE_HARM_UNKNOWN_EVIDENCE');
   }
   return {ok:true,stage:'blind_pair',readerId:record.readerId,recordSha256:wholeQualitySha256(record)};
 }
@@ -253,7 +333,8 @@ export function validateGoalAudit(bundle,record){
 }
 
 /** Preserve reader-level evidence and disagreement. No vote, score, or literary pass is computed. */
-export function finalizeWholeQualityEvaluation({bundle,independentRecords,pairRecords,goalRecord}={}){
+export function finalizeWholeQualityEvaluation({bundle,privateBinding,independentRecords,pairRecords,goalRecord}={}){
+  const compatibility=validateWholeQualityProtocolArtifacts({protocolVersion:bundle?.schemaVersion,bundle,privateBinding});
   ensure(Array.isArray(independentRecords)&&independentRecords.length===2&&Array.isArray(pairRecords)&&pairRecords.length===2,'TWO_READER_RECORDS_REQUIRED');
   const independent=independentRecords.map(record=>({...validateIndependentReading(bundle,record),record}));
   const independentByReader=new Map(independent.map(item=>[item.readerId,item.recordSha256]));
@@ -268,7 +349,21 @@ export function finalizeWholeQualityEvaluation({bundle,independentRecords,pairRe
   const pairHashes=pairs.map(item=>item.recordSha256);
   ensure(canonicalJson([...goalRecord.blindPairRecordSha256s].sort())===canonicalJson([...pairHashes].sort()),'GOAL_PAIR_RECORD_BINDING');
   const goal=validateGoalAudit(bundle,goalRecord);
-  const severeHarms=pairs.flatMap(item=>item.record.comparisons.filter(value=>value.severeHarm).map(value=>({readerId:item.readerId,comparison:value})));
+  const legacy=bundle.schemaVersion===LEGACY_WHOLE_QUALITY_EVALUATION_VERSION;
+  const roleByBlindId=privateBinding.bindings;
+  const severeHarms=pairs.flatMap(item=>item.record.comparisons.flatMap(comparison=>{
+    if(legacy)return comparison.severeHarm?[{readerId:item.readerId,comparison}]:[];
+    const harm=comparison.severeHarm;
+    if(harm.status==='none')return [];
+    if(harm.status==='unknown')return [{readerId:item.readerId,comparison,attribution:{status:'unknown',blindIds:[],roles:[]}}];
+    const roles=harm.blindIds.map(blindId=>roleByBlindId[blindId]);
+    ensure(roles.every(role=>['baseline','candidate'].includes(role)),'PRIVATE_BINDING_INVALID');
+    const roleSet=new Set(roles),status=roleSet.size===2?'both':roles[0]==='candidate'?'candidate':'baseline';
+    return [{readerId:item.readerId,comparison,attribution:{status,blindIds:[...harm.blindIds],roles}}];
+  }));
+  const candidateRisks=legacy?[]:severeHarms.filter(item=>['candidate','both'].includes(item.attribution.status));
+  const baselineIssues=legacy?[]:severeHarms.filter(item=>['baseline','both'].includes(item.attribution.status));
+  const unknownHarms=legacy?[]:severeHarms.filter(item=>item.attribution.status==='unknown');
   const unimplementedGoals=goalRecord.goalAssessments.filter(item=>item.status!=='implemented');
   const preferences=pairs.map(item=>{
     const order=bundle.blindPairPackets.find(packet=>packet.readerId===item.readerId).instructions.order;
@@ -281,12 +376,13 @@ export function finalizeWholeQualityEvaluation({bundle,independentRecords,pairRe
   const noChangeWithoutGoals=bundle.goalPacket.candidateMode==='no_change'&&bundle.goalPacket.goals.length===0;
   let adoptionBoundary='eligible_for_editorial_consideration';
   if(noChangeWithoutGoals)adoptionBoundary='no_change';
-  else if(severeHarms.length)adoptionBoundary='preserve_original';
+  else if(legacy&&severeHarms.length)adoptionBoundary='preserve_original';
+  else if(candidateRisks.length)adoptionBoundary='preserve_original';
   else if(failedGoal)adoptionBoundary='goals_not_achieved';
-  else if(partialGoal||divergent)adoptionBoundary='narrowed_recheck_required';
-  return {schemaVersion:'whole-quality-evaluation-result-1',caseId:bundle.caseId,status:'completed',goalFulfillment:noChangeWithoutGoals?'not_applicable':unimplementedGoals.length===0,qualityGain:'NO_QUALITY_GAIN_ASSERTED',
+  else if(unknownHarms.length||partialGoal||divergent)adoptionBoundary='narrowed_recheck_required';
+  return {schemaVersion:compatibility.resultVersion,caseId:bundle.caseId,status:'completed',goalFulfillment:noChangeWithoutGoals?'not_applicable':unimplementedGoals.length===0,qualityGain:'NO_QUALITY_GAIN_ASSERTED',
     adoptionBoundary,automaticAdoption:false,literaryPass:'NOT_COMPUTED',voteResult:null,totalScore:null,
-    severeHarms,unimplementedGoalIds:unimplementedGoals.map(item=>item.goalId),readerViews:preferences,
+    severeHarms,...(!legacy?{severeHarmAttribution:{candidateRisks,baselineIssues,unknown:unknownHarms}}:{}),unimplementedGoalIds:unimplementedGoals.map(item=>item.goalId),readerViews:preferences,
     divergentReadings:{preferenceDivergence:divergent,semanticDivergence:'NOT_PROGRAMMATICALLY_ASSESSED',preserved:true,records:pairs.map(item=>({readerId:item.readerId,recordSha256:item.recordSha256,comparisons:item.record.comparisons}))},
     evidenceTrace:{independentRecordSha256s:independent.map(item=>item.recordSha256),pairRecordSha256s:pairHashes,goalRecordSha256:goal.recordSha256},
     limitations:['Blind preference does not prove goal implementation.','Goal implementation does not by itself grant adoption.','Mixed or divergent findings require a narrowed recheck rather than aggregation.']};

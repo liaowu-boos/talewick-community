@@ -63,7 +63,7 @@ export async function createRuntime({ config, model = createModel(config), workf
       if (source.projectId !== input.projectId || !artifacts || !sourceRequest) throw fail('关联创作任务与当前项目不一致，未沿用检查要求。', 409);
       const baseInput = full15InputFromRequestSpec(artifacts.requestSpec);
       if (source.revisionMode !== 'whole-manuscript-v2') return baseInput;
-      if (source.status !== 'completed' || !source.result?.wholeRevision || !resolvedIndependentReviewHandoff?.buildIndependentReviewRequest) throw fail('关联整稿修订没有可核对的实际版本。', 409);
+      if (source.status !== 'completed' || source.result?.wholeRevision?.schemaVersion !== 'whole-manuscript-quality-1' || !resolvedIndependentReviewHandoff?.buildIndependentReviewRequest) throw fail('关联整稿修订没有可核对的实际版本。', 409);
       const handoff = resolvedIndependentReviewHandoff.buildIndependentReviewRequest({ caseId: `full15-${input.sourceTaskId}`,
         request: structuredClone(sourceRequest), result: structuredClone(source.result), selection: input.selection });
       const candidate = handoff.request.candidate?.mode === 'no_change' ? handoff.request.baselineChapters : handoff.request.candidate?.chapters;
@@ -79,7 +79,7 @@ export async function createRuntime({ config, model = createModel(config), workf
         if (!resolvedIndependentReviewHandoff || typeof resolvedIndependentReviewHandoff.buildIndependentReviewRequest !== 'function') throw fail('候选比较交接尚未接通。单稿独立评阅仍可使用。', 503);
         const source = tasks.get(input.sourceTaskId);
         const sourceRequest = tasks.requests.get(input.sourceTaskId);
-        if (source.projectId !== input.projectId || source.status !== 'completed' || source.revisionMode !== 'whole-manuscript-v2' || !sourceRequest || !source.result) throw fail('关联整稿修订任务不可用于独立比较。', 409);
+        if (source.projectId !== input.projectId || source.status !== 'completed' || source.revisionMode !== 'whole-manuscript-v2' || !sourceRequest || source.result?.wholeRevision?.schemaVersion !== 'whole-manuscript-quality-1') throw fail('关联整稿修订任务不可用于独立比较。', 409);
         if (productManuscriptRevision(sourceRequest.projectTitle ?? input.title, sourceRequest.chapters) !== input.manuscriptRevision
           || JSON.stringify(sourceRequest.chapters) !== JSON.stringify(input.chapters)) throw fail('当前稿件不是关联修订任务冻结的原稿。请对当前版本发起单稿评阅。', 409);
         return resolvedIndependentReviewHandoff.buildIndependentReviewRequest({ caseId: input.caseId, request: structuredClone(sourceRequest), result: structuredClone(source.result), selection: input.selection });

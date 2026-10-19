@@ -20,6 +20,22 @@ const WHOLE_REVISION_STAGES = new Set([
 export const isWholeRevisionStage = stage => WHOLE_REVISION_STAGES.has(stage);
 const WHOLE_QUALITY_STAGES = new Set(['reading', 'applicability', 'plan', 'feasibility', 'revision', 'reread', 'material-evidence'].flatMap(name => [`whole-quality:${name}`, `whole-quality:${name}:format-repair`]));
 export const isWholeQualityStage = stage => WHOLE_QUALITY_STAGES.has(stage);
+const CROSS_CHAPTER_REVIEW_STAGES = new Set([
+  'whole-quality:cross-chapter:extract',
+  'whole-quality:cross-chapter:adjudicate',
+  'whole-quality:cross-chapter:extract:format-repair',
+  'whole-quality:cross-chapter:adjudicate:format-repair',
+]);
+export const isCrossChapterReviewStage = stage => CROSS_CHAPTER_REVIEW_STAGES.has(stage);
+const CROSS_CHAPTER_THINKING_STAGES = new Set([
+  'whole-quality:cross-chapter:extract',
+  'whole-quality:cross-chapter:adjudicate',
+]);
+const CROSS_CHAPTER_NO_THINKING_STAGES = new Set([
+  'whole-quality:cross-chapter:extract:format-repair',
+  'whole-quality:cross-chapter:adjudicate:format-repair',
+]);
+export const crossChapterThinkingMode = stage => CROSS_CHAPTER_THINKING_STAGES.has(stage) ? 'enabled' : CROSS_CHAPTER_NO_THINKING_STAGES.has(stage) ? 'disabled' : undefined;
 const INDEPENDENT_REVIEW_STAGES = new Set(['independent-reading', 'blind-pair', 'goal-audit'].map(name => `independent-review:${name}`));
 export const isIndependentReviewStage = stage => INDEPENDENT_REVIEW_STAGES.has(stage);
 export const agentProviderFor = config => config.agentProvider || (new URL(config.baseURL).hostname === 'api.deepseek.com' ? 'deepseek' : 'openai-compatible');
@@ -29,7 +45,7 @@ export const usesDeepSeekThinking = config => agentProviderFor(config) === 'deep
   (config.model === 'deepseek-flash' || /^deepseek-v4-(?:flash(?:-vision-exp)?|pro)$/.test(config.model ?? ''));
 
 const BUSINESS_STAGES = new Set(['requirements', 'requirements:repair', 'planning', 'planning:material-decisions', 'agent:replan', 'review', 'agent:reviewManuscript', 'revisionReview', 'review-adjudication', 'review-adjudication:repair', 'review-adjudication:continuity-v4', 'review-adjudication:repair:continuity-v4', 'requestedRevision', 'continuity-review', 'continuity-chain-review', ...WHOLE_REVISION_STAGES]);
-export const isBusinessStage = stage => typeof stage === 'string' && (BUSINESS_STAGES.has(stage) || isWholeQualityStage(stage) || isIndependentReviewStage(stage) || /^(draft|revision|agent:reviseChapter):[\w-]+$/.test(stage));
+export const isBusinessStage = stage => typeof stage === 'string' && (BUSINESS_STAGES.has(stage) || isWholeQualityStage(stage) || isCrossChapterReviewStage(stage) || isIndependentReviewStage(stage) || /^(draft|revision|agent:reviseChapter):[\w-]+$/.test(stage));
 
 export function outputTextLimit(requestedTokens, ceiling = 16000) {
   if (!Number.isFinite(requestedTokens) || requestedTokens <= 0) throw new Error('模型输出预算必须是正数。');
@@ -55,7 +71,7 @@ export function wholeRevisionReasoningEffort(config, stage, modelPolicy) {
 }
 
 export function wholeQualityReasoningEffort(config, stage, modelPolicy) {
-  return modelPolicy === WHOLE_QUALITY_MODEL_POLICY && usesDeepSeekThinking(config) && isWholeQualityStage(stage) ? 'low' : undefined;
+  return modelPolicy === WHOLE_QUALITY_MODEL_POLICY && usesDeepSeekThinking(config) && (isWholeQualityStage(stage) || CROSS_CHAPTER_THINKING_STAGES.has(stage)) ? 'low' : undefined;
 }
 
 export function independentReviewReasoningEffort(config, stage, modelPolicy) {
@@ -74,6 +90,7 @@ export function recoveryTextLimit(stage, requestedTokens) {
 export function outputTokenLimit(config, requestedTokens = 6000, stage, modelPolicy) {
   if (!Number.isFinite(requestedTokens) || requestedTokens <= 0) throw new Error('模型输出预算必须是正数。');
   const thinkingV4 = usesDeepSeekThinking(config);
+  if (modelPolicy === WHOLE_QUALITY_MODEL_POLICY && isCrossChapterReviewStage(stage)) return 32768;
   // Relevance requests 6000 text tokens; native thinking shares one 32768 total limit.
   if (stage === 'library-relevance') return thinkingV4 ? 32768 : outputTextLimit(requestedTokens, 6000);
   if (!thinkingV4) return (modelPolicy === WHOLE_REVISION_MODEL_POLICY && isWholeRevisionStage(stage))

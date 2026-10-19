@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFileSync, statSync } from 'node:fs';
 import { manuscriptFingerprint } from '../../validation/runtime/checks.mjs';
 import { buildIndependentReviewRequest } from './independent-review-handoff.mjs';
 
@@ -66,6 +67,7 @@ test('full candidate handoff freezes pre-revision goals and keeps controller pro
   assert.equal(handoff.request.goals[0].requiredOutcomes[0].dimension, 'other');
   assert.equal(handoff.provenance.artifactRole, 'full_candidate');
   assert.equal(handoff.provenance.rereadScope, 'full-candidate');
+  assert.equal(handoff.provenance.requestBindingMode, 'legacy_exact');
   assert.equal(Object.hasOwn(handoff.request, 'provenance'), false);
   assert.match(handoff.provenance.provenanceSha256, /^[a-f0-9]{64}$/);
 });
@@ -128,4 +130,73 @@ test('planned revisions that produced no text change keep every frozen goal with
   assert.deepEqual(handoff.provenance.unexecutedGoalGroupIds, ['p-1', 'p-2']);
   assert.equal(handoff.provenance.goalCoverage, 'full_plan');
   assert.equal(Object.hasOwn(handoff.request.goals[0], 'implemented'), false);
+});
+
+const crossBinding = { enabled: true, contractVersion: 'cross-chapter-review-result-1',
+  integrationVersion: 'whole-quality-cross-chapter-integration-1', modelPolicy: 'whole-manuscript-quality-json-1' };
+function crossFixture({ unresolved = false } = {}) {
+  const result = fixture(), crossRequest = { ...request, crossChapterReview: crossBinding };
+  const first = { chapterId: 'ch-1', quote: '她说：“我留下。”', start: at(source[0].body, '她说：“我留下。”'), purpose: '冲突一侧' };
+  const second = { chapterId: 'ch-2', quote: '林遥仍站着。', start: at(source[1].body, '林遥仍站着。'), purpose: '冲突另一侧' };
+  const conflict = { id: 'cross-chapter:fact-1', findingId: 'fact-1', claim: '同一承担状态在两章互斥。', evidence: [first, second], scopeOptions: [], limitations: [] };
+  const core = { kind: 'revise', revisionMode: 'whole-manuscript-v2', sourceBaseRevision: request.baseRevision,
+    objective: request.instruction, chapters: source, crossChapterReview: crossBinding };
+  result.wholeRevision.requestSpec = { ...result.wholeRevision.requestSpec, inputFingerprint: sha256(core), crossChapterReview: crossBinding };
+  result.wholeRevision.quality.crossChapterReview = { schemaVersion: 'whole-quality-cross-chapter-bundle-1',
+    sourceManuscriptSha256: manuscriptFingerprint(source), review: { schemaVersion: 'cross-chapter-review-result-1' }, confirmedConflicts: [conflict] };
+  result.wholeRevision.plan.items[1].issueIds = [conflict.id];
+  result.wholeRevision.plan.unresolved = [];
+  result.wholeRevision.quality.crossChapterResolution = { schemaVersion: 'whole-quality-cross-chapter-outcome-1',
+    items: [{ conflictId: conflict.id, repairStatus: 'resolved_in_candidate', planItemIds: ['p-2'] }] };
+  if (unresolved) {
+    result.chapters = structuredClone(source); result.revisionApplied = false; result.wholeRevision.status = 'no_change';
+    result.wholeRevision.candidateRevision = null; result.wholeRevision.diff.candidateManuscriptSha256 = manuscriptFingerprint(source);
+    result.wholeRevision.plan.items = []; result.wholeRevision.plan.unresolved = [{ issueId: conflict.id, reason: '无法安全消歧。' }];
+    result.wholeRevision.adoption.atomicGroups = [];
+    result.wholeRevision.quality.crossChapterResolution.items[0] = { conflictId: conflict.id, repairStatus: 'unresolved', planItemIds: [] };
+  }
+  return { result, crossRequest };
+}
+
+test('handoff validates and preserves confirmed-conflict goals and resolution provenance for new results', () => {
+  const { result, crossRequest } = crossFixture(), handoff = buildIndependentReviewRequest({ caseId: 'case-cross', request: crossRequest, result });
+  assert.deepEqual(handoff.provenance.confirmedConflictIds, ['cross-chapter:fact-1']);
+  assert.deepEqual(handoff.provenance.unresolvedConfirmedConflictIds, []);
+  assert.match(handoff.provenance.crossChapterResolutionSha256, /^[a-f0-9]{64}$/);
+  assert.equal(handoff.request.goals[1].claimType, 'hard_fact');
+  assert.equal(handoff.request.goals[1].sourceEvidence[0].quote, '她说：“我留下。”');
+  assert.equal(handoff.request.goals[1].counterCase[0].quote, '林遥仍站着。');
+  const forged = structuredClone(result); forged.wholeRevision.quality.crossChapterResolution.items = [];
+  assert.throws(() => buildIndependentReviewRequest({ caseId: 'bad-cross', request: crossRequest, result: forged }), { code: 'HANDOFF_CROSS_CHAPTER_OUTCOME' });
+});
+
+test('runtime-normalized cross binding repairs persisted-request omission without trusting a client binding', () => {
+  const { result, crossRequest } = crossFixture();
+  const persistedRequest = structuredClone(crossRequest);
+  delete persistedRequest.crossChapterReview;
+  const normalized = buildIndependentReviewRequest({ caseId: 'case-cross-omitted', request: persistedRequest, result });
+  const exact = buildIndependentReviewRequest({ caseId: 'case-cross-omitted', request: crossRequest, result });
+  assert.deepEqual(normalized.request, exact.request);
+  assert.equal(normalized.provenance.requestBindingMode, 'runtime_normalized_cross_binding');
+  assert.equal(exact.provenance.requestBindingMode, 'persisted_exact');
+  assert.deepEqual(normalized.provenance.confirmedConflictIds, ['cross-chapter:fact-1']);
+
+  const forgedClientRequest = structuredClone(crossRequest);
+  forgedClientRequest.crossChapterReview.modelPolicy = 'client-invented-policy';
+  assert.throws(() => buildIndependentReviewRequest({ caseId: 'bad-client-binding', request: forgedClientRequest, result }),
+    { code: 'HANDOFF_REQUEST_BINDING' });
+
+  const changedPersistedRequest = structuredClone(persistedRequest);
+  changedPersistedRequest.instruction += '越权增加目标';
+  assert.throws(() => buildIndependentReviewRequest({ caseId: 'bad-normalized-core', request: changedPersistedRequest, result }),
+    { code: 'HANDOFF_REQUEST_BINDING' });
+});
+
+test('handoff accepts new no_change only with an explicit unresolved confirmed conflict retained in provenance', () => {
+  const { result, crossRequest } = crossFixture({ unresolved: true });
+  const handoff = buildIndependentReviewRequest({ caseId: 'case-cross-unresolved', request: crossRequest, result });
+  assert.equal(handoff.request.candidate.mode, 'no_change');
+  assert.deepEqual(handoff.request.goals, []);
+  assert.deepEqual(handoff.provenance.confirmedConflictIds, ['cross-chapter:fact-1']);
+  assert.deepEqual(handoff.provenance.unresolvedConfirmedConflictIds, ['cross-chapter:fact-1']);
 });
