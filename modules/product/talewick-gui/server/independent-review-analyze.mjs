@@ -7,16 +7,25 @@ const sha256 = value => createHash('sha256').update(value, 'utf8').digest('hex')
 
 /** Stateless bridge: every validation stage is one fresh model request with no conversation history. */
 export function createIndependentReviewAnalyze({ model }) {
+  return createAnalyze({ model, allowedStages: stages, names: stageNames });
+}
+
+/** Called only by explicit position recovery, using the same metered model as normal review. */
+export function createIndependentReviewPositionRepairAnalyze({ model }) {
+  return createAnalyze({ model, allowedStages: new Set(['position_repair']), names: { position_repair: 'independent-review:position-repair' } });
+}
+
+function createAnalyze({ model, allowedStages, names }) {
   if (!model || typeof model.complete !== 'function') return null;
   const usedContexts = new Set();
   return async ({ stage, packet, inputHash, instruction, signal }) => {
-    if (!stages.has(stage) || !packet || typeof packet !== 'object' || Array.isArray(packet)
+    if (!allowedStages.has(stage) || !packet || typeof packet !== 'object' || Array.isArray(packet)
       || typeof inputHash !== 'string' || !/^[a-f0-9]{64}$/.test(inputHash)
       || typeof instruction !== 'string' || !instruction.trim()) throw Object.assign(new Error('独立评阅模型调用输入无效。'), { code: 'review_analyze_input_invalid' });
     const delivered = JSON.stringify({ inputHash, packet });
     let receipt;
     try {
-      const outputText = await model.complete({ stage: stageNames[stage], modelPolicy: INDEPENDENT_REVIEW_MODEL_POLICY,
+      const outputText = await model.complete({ stage: names[stage], modelPolicy: INDEPENDENT_REVIEW_MODEL_POLICY,
         system: `${instruction.trim()}\n\n你只可使用本次 user 消息中的冻结 packet。不得引用历史对话、诊断、作者身份、修改计划或未在 packet 中出现的目标。只输出指令要求的闭合 JSON。`,
         user: delivered, signal, maxTokens: 24000, allowRecovery: false,
         onReceipt: value => { receipt = value; } });

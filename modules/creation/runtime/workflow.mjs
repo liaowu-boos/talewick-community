@@ -16,8 +16,11 @@ import { prepareKnowledge } from '../../data/runtime/knowledge.mjs';
 import { manuscriptFingerprint, runChecks } from '../../validation/runtime/checks.mjs';
 import { createBusinessTools, parseModelObject as parseObject } from './business-tools.mjs';
 import { prepareWorkflowKnowledge, knowledgeForAuthor, validateRecall, validateReferenceQuestion, validateRelevanceSummary } from './v04/knowledge.mjs';
-import { CREATION_POLICY_VERSION, normalizePsychology, normalizeReadingObservations } from './v04/psychology.mjs';
+import { CREATION_POLICY_VERSION, DEEP_REFERENCE_DECISION_POLICY, normalizePsychology, normalizeReadingObservations } from './v04/psychology.mjs';
 import { MATERIAL_USE_EVIDENCE_POLICY } from './v04/material-use-evidence.mjs';
+import { DEEP_REFERENCE_INTEGRATION_VERSION, resolveDeepReferenceCallback, createFinalTextEvidenceInput,
+  createDeepReferenceRetrievalAdapter, buildCreateFinalTextEvidence, emptyCreateFinalTextEvidence,
+  buildCreateDeepReferenceBundle } from './v04/deep-reference.mjs';
 import { PLANNING_FOLLOWUP_DECISION_POLICY, PLANNING_FOLLOWUP_DECISION_CONTRACT, createPlanningFollowupDecisionInput, createPlanningFollowupDecisionStart, validatePlanningFollowupDecisionStart, createPlanningFollowupResponseReceipt, validatePlanningFollowupResponseReceipt, createPlanningFollowupDecisionCommit, validatePlanningFollowupDecisionCommit } from './v04/planning-followup-decisions.mjs';
 import { CHAPTER_BUDGET_VERSION, normalizeChapterBudgets, chapterWritingBudget } from './chapter-budget.mjs';
 
@@ -57,6 +60,7 @@ async function loadRules(enableV04 = false) {
 
 function requestInput(request) {
   const value = clone(request ?? {});
+  if (value.writingGoals !== undefined) throw Object.assign(new Error('writingGoals 当前仅支持 whole-manuscript-v2 整稿修订入口；新建创作目标模式尚未启用。'), { code: 'WRITING_GOALS_MODE_REQUIRED' });
   if (json(value).length > 160_000) throw new Error('本次输入超过 16 万字符，请缩小处理范围；程序不会静默截断材料或正文。');
   if (json({ idea: value.idea, instruction: value.instruction, context: value.context, quote: value.quote }).length > 20_000) throw new Error('本次需求和背景说明超过 2 万字符，请缩小处理范围。');
   if (json(value.style ?? null).length > 8_000) throw new Error('本次风格说明超过 8000 字符，请缩短风格说明。');
@@ -186,7 +190,7 @@ referenceQuestion、evidenceNeeds、contextNeeds与retrievalHints表达同一个
 从用户创作或修稿要求形成具体待参考问题，用同义表达或可观察行动表达检索意图；不编造库中人物、书名、台词或已知答案。没有具体问题可省略整个 retrievalHints。若提供 referenceQuestion，retrievalHints 只作同一主问题的召回线索，不能另加独立事实或表达目的；没有合适线索可省略。提示仅供一次有界检索，不是主问题、剧情规划或检索结果。`;
 
 function normalizePlan(value, requirements, { allowLegacy = false, requirePsychology = false, allowReferenceNeeds = false,
-  materialIds, materialSources, materialEvidencePolicyVersion } = {}) {
+  materialIds, materialSources, materialEvidencePolicyVersion, deepReferencePolicyVersion } = {}) {
   if (!string(value.premise) || !string(value.ending)) throw new Error('故事规划缺少明确前提或结局。已完成步骤已保存，可重试规划。');
   if (!Array.isArray(value.chapters) || !value.chapters.length || value.chapters.length > MAX_CHAPTERS) throw new Error('故事规划没有返回有效的章节列表。');
   if (requirements.targetChapterCount && value.chapters.length !== requirements.targetChapterCount) throw new Error('故事规划章数与本次需求不一致，请重试规划。');
@@ -202,7 +206,7 @@ function normalizePlan(value, requirements, { allowLegacy = false, requirePsycho
   return { ...(allowReferenceNeeds ? referenceNeedsField(value.referenceNeeds) : {}), title: string(value.title) || '未命名小说', premise: string(value.premise), ending: string(value.ending), constraints: list(value.constraints), chapters,
     ...(!legacy ? { lengthPolicyVersion: CHAPTER_BUDGET_VERSION } : {}),
     ...(requirePsychology || value.creationPolicyVersion === CREATION_POLICY_VERSION ? normalizePsychology(value, chapters,
-      { materialEvidencePolicyVersion, materialSources }) : {}) };
+      { materialEvidencePolicyVersion, materialSources, deepReferencePolicyVersion }) : {}) };
 }
 
 function normalizeReview(value, chapters, phase, allowReferenceNeeds = false) {
@@ -260,7 +264,10 @@ function controllerTrace(value) {
 }
 
 /** Sequential business stages with optional bounded controller hooks; the host checkpoints artifacts. */
-export async function runWorkflow({ request, model, artifacts = {}, checkpoint = async () => {}, signal, controller, retrieveKnowledge, prepareKnowledge: prepare = prepareKnowledge, followupMode = 'dynamic', existingReviewMode, createStateReviewMode, planningFollowupDecisionMode } = {}) {
+export async function runWorkflow({ request, model, artifacts = {}, checkpoint = async () => {}, signal, controller, retrieveKnowledge, queryDeepReferences, prepareKnowledge: prepare = prepareKnowledge, followupMode = 'dynamic', existingReviewMode, createStateReviewMode, planningFollowupDecisionMode } = {}) {
+  const deepReferenceEnabled = typeof queryDeepReferences === 'function';
+  retrieveKnowledge = resolveDeepReferenceCallback(deepReferenceEnabled
+    ? createDeepReferenceRetrievalAdapter(queryDeepReferences, { path: 'create' }) : undefined, retrieveKnowledge);
   if (existingReviewMode !== undefined && !['review-existing-v1','review-existing-v2','review-existing-v3'].includes(existingReviewMode)) throw new Error('未知已有稿审阅版本。');
   if (createStateReviewMode !== undefined && !['create-state-review-v1','create-state-review-v2','create-state-review-v3'].includes(createStateReviewMode)) throw new Error('未知新建创作状态专审版本。');
   const continuityChainEnabled = ['create-state-review-v2','create-state-review-v3'].includes(createStateReviewMode);
@@ -289,7 +296,8 @@ export async function runWorkflow({ request, model, artifacts = {}, checkpoint =
     throw new Error('事件链协议迁移历史只能由显式 create-state-review-v3 任务继续保留。');
   }
   if (Object.keys(saved).length && !saved.requestSpec) throw new Error('任务进度缺少原始需求绑定，不能安全恢复；请建立新任务。');
-  if (saved.requestSpec && (saved.requestSpec.inputFingerprint !== inputFingerprint || saved.requestSpec.runtimeVersion !== runtimeVersion || saved.requestSpec.reviewPolicyVersion !== reviewPolicyVersion || saved.requestSpec.existingReviewMode !== existingReviewMode || saved.requestSpec.createStateReviewMode !== createStateReviewMode || saved.requestSpec.planningFollowupDecisionMode !== planningFollowupDecisionMode)) {
+  if (saved.requestSpec && (saved.requestSpec.inputFingerprint !== inputFingerprint || saved.requestSpec.runtimeVersion !== runtimeVersion || saved.requestSpec.reviewPolicyVersion !== reviewPolicyVersion || saved.requestSpec.existingReviewMode !== existingReviewMode || saved.requestSpec.createStateReviewMode !== createStateReviewMode || saved.requestSpec.planningFollowupDecisionMode !== planningFollowupDecisionMode
+    || saved.requestSpec.deepReferencePolicyVersion !== (deepReferenceEnabled ? DEEP_REFERENCE_INTEGRATION_VERSION : undefined))) {
     throw new Error('任务输入或执行版本已变化，请建立新任务；不能复用另一份需求的进度。');
   }
   const step = async (key, execute) => {
@@ -365,14 +373,20 @@ export async function runWorkflow({ request, model, artifacts = {}, checkpoint =
     if (planningFollowupDecisionMode !== undefined && (input.kind !== 'create' || followupMode === 'fixed_materials' || typeof retrieveKnowledge !== 'function'))
       throw new Error('规划补查材料决定模式仅支持启用动态补查的新建任务。');
     return { runtimeVersion, inputFingerprint, requirements, rules, ...(reviewExisting ? { existingReviewMode } : {}), ...(createStateReview ? { createStateReviewMode } : {}), ...(planningFollowupDecisionMode !== undefined ? { planningFollowupDecisionMode } : {}), boundedRevisionPolicyVersion: BOUNDED_REVISION_POLICY, reviewPolicyVersion, followupPolicyVersion: FOLLOWUP_POLICY, authorMaterialPolicyVersion: AUTHOR_MATERIAL_POLICY, retrievalFailurePolicyVersion: 'stop-on-retrieval-failure-1',
-      ...(input.kind === 'create' && requirements.referenceIntent?.purpose === 'expression'
+      ...(input.kind === 'create' && (requirements.referenceIntent?.purpose === 'expression' || deepReferenceEnabled)
         ? { materialEvidencePolicyVersion: MATERIAL_USE_EVIDENCE_POLICY } : {}),
+      ...(input.kind === 'create' && deepReferenceEnabled ? { deepReferencePolicyVersion: DEEP_REFERENCE_INTEGRATION_VERSION,
+        deepReferenceDecisionPolicyVersion: DEEP_REFERENCE_DECISION_POLICY } : {}),
       followupPolicy: { mode: followupMode === 'fixed_materials' ? 'disabled' : typeof retrieveKnowledge === 'function' ? 'dynamic' : 'disabled',
         reason: followupMode === 'fixed_materials' ? 'ab_fixed_materials' : typeof retrieveKnowledge === 'function' ? 'new_task' : 'not_connected' } };
   });
   const { requirements, rules } = requestSpec;
   if (requestSpec.materialEvidencePolicyVersion !== undefined && requestSpec.materialEvidencePolicyVersion !== MATERIAL_USE_EVIDENCE_POLICY)
     throw new Error('未知材料使用证据策略版本，不能改变旧任务规划行为。');
+  if (requestSpec.deepReferencePolicyVersion !== undefined && requestSpec.deepReferencePolicyVersion !== DEEP_REFERENCE_INTEGRATION_VERSION)
+    throw new Error('未知深层参考集成版本，不能改变旧任务规划行为。');
+  if (requestSpec.deepReferenceDecisionPolicyVersion !== undefined && requestSpec.deepReferenceDecisionPolicyVersion !== DEEP_REFERENCE_DECISION_POLICY)
+    throw new Error('未知深层参考决定版本，不能改变旧任务规划行为。');
   if (requestSpec.planningFollowupDecisionMode !== undefined && requestSpec.planningFollowupDecisionMode !== PLANNING_FOLLOWUP_DECISION_POLICY)
     throw new Error('未知规划补查材料决定策略版本，不能改变旧任务执行协议。');
   const planningFollowupDecisions = requestSpec.planningFollowupDecisionMode === PLANNING_FOLLOWUP_DECISION_POLICY
@@ -403,7 +417,8 @@ export async function runWorkflow({ request, model, artifacts = {}, checkpoint =
       return normalizePlan(value, targetRequirements, options);
     const materialSources = followup.activeKnowledge().materials;
     return normalizePlan(value, targetRequirements, { ...options, materialIds: materialSources.map(item => item.id),
-      materialSources, materialEvidencePolicyVersion: MATERIAL_USE_EVIDENCE_POLICY });
+      materialSources, materialEvidencePolicyVersion: MATERIAL_USE_EVIDENCE_POLICY,
+      ...(requestSpec.deepReferenceDecisionPolicyVersion ? { deepReferencePolicyVersion: requestSpec.deepReferenceDecisionPolicyVersion } : {}) });
   };
   const authorPolicyEnabled = requestSpec.authorMaterialPolicyVersion === AUTHOR_MATERIAL_POLICY;
   let authorPlan = saved.agentPlan?.plan ?? saved.plan;
@@ -663,12 +678,32 @@ export async function runWorkflow({ request, model, artifacts = {}, checkpoint =
     }
   }
   await followup.finishReview(initialReview?.referenceNeeds, { chapters, initialChapters: initialReviewChapters, issues: initialReview?.issues });
+  let finalTextMaterialEvidence;
+  let deepReference;
+  if (requestSpec.deepReferencePolicyVersion === DEEP_REFERENCE_INTEGRATION_VERSION) {
+    const materialDecisions = authorPlan?.materialDecisions ?? [];
+    const activeMaterials = followup.activeKnowledge().materials;
+    finalTextMaterialEvidence = await step('deepReference:finalTextEvidence', async () => {
+      const evidenceInput = createFinalTextEvidenceInput({ chapters, materialDecisions, materials: activeMaterials });
+      if (evidenceInput.adopted.length === 0) return emptyCreateFinalTextEvidence({ chapters, materialDecisions });
+      abortIfNeeded(signal);
+      const raw = await model.complete({ stage: 'material-evidence', system: `${BASE_SYSTEM}\n\n你是最终正文用材定位员。严格按 responseContract 返回 JSON。逐项核对候选正文中的精确逐字引文；located 的 start 必须返回 null，由程序仅在指定章节引文唯一出现时计算 JavaScript UTF-16 位置。规划采用、材料相似或作者意图都不能证明正文落实；找不到唯一准确引文时返回 not_proven 和具体原因。不得计算位置、改写引文、用方案文字冒充正文或宣称文学效果。`,
+        user: json(evidenceInput), maxTokens: 6000, signal });
+      abortIfNeeded(signal);
+      if (!string(raw)) throw new Error('material-evidence 返回空内容，已保存的步骤可继续使用。');
+      return buildCreateFinalTextEvidence(parseObject(raw, '最终正文用材证据'), evidenceInput, materialDecisions);
+    });
+    deepReference = buildCreateDeepReferenceBundle({ retrieval: knowledge.retrieval, materials: activeMaterials,
+      materialDecisions, finalTextEvidence: finalTextMaterialEvidence, chapters });
+  }
   const checks = await step('checks', () => runChecks({ chapters, requirements }));
   const qualityCheckIncomplete = Boolean(review.continuityChainFailure || review.continuityChainFailureHistory?.length);
   const result = await step('result', async () => ({
     title, chapters, review, reviewAdjudication, adjudicationHistory, checks,
     requestConformance: checks.requestConformance, knowledge,
     ...(followup.enabled ? { activeKnowledge: followup.activeKnowledge(), followupRetrieval: followup.summary() } : {}),
+    ...(finalTextMaterialEvidence ? { finalTextMaterialEvidence } : {}),
+    ...(deepReference ? { deepReference } : {}),
     warnings: [
       ...requirements.assumptions,
       ...(knowledge.retrieval && knowledge.retrieval.status !== 'matched' ? knowledge.retrieval.limits : []),

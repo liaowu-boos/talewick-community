@@ -1,34 +1,34 @@
 # Public edition verification / 公开版验证
 
-Date: 2026-10-19 (UTC+08:00). Environment: macOS arm64, Node.js 24.14.0, Python 3.14.2. CI uses Node.js 24 and Python 3.10.
+Date: 2026-10-29 (UTC+08:00). Environment: macOS arm64, Node.js 24.14.0, Python 3.14.2. CI uses Node.js 24 and Python 3.10.
 
 | Check | Result |
 | --- | --- |
 | Clean dependency install from the public lockfile | Passed |
 | TypeScript + Vite production build | Passed; existing bundle-size warning remains |
-| Runtime, HTTP, creation, data, and validation tests | 1225 passed; 0 failed, cancelled, or skipped |
-| UI state and complete independent-review view tests | 118 passed |
+| Runtime, HTTP, creation, data, and validation tests | 1383 passed; 0 failed, cancelled, or skipped |
+| UI state and complete independent-review view tests | 123 passed |
 | Python review protocol tests | 53 passed |
 | Independent-review HTTP + Postman simulation | Two single-reading stages and seven no-change comparison stages passed; idempotency and conflicting submission checked |
 | Empty-library, no-key first start | Passed; sources and task lists empty, review capability available |
 | Fresh browser at 1440px and 390px | Passed; no horizontal overflow, page errors, failed resources, or external requests |
 | Public file boundaries and common credential patterns | Passed |
 
-本次同步跨章事实抽取与裁定、确认问题修订与候选复查、盲评严重问题归属，以及 catalog 观察和候选分析批次。公开回归使用合成正反例和模拟模型响应，覆盖正常交接、不同轮次、歧义、引用边界恢复、失败保护及版本绑定。Postman 模拟通过实际 HTTP 客户端验证两次初读和七阶段无改动比较，九次请求均成功；未调用真实提供商。
+本次同步写作目标与采用证据、候选复查与本地稿件找回、聚焦阅读协议、段落引用、失败恢复和本地文件可用性保护。公开回归全部使用合成数据；新增流程覆盖身份冲突、版本不一致、恢复边界及失败保护。原生 DeepSeek 默认低推理设置通过本地真实 HTTP 和 SDK 序列化验证，阶段特例保持不变。
 
-This sync adds cross-chapter fact extraction and adjudication, confirmed-issue revision and candidate rechecking, blind-review harm attribution, catalog observations, and analysis candidate batches. Synthetic regressions cover normal handovers, distinct occurrences, ambiguity, quote-boundary recovery, failure preservation, and version binding. The real HTTP client completed two reading stages and seven no-change comparison stages against a local Postman simulation, with nine successful requests and no live-provider calls.
+This sync adds writing goals and adoption evidence, candidate rechecking and local manuscript recovery, focused review, paragraph references, failure recovery, and local-file availability guards. Public regressions use synthetic data, including identity conflicts, stale versions, recovery boundaries, and failure preservation. Local HTTP and SDK serialization tests verify the native DeepSeek low-reasoning default and stage-specific exceptions.
 
-开发验收在一篇私有稿件中实际修复了三类事实问题，两路反序 AI 盲评倾向候选。该结果只支持本稿事实一致性改善，不证明通用检出率、文学质量全面通过或真人读者效果。抽取格式失败、待核对项和旧任务失败历史均保留。Full15 仍限于 C01–C06；独立候选复查完整接回采纳流程仍有后续工作，不自动采纳。
+Postman 本地模拟完成两次初读和七阶段无改动比较，九次 HTTP 请求均成功；另验证重复提交和身份冲突。未调用真实或付费模型。浏览器检查覆盖空库、无密钥首次启动、1440/390 宽度布局，无页面错误、失败资源、外部请求或横向溢出。新工作流通过运行时、HTTP 和界面状态测试验证，本轮未进行完整浏览器点击式整稿修订验收。
 
-Development acceptance repaired three classes of factual issue in one private manuscript; both reversed-order AI readers preferred the candidate. This supports that manuscript's factual consistency, not general detection accuracy, comprehensive literary acceptance, or human-reader effects. Format failures, unresolved findings, and historical task failures remain visible. Full15 still covers only C01–C06; fully linking independent candidate rechecks into adoption remains follow-up work. Adoption is not automatic.
+The local Postman simulation completed two reading stages and seven no-change comparison stages over nine successful HTTP requests, plus submission deduplication and conflict checks. No live or paid models were called. Browser checks cover an empty library, unconfigured first start, and 1440/390 layouts without page errors, failed resources, external requests, or horizontal overflow. Runtime, HTTP, and UI-state tests cover new workflows; this run does not claim full browser-click manuscript-revision acceptance.
 
-公开版本未复制私有原文、99份分析候选、历史运行数据或真实模型回包。跨章固定正反例为合成文本，四项私有任务回放与五项捕获响应回放未纳入公开测试；其他合成回归继续运行。六篇既有阅读示例保持原样。内置资料为空，显式 CLI 配置、公开规则、旧任务兼容及图标版本适配继续保留。修复一处测试清理顺序，等待任务持久化与服务关闭后才删除临时目录。
+本次以已交付 r11 为来源，未纳入后续尚未验收完成的材料场景候选版。开发验收未达到两篇稿件的全部写作目标；合成测试不能证明文学质量、通用检出率或真人读者效果。Full15 仍限于 C01–C06，聚焦六项阅读协议是另一个可选入口。采纳仍由作者确认。
 
-The public edition excludes private texts, analysis candidates, historical runs, and captured model responses. Cross-chapter fixtures are synthetic; four private-task replay tests and five captured-response replay tests are excluded from public test counts. Other synthetic regressions remain enabled. Six existing reading examples are unchanged. Empty built-in materials, explicit CLI configuration, public rules, legacy-task compatibility, and icon-version adaptations remain. One test cleanup race was fixed by closing and draining the task service before removing its temporary files.
+The source is the delivered r11 snapshot; the later, incompletely accepted material-scene candidate is excluded. Development acceptance did not meet all writing goals for either manuscript. Synthetic tests do not establish literary quality, general detection accuracy, or human-reader effects. Full15 remains C01–C06; the focused six-dimension protocol is a separate optional entry. Adoption remains author-controlled.
 
-浏览器本轮检查首次启动与 1440/390 宽度布局；新跨章和盲评交互通过运行时、HTTP 和界面状态测试覆盖，未声称完成浏览器点击式全文修订验收。固定规模的 remaining99 与 catalog probe 为实验工具，仍要求指定来源规模和用户自己的路径，不附带数据，也不保证任意库一键运行。
+未复制私有原文、分析样本、真实任务或模型回包。依赖这些数据的回放测试未纳入公开测试数；写作目标和展示测试改用合成输入。六篇既有阅读示例、空内置材料库、公共规则与旧任务兼容保留。深层参考接口需要用户自己的已验证安装；remaining99 等实验工具仍有明确的规模假设，不是任意资料库的一键导入器。
 
-Browser checks cover first start and 1440/390 layouts. Runtime, HTTP, and UI-state tests cover new cross-chapter and blind-review behavior; this is not a claimed full browser-click manuscript-revision acceptance run. Fixed-size remaining99 and catalog probe tools retain explicit corpus-size assumptions and require user-supplied paths; they ship no data and are not general one-click importers.
+Private texts, analysis samples, historical tasks, and captured responses are excluded. Replay tests depending on those files are outside the public counts; writing-goal and display tests use synthetic inputs. The six approved reading examples, empty built-in library, public rules, and legacy-task compatibility remain. Deep references require a verified user-owned installation; experimental remaining99 tools retain corpus-size assumptions and are not universal one-click importers.
 
 AGPL-3.0-only and the Apache-2.0 Remix Icon 4.6.0 pin remain unchanged. See [third-party notices](THIRD_PARTY_NOTICES.md). [GitHub Actions](https://github.com/liaowu-boos/talewick-community/actions) verifies pushed commits independently.
 

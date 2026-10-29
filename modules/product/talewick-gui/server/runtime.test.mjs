@@ -308,7 +308,7 @@ test('compatible and older model business calls keep their existing output limit
     });
     for (const maxTokens of [2500, 6500, 20000]) await model.complete({ system: '', user: '', maxTokens });
     assert.deepEqual(requests.map(body => body.max_tokens), [2500, 6500, 16000]);
-    assert.ok(requests.every(body => body.thinking === undefined && body.reasoning_effort === undefined));
+    assert.ok(requests.every(body => body.thinking === undefined && body.reasoning_effort === (config.agentProvider === 'deepseek' ? 'low' : undefined)));
   }
 });
 

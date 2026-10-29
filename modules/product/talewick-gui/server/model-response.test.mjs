@@ -83,7 +83,7 @@ test('native business call preserves JSON mode, token budget, stream and reasoni
   assert.equal(body.max_tokens, 32768);
   assert.deepEqual(body.response_format, { type: 'json_object' });
   assert.equal(body.thinking, undefined);
-  assert.equal(body.reasoning_effort, undefined);
+  assert.equal(body.reasoning_effort, 'low');
 });
 
 test('compatible endpoints and older DeepSeek models remain non-streaming', async () => {

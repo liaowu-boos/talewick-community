@@ -3,6 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
+import { buildIndependentReviewRequest } from './independent-review-handoff.mjs';
+import { validateWritingGoals, WRITING_GOAL_DATA_OPTIONS } from './writing-goals.mjs';
 import { runWholeManuscriptQualityRevision, assertWholeQualityResult, createWholeQualityRequestSpec,
   createWholeQualityDraftGuidance, inspectStoredWholeQualityReadingFailure,
   runCrossChapterAwareWholeManuscriptQualityRevision } from './whole-manuscript-quality.mjs';
@@ -64,14 +66,19 @@ const stableFingerprint=value=>hash(JSON.stringify(canonical(value)));
 const matched=async query=>{const content='【原文参考；不作为已发布分析】\n压力之后，人物接起电话，把下一项工作记到自己名下。',material={id:'raw-1',title:'动作承接窗口',kind:'retrieved',use:'raw_reference',content,sha256:hash(content),references:[{sourceId:'source-a',sourceSha256:'a'.repeat(64),textVersion:'text-v1',analysisVersion:'analysis-v1',unitIds:[],lineStart:8,lineEnd:9}],selectionReason:'离线固定桩，仅验证合同。',limitations:['适用性仍须由方案判断。']};return{contractVersion:'v04-contract-1',packetId:'packet-matched',query,status:'matched',materials:[material],candidates:[{id:'candidate-a',sourceId:'source-a',reason:'固定桩候选'}],limits:['命中不等于采用。'],usedChars:content.length};};
 
 test('all five model stages expose self-contained types, enums, constraints, legal empty shapes, and repair keeps the full contract',async()=>{
-  const base=modelFor(),contracts=new Map();let readingContract,repairChecked=false,planEligible;
+  const base=modelFor(),contracts=new Map(),systems=new Map();let readingContract,repairChecked=false,planEligible;
   const model={complete:async args=>{const envelope=JSON.parse(args.user),repair=args.stage.endsWith(':format-repair'),input=repair?envelope.originalInput:envelope,stage=args.stage.replace(':format-repair','');
     assert.equal(input.responseContract.additionalProperties,false);assert.equal(input.responseContract.binding.type,'host_binding');assert(input.responseContract.properties);
     if(repair){assert.deepEqual(input.responseContract,readingContract);assert.match(args.system,/responseContract.*完整且权威/);repairChecked=true;}
-    else {contracts.set(stage,input.responseContract);if(stage==='whole-quality:reading')readingContract=input.responseContract;if(stage==='whole-quality:plan')planEligible=input.eligibleIssueIds;}
+    else {contracts.set(stage,input.responseContract);systems.set(stage,args.system);if(stage==='whole-quality:reading')readingContract=input.responseContract;if(stage==='whole-quality:plan')planEligible=input.eligibleIssueIds;}
     if(args.stage==='whole-quality:reading')return '{}';return base.complete(args);}};
   await runWholeManuscriptQualityRevision({request:request(),model,retrieveKnowledge:uncovered});
   assert.equal(repairChecked,true);assert.deepEqual([...contracts.keys()],['whole-quality:reading','whole-quality:plan','whole-quality:feasibility','whole-quality:revision','whole-quality:reread']);
+  for(const stage of ['whole-quality:reading','whole-quality:plan','whole-quality:revision','whole-quality:reread']){
+    assert.match(systems.get(stage),/相同犹豫再次出现却没有新信息/);assert.match(systems.get(stage),/心理转折缺少此前经验/);
+    assert.match(systems.get(stage),/技术或流程说明挤压现场行动/);assert.match(systems.get(stage),/不得为覆盖检查项强制诊断/);
+    assert.match(systems.get(stage),/物件回环、歧义、克制、停顿和留白/);
+  }
 
   readingContract=contracts.get('whole-quality:reading');
   assert.deepEqual(readingContract.issueSchema.properties.claimType.enum,['textual_conflict','reader_effect_hypothesis','editorial_preference']);
@@ -192,6 +199,7 @@ test('a single format repair can use the location to restore the omitted source 
   assert.equal(evidence.start,actualRequest.chapters[2].body.indexOf('安禾没动。她等。'));
 
   const legacy=structuredClone(j.artifacts),legacyRepairInput=structuredClone(legacy['whole-quality:reading:repair-input'].repairInput);
+  legacyRepairInput.schemaVersion='whole-quality-format-repair-1';delete legacyRepairInput.literalEvidenceFeedback;
   delete legacyRepairInput.errorLocation;
   const legacyRepairInputHash=stableFingerprint(legacyRepairInput);
   legacy['whole-quality:reading:repair-input']={repairInputHash:legacyRepairInputHash,repairInput:legacyRepairInput};
@@ -279,7 +287,8 @@ test('infeasible action plan is blocked before revision and original stays byte-
   assert.equal(result.wholeRevision.reread.changeChecks[0].executionStatus,'blocked');assert.equal(result.wholeRevision.adoption.atomicGroups[0].recommendation,'not_recommended');assert.deepEqual(result.wholeRevision.quality.materialUse.notConnectedIssueIds,['i-1']);});
 
 test('host rejects a feasibility response that calls unsupported noun-only targets feasible',async()=>{const model=modelFor({blocked:true,lie:true});await assert.rejects(runWholeManuscriptQualityRevision({request:request(),model}),{code:'WHOLE_QUALITY_FORMAT_FAILED'});
-  assert.deepEqual(model.calls.map(c=>c.stage),['whole-quality:reading','whole-quality:plan','whole-quality:feasibility','whole-quality:feasibility:format-repair']);});
+  assert.deepEqual(model.calls.map(c=>c.stage),['whole-quality:reading','whole-quality:plan','whole-quality:feasibility','whole-quality:feasibility:format-repair']);
+  const repairInput=JSON.parse(model.calls.at(-1).user).repairInput;assert.equal(repairInput.schemaVersion,'whole-quality-format-repair-1');assert.equal(repairInput.literalEvidenceFeedback,undefined);});
 
 test('no major safe issue preserves original, skips retrieval feasibility and revision, and records honest not-connected state',async()=>{const model=modelFor({preserve:true}),result=await runWholeManuscriptQualityRevision({request:request(),model});
   assert.deepEqual(model.calls.map(c=>c.stage),['whole-quality:reading','whole-quality:reread']);assert.equal(result.revisionApplied,false);assert.deepEqual(result.chapters,chapters);
@@ -323,6 +332,32 @@ test('new draft guidance exposes the same scene-change and failure-criterion met
   assert.equal(guidance.schemaVersion,'whole-quality-draft-guidance-1');assert.match(guidance.guidanceSha256,/^[0-9a-f]{64}$/);assert.match(guidance.boundary,/不证明/);});
 
 test('request spec binds v2 source, objective and base revision',()=>{const spec=createWholeQualityRequestSpec(request());assert.equal(spec.revisionMode,'whole-manuscript-v2');assert.equal(spec.sourceBaseRevision,'base-1');assert.match(spec.inputFingerprint,/^[0-9a-f]{64}$/);});
+
+test('whole-quality checkpoint binds deep-reference enabled versus disabled policy',async()=>{
+  const legacy=createWholeQualityRequestSpec(request()),enhanced=createWholeQualityRequestSpec(request(),{deepReferenceEnabled:true});
+  assert.equal(legacy.deepReferencePolicyVersion,undefined);assert.equal(enhanced.deepReferencePolicyVersion,'creation-deep-reference-integration-1');
+  assert.notEqual(legacy.inputFingerprint,enhanced.inputFingerprint);let modelCalls=0,deepCalls=0;
+  const model={complete(){modelCalls+=1;throw Error('forbidden');}},deep=async()=>{deepCalls+=1;throw Error('forbidden');};
+  await assert.rejects(runWholeManuscriptQualityRevision({request:request(),model,queryDeepReferences:deep,artifacts:{requestSpec:legacy}}),{code:'WHOLE_QUALITY_CHECKPOINT_MISMATCH'});
+  await assert.rejects(runWholeManuscriptQualityRevision({request:request(),model,artifacts:{requestSpec:enhanced}}),{code:'WHOLE_QUALITY_CHECKPOINT_MISMATCH'});
+  assert.equal(modelCalls,0);assert.equal(deepCalls,0);
+});
+
+test('enhanced final result keeps the rebuilt deep-reference bundle through the full gate and zero-call resume',async()=>{
+  const j=journal(),result=await runWholeManuscriptQualityRevision({request:request(),model:modelFor(),retrieveKnowledge:uncovered,
+    queryDeepReferences:async()=>{throw Error('offline unavailable fixture');},checkpoint:j.checkpoint});
+  assert.equal(result.wholeRevision.quality.deepReference.callbackStatus,'unavailable');
+  const before=structuredClone(result);
+  assert.deepEqual(assertWholeQualityResult(result,j.artifacts.requestSpec),before);
+  assert.deepEqual(result,before);
+  let calls=0,writes=0;
+  const forbidden=async()=>{calls++;throw Error('unexpected external call');};
+  const resumed=await runWholeManuscriptQualityRevision({request:request(),artifacts:j.artifacts,model:{complete:forbidden},
+    queryDeepReferences:forbidden,retrieveKnowledge:forbidden,checkpoint:async()=>{writes++;throw Error('unexpected checkpoint write');}});
+  assert.deepEqual(resumed,result);assert.equal(calls,0);assert.equal(writes,0);
+  const forged=structuredClone(result);forged.wholeRevision.quality.deepReference.callbackStatus='matched';
+  assert.throws(()=>assertWholeQualityResult(forged,j.artifacts.requestSpec),{code:'WHOLE_QUALITY_RESULT'});
+});
 
 function crossReviewResult(chapterList,{confirmed=true}={}){const first=chapterList[0],second=chapterList[1],left='她说先把旧账分清，再谈谁留下。',right=confirmed?'林遥说自己只是回来帮忙，手却停在欠款页上。':'林遥接起电话，说明自己前一天已核过欠款，再把余下三家记到名下。';return{
   schemaVersion:'cross-chapter-review-result-1',modelPolicy:'whole-manuscript-quality-json-1',manuscriptSha256:'a'.repeat(64),checkedChapterIds:chapterList.map(item=>item.id),chapterCoverage:[],entities:[],events:[],claims:[],comparisonGroups:[],
@@ -522,4 +557,241 @@ test('versioned factual reading admits one-scene conflicting positions but keeps
     assert.equal(reviewed,variant.ok);assert.equal(modelCalls,variant.ok?1:2);
     assert.equal(Boolean(j.artifacts['whole-quality:reading:result']),variant.ok);
   }
+});
+
+// Synthetic DATA evidence is used only to exercise host adoption behavior.
+const goalSha = value => createHash('sha256').update(value).digest('hex');
+const sourceSha = goalSha('frozen source bytes');
+const candidateSha = goalSha('candidate');
+const packetSha = goalSha('packet');
+const reportSha = goalSha('review');
+const quote = '她看到票根后，没有立刻原谅，只把旧约定重新抄了一遍。';
+const afterQuote = '抄完以后，她仍把空白留给对方自己说明。';
+const referenceId = `deepref:source-1:${candidateSha.slice(0,16)}:${reportSha.slice(0,16)}`;
+
+function goalDataResponse(request, results = [goalDataResult()]) {
+  const normalizedRequest = { problem: { ...structuredClone(request.problem),
+      searchTerms: [...new Set((request.problem.searchTerms ?? []).map(term => String(term).trim()).filter(Boolean))],
+      requiredTermGroups: (request.problem.requiredTermGroups ?? []).map(group => [...new Set(group)]) },
+    dimensions: structuredClone(request.dimensions), sourceIds: request.sourceIds ?? null, limit: request.limit,
+    maxFunctionsPerResult: request.maxFunctionsPerResult, maxEvidenceRefsPerResult: request.maxEvidenceRefsPerResult };
+  const installId = 'combined-99-v1-test';
+  const queryId = `deepref-query-${goalSha(`${JSON.stringify({ installId, request: normalizedRequest }, null, 2)}\n`)}`;
+  return { schemaVersion: 'analysis99-problem-query-2', queryId,
+    installId, request: normalizedRequest, status: results.length ? 'covered' : 'uncovered', resultCount: results.length,
+    limits: { maxResults: 8 }, boundary: 'retrieval is not use', retrievalIsUse: false,
+    requiresExplicitAdoption: true, results };
+}
+
+function goalDataResult() {
+  return { referenceId, source: { sourceId: 'source-1', sourceSha256: sourceSha, sourceTextSha256: goalSha('text'),
+      textVersion: 'text-v1', title: '证据源' },
+    analysis: { analysisId: 'analysis-1', analysisVersion: 'deep-v1', candidateSha256: candidateSha,
+      packetSha256: packetSha, candidateStatus: 'candidate_unreviewed', approved: false, checked: false, active: false },
+    semanticReview: { reportPath: 'reviews/source-1.json', reportSha256: reportSha, verdict: 'retain_with_caveats',
+      caveats: ['只是一项证据约束假说'], blockingDefects: [], approvalGranted: false, activeProductionChanged: false },
+    match: { matchedTerms: ['选择','代价'], matchedTermCount: 2, requiredMatchedTermCount: 2, lexicalScore: 2,
+      semanticSimilarityClaimed: false },
+    borrowableWritingFunctions: [{ functionId: 'psychology:before:after', dimension: 'psychologicalChangeDrivers',
+      status: 'evidence_bound_hypothesis', observablePattern: '看见物证后先做有限行动',
+      borrowableFunction: '用有限选择而不是彻底改口表现心理变化', alternatives: ['也可能只是暂缓冲突'],
+      limitation: '不能证明原谅', evidenceIds: ['ev-1','ev-2'], unitIds: ['unit-1','unit-2'] }],
+    exactReferences: [{ evidenceId: 'ev-1', unitId: 'unit-1', locator: { lineStart: 7, lineEnd: 7, charStart: 10, charEnd: 38 },
+      quoteSha256: goalSha(quote), textVersion: 'text-v1', quote, sourceId: 'source-1', sourceSha256: sourceSha,
+      sourceTextSha256: goalSha('text') }, { evidenceId: 'ev-2', unitId: 'unit-2', locator: { lineStart: 9, lineEnd: 9, charStart: 40, charEnd: 61 },
+      quoteSha256: goalSha(afterQuote), textVersion: 'text-v1', quote: afterQuote, sourceId: 'source-1', sourceSha256: sourceSha,
+      sourceTextSha256: goalSha('text') }],
+    limits: { visibility: '只见当前证据窗', statements: ['不可迁入人物与情节'] }, retrievalIsUse: false,
+    requiresExplicitAdoption: true };
+}
+
+function goalRequest() {
+  return { ...request(), writingGoals: { schemaVersion: 'creation-writing-goals-1', goals: [{
+    id: 'explicit-responsibility', dimension: 'choice', chapterIds: ['ch-2'],
+    problem: { problemId: 'explicit-responsibility', statement: '以有限的具体分工选择表现承担，保留不和解的结尾。',
+      searchTerms: ['选择','代价'], requiredTermGroups: [['选择'],['代价']], context: { boundaries: ['不得强迫原谅。'] } },
+    preservationBoundaries: ['保留原有关系分歧和克制结尾；不复制来源人物、情节或原句。'],
+  }] } };
+}
+
+function goalModel({ preserve = false, fit = 'direct_fit', events = [], mutatePlan, missingText = false } = {}) {
+  return { complete: async args => {
+    events.push(args.stage);
+    // Any unexpected format retry must expose the primary error, not conceal it with a valid second fixture.
+    if (args.stage.endsWith(':format-repair')) throw Error(JSON.parse(args.user).repairInput.error);
+    const u = JSON.parse(args.user), goalIds = u.requestSpec.writingGoals.goals.map(goal => goal.id);
+    if (args.stage === 'whole-quality:reading') return readingResponse(u, { preserve: true });
+    if (args.stage === 'whole-quality:applicability') {
+      assert.deepEqual(u.issues, []);
+      const response = JSON.parse(applicabilityResponse(u, { fit }));
+      if (fit !== 'direct_fit') response.noSuitableReasons = u.writingGoals.map(goal => ({ issueId: goal.querySubjectId,
+        reason: '来源的情节依赖不能迁入当前冻结目标，保留拒用。' }));
+      return JSON.stringify(response);
+    }
+    if (args.stage === 'whole-quality:plan') {
+      assert.deepEqual(u.eligibleIssueIds, []); assert.deepEqual(u.reading.issues, []);
+      assert.deepEqual(u.eligibleGoalIds, goalIds);
+      const response = JSON.parse(planResponse(u, { preserve, oneScene: true }));
+      response.goalDispositions = goalIds.map(goalId => ({ goalId, decision: preserve ? 'preserve' : 'attempt',
+        planItemIds: preserve ? [] : ['p-1'], reason: preserve ? '原稿已足够；来源不适配，保留目标不强制修改。' : '只尝试可见选择，不要求关系和解。' }));
+      if (preserve) response.materialDecisions = u.retrieval.supplies.map(s => ({ supplyId: s.supplyId,
+        materialId: s.materialId, issueId: s.issueId, goalId: s.goalId, decision: 'not_used', planItemIds: [], evidenceIds: [],
+        reason: '不适用或无安全改法，明确拒用。', applicabilityBoundary: '不复制情节和结局。', limitations: ['检索不是适用或采用证明。'] }));
+      else {
+        response.items[0].issueIds = []; response.items[0].goalIds = goalIds;
+        response.materialDecisions.forEach(d => { d.goalId = u.retrieval.supplies.find(s => s.supplyId === d.supplyId).goalId; });
+      }
+      mutatePlan?.(response, u); return JSON.stringify(response);
+    }
+    if (args.stage === 'whole-quality:feasibility') return feasibilityResponse(u);
+    if (args.stage === 'whole-quality:revision') return candidateResponse(u);
+    if (args.stage === 'whole-quality:reread') {
+      const response = JSON.parse(rereadResponse(u, { status: preserve ? 'blocked' : 'applied' }));
+      if (u.confirmedConflicts !== undefined) response.crossChapterChecks = [];
+      return JSON.stringify(response);
+    }
+    if (args.stage === 'whole-quality:material-evidence') {
+      const response = JSON.parse(finalTextResponse(u));
+      if (missingText) for (const entry of response.recordsByIssue) for (const row of entry.records) {
+        row.status = 'not_located'; row.findings = []; row.reason = '无法证明该来源功能在最终正文中落实。';
+      }
+      return JSON.stringify(response);
+    }
+    throw Error(`unexpected goal stage ${args.stage}`);
+  } };
+}
+
+test('explicit goal with zero diagnosed issues queries exact DATA problem before planning and binds real final spans', async () => {
+  const req = goalRequest(), events = [], j = journal(); let captured, legacyCalls = 0;
+  const result = await runWholeManuscriptQualityRevision({ request: req, model: goalModel({ events }), checkpoint: j.checkpoint,
+    retrieveKnowledge: async query => { legacyCalls++; return matched(query); },
+    queryDeepReferences: async query => { captured = structuredClone(query); events.push('goal-query'); return goalDataResponse(query); } });
+  assert.deepEqual(captured.problem, req.writingGoals.goals[0].problem);
+  assert.deepEqual(captured.dimensions, WRITING_GOAL_DATA_OPTIONS.dimensions);
+  assert.equal(captured.maxFunctionsPerResult, 3); assert.equal(captured.maxEvidenceRefsPerResult, 10); assert.equal(legacyCalls, 1);
+  assert(events.indexOf('goal-query') < events.indexOf('whole-quality:applicability'));
+  assert(events.indexOf('whole-quality:applicability') < events.indexOf('whole-quality:plan'));
+  const q = result.wholeRevision.quality;
+  assert.deepEqual(q.independentReading.issues, []); assert.deepEqual(q.retrieval.byIssue, []);
+  assert.equal(q.retrieval.byGoal.length, 1); assert.equal(q.retrieval.supplies.length, 2);
+  assert(q.retrieval.supplies.every(s => s.origin === 'writing_goal' && s.goalId === req.writingGoals.goals[0].id));
+  assert.equal(q.deepReference.candidates.length, 1);
+  assert.deepEqual(result.wholeRevision.plan.items[0].issueIds, []);
+  assert.deepEqual(result.wholeRevision.plan.items[0].goalIds, ['explicit-responsibility']);
+  assert.equal(q.writingGoals.goals[0].disposition.decision, 'attempt');
+  for (const material of q.writingGoals.goals[0].materials) {
+    assert.equal(material.status, 'used_exact_text_located');
+    assert(material.manuscriptEvidence.length > 0);
+    for (const evidence of material.manuscriptEvidence) {
+      const chapter = result.chapters.find(ch => ch.id === evidence.chapterId);
+      assert.equal(chapter.body.slice(evidence.start, evidence.start + evidence.quote.length), evidence.quote);
+    }
+  }
+  assert.deepEqual(assertWholeQualityResult(result, result.wholeRevision.requestSpec), result);
+  let forbiddenCalls = 0;
+  const forbidden = () => { forbiddenCalls++; throw Error('resume must not call or write'); };
+  const replay = await runWholeManuscriptQualityRevision({ request: req, model: { complete: forbidden }, retrieveKnowledge: forbidden,
+    queryDeepReferences: forbidden, artifacts: j.artifacts, checkpoint: forbidden });
+  assert.equal(JSON.stringify(replay), JSON.stringify(result)); assert.equal(forbiddenCalls, 0);
+  const handoff = buildIndependentReviewRequest({ caseId: 'goal-bound-handoff', request: req, result });
+  assert.equal(handoff.request.goals[0].claimType, 'editorial_hypothesis');
+  assert.equal(handoff.provenance.writingGoalsSha256, stableFingerprint(req.writingGoals));
+  assert(handoff.request.goals[0].sourceEvidence.length > 0);
+  assert.equal(Object.hasOwn(handoff.request, 'writingGoals'), false);
+});
+
+test('explicit goals may decline every real supply and preserve with zero fabricated diagnoses or final-text claims', async () => {
+  const events = [], result = await runWholeManuscriptQualityRevision({ request: goalRequest(), model: goalModel({ preserve: true, fit: 'inapplicable', events }),
+    queryDeepReferences: async query => goalDataResponse(query) });
+  assert.equal(result.wholeRevision.status, 'no_change'); assert.deepEqual(result.chapters, chapters);
+  assert.deepEqual(result.wholeRevision.quality.independentReading.issues, []);
+  assert(events.includes('whole-quality:plan')); assert(!events.includes('whole-quality:revision'));
+  const goal = result.wholeRevision.quality.writingGoals.goals[0];
+  assert.equal(goal.disposition.decision, 'preserve'); assert.equal(goal.materials[0].fit, 'inapplicable');
+  assert.equal(goal.materials[0].status, 'unused'); assert.deepEqual(goal.materials[0].manuscriptEvidence, []);
+  assert.deepEqual(assertWholeQualityResult(result, result.wholeRevision.requestSpec), result);
+});
+
+test('uncovered and unavailable goal queries remain distinct and still allow a preserve plan', async () => {
+  for (const unavailable of [false, true]) {
+    const result = await runWholeManuscriptQualityRevision({ request: goalRequest(), model: goalModel({ preserve: true }),
+      queryDeepReferences: async query => { if (unavailable) throw Error('offline'); return goalDataResponse(query, []); } });
+    const q = result.wholeRevision.quality;
+    assert.equal(q.retrieval.byGoal[0].status, unavailable ? 'unavailable' : 'uncovered');
+    assert.equal(q.writingGoals.goals[0].queryStatus, unavailable ? 'unavailable' : 'uncovered');
+    assert.deepEqual(q.writingGoals.goals[0].materials, []);
+    assert.equal(result.wholeRevision.planProvenance.producer, 'model');
+    assert.deepEqual(assertWholeQualityResult(result, result.wholeRevision.requestSpec), result);
+  }
+});
+
+test('a goal used declaration without final manuscript evidence remains not_proven', async () => {
+  const result = await runWholeManuscriptQualityRevision({ request: goalRequest(), model: goalModel({ missingText: true }),
+    queryDeepReferences: async query => goalDataResponse(query) });
+  const material = result.wholeRevision.quality.writingGoals.goals[0].materials[0];
+  assert.equal(material.decision, 'used'); assert.equal(material.status, 'not_proven');
+  assert.deepEqual(material.manuscriptEvidence, []);
+});
+
+test('goals reject invalid requests and require the deep callback before any stage is invoked', async () => {
+  let calls = 0; const forbidden = () => { calls++; throw Error('not allowed'); };
+  await assert.rejects(runWholeManuscriptQualityRevision({ request: goalRequest(), model: { complete: forbidden } }), { code: 'WRITING_GOALS_CALLBACK_REQUIRED' });
+  for (const mutate of [v => { v.goals = []; }, v => { v.goals[0].id = 'mismatch'; },
+    v => { v.goals[0].problem.requiredTermGroups = [['not-frozen']]; }, v => { v.goals[0].chapterIds = ['unknown']; },
+    v => { v.goals.push(structuredClone(v.goals[0])); }, v => { v.extra = true; }, v => { v.goals[0].preservationBoundaries = []; }]) {
+    const req = goalRequest(); mutate(req.writingGoals);
+    assert.throws(() => validateWritingGoals(req.writingGoals, req.chapters), { code: 'WRITING_GOALS_REQUEST' });
+    await assert.rejects(runWholeManuscriptQualityRevision({ request: req, model: { complete: forbidden }, queryDeepReferences: forbidden }), { code: 'WRITING_GOALS_REQUEST' });
+  }
+  assert.equal(calls, 0);
+});
+
+test('goals cannot authorize mechanism-only supply, unknown goals, false diagnoses, outside-chapter targets, or incomplete dispositions', async () => {
+  await assert.rejects(runWholeManuscriptQualityRevision({ request: goalRequest(), model: goalModel({ fit: 'mechanism_only' }),
+    queryDeepReferences: async query => goalDataResponse(query) }), /只有功能适用层/);
+  for (const mutatePlan of [p => { p.items[0].goalIds = ['unknown']; }, p => { p.items[0].issueIds = ['invented-diagnosis']; },
+    p => { p.items[0].goalIds = []; }, p => { p.goalDispositions = []; },
+    p => { p.materialDecisions[0].goalId = 'unknown'; }]) {
+    await assert.rejects(runWholeManuscriptQualityRevision({ request: goalRequest(), model: goalModel({ mutatePlan }),
+      queryDeepReferences: async query => goalDataResponse(query) }));
+  }
+  const req = goalRequest(); req.writingGoals.goals[0].chapterIds = ['ch-1'];
+  await assert.rejects(runWholeManuscriptQualityRevision({ request: req, model: goalModel(),
+    queryDeepReferences: async query => goalDataResponse(query) }), /写作目标.*范围/);
+});
+
+test('goal policy/source binding rejects changed or removed goals on resume and handoff, and report/span tampering', async () => {
+  const req = goalRequest(), j = journal(), result = await runWholeManuscriptQualityRevision({ request: req,
+    model: goalModel(), queryDeepReferences: async query => goalDataResponse(query), checkpoint: j.checkpoint });
+  let calls = 0; const forbidden = () => { calls++; throw Error('no calls'); };
+  for (const mutate of [r => { delete r.writingGoals; }, r => { r.writingGoals.goals[0].problem.statement += '改变目标'; },
+    r => { r.writingGoals.goals[0].preservationBoundaries[0] += '新边界'; }, r => { r.writingGoals.goals[0].chapterIds = []; }]) {
+    const altered = structuredClone(req); mutate(altered);
+    await assert.rejects(runWholeManuscriptQualityRevision({ request: altered, model: { complete: forbidden },
+      queryDeepReferences: forbidden, artifacts: j.artifacts, checkpoint: forbidden }), { code: 'WHOLE_QUALITY_CHECKPOINT_MISMATCH' });
+    assert.throws(() => buildIndependentReviewRequest({ caseId: 'goal-tamper', request: altered, result }), { code: 'HANDOFF_REQUEST_BINDING' });
+  }
+  for (const mutate of [r => { r.wholeRevision.quality.writingGoals.goals[0].disposition.reason += 'post-hoc'; },
+    r => { r.wholeRevision.quality.writingGoals.goals[0].materials[0].manuscriptEvidence[0].quote = '改写引文'; },
+    r => { r.wholeRevision.quality.retrieval.byGoal[0].goalId = 'changed'; },
+    r => { r.wholeRevision.quality.retrieval.byGoal[0].result.packet.deepReference.dataRequest.problem.statement += 'changed'; },
+    r => { r.wholeRevision.quality.retrieval.byGoal[0].result.packet.deepReference.response.request.limit = 1; },
+    r => { r.wholeRevision.quality.retrieval.byGoal[0].result.packet.deepReference.functionSelection.selections[0].selectedFunctionIds = ['forged']; },
+    r => { r.wholeRevision.requestSpec.writingGoals.goals[0].dimension = 'emotion'; }]) {
+    const altered = structuredClone(result); mutate(altered);
+    assert.throws(() => assertWholeQualityResult(altered, result.wholeRevision.requestSpec));
+  }
+  assert.equal(calls, 0);
+});
+
+test('goal-driven revision through the production cross-aware entry keeps source and candidate factual review separate', async () => {
+  const phases = [], result = await runCrossChapterAwareWholeManuscriptQualityRevision({ request: goalRequest(),
+    model: goalModel(), modelPolicy: 'whole-manuscript-quality-json-1', queryDeepReferences: async query => goalDataResponse(query),
+    reviewCrossChapter: async ({ manuscript }) => { phases.push(manuscript.chapters); return crossReviewResult(manuscript.chapters, { confirmed: false }); } });
+  assert.equal(phases.length, 2); assert.deepEqual(phases[0], chapters); assert.deepEqual(phases[1], result.chapters);
+  assert.equal(result.wholeRevision.quality.writingGoals.goals[0].deepMaterialOutcome, 'used_exact_text_located');
+  assert.deepEqual(result.wholeRevision.quality.independentReading.issues, []);
+  assert.deepEqual(assertWholeQualityResult(result, result.wholeRevision.requestSpec), result);
+  const handoff = buildIndependentReviewRequest({ caseId: 'goal-production-entry', request: goalRequest(), result });
+  assert.equal(handoff.provenance.requestBindingMode, 'runtime_normalized_cross_binding');
 });

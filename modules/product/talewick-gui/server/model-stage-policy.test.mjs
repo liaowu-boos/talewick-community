@@ -27,10 +27,20 @@ const input = (stage, maxTokens = 6500) => ({ stage, system, user, maxTokens });
 
 test('business-stage recognition is exact and includes late chapters and real agent revision names', () => {
   for (const [stage] of stages) assert.equal(isBusinessStage(stage), true, stage);
+  assert.equal(isBusinessStage('material-evidence'), true);
   for (const stage of ['draft:chapter_10', 'revision:book-2', 'agent:reviseChapter:chapter_10']) assert.equal(isBusinessStage(stage), true, stage);
   for (const stage of [undefined, null, 10, {}, '', 'agent:controller', 'draft', 'draft:', 'draft:ch-6:extra', 'draft:ch-6/extra', 'revision: ch-6', 'agent:reviseChapter', 'agent:reviseChapter:', 'unknown-review-stage', 'review:ch-1', ' planning']) {
     assert.equal(isBusinessStage(stage), false, String(stage));
   }
+});
+
+test('create material-evidence uses JSON transport and preserves null offset for host resolution', async () => {
+  const sent = [];
+  const content = JSON.stringify({ evidence: [{ chapterId: 'ch-1', start: null, quote: '她停住。' }] });
+  const model = createModel(config, async (_url, init) => { sent.push(JSON.parse(init.body)); return response(content); });
+  assert.equal(await model.complete(input('material-evidence', 4000)), content);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].response_format, { type: 'json_object' });
 });
 
 test('actual whole-revision format-repair stage names retain the whole-manuscript model policy', async () => {
@@ -148,7 +158,7 @@ test('flash and pro use the full bounded thinking allowance throughout a novel a
       assert.equal(body.max_tokens, 32768, stage);
       assert.equal(body.stream, true, stage);
       assert.equal(body.thinking, undefined, 'the successful first pass must retain its thinking mode');
-      assert.equal(body.reasoning_effort, undefined, 'the first pass must not silently lower reasoning effort');
+      assert.equal(body.reasoning_effort, 'low', 'the versioned native default is explicit without changing the output allowance');
       assert.deepEqual(body.messages, [{ role: 'system', content: system }, { role: 'user', content: user }]);
       assert.deepEqual(body.response_format, json ? { type: 'json_object' } : undefined, stage);
       assert.equal(body.tools, undefined);

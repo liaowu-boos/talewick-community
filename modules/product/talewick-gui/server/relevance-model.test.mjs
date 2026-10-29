@@ -23,7 +23,7 @@ for(const modelName of ['deepseek-flash','deepseek-v4-flash','deepseek-v4-flash-
   assert.equal(body.max_tokens,budget);assert.deepEqual(body.response_format,{type:'json_object'});
   assert.deepEqual(body.messages,[{role:'system',content:input.system},{role:'user',content:input.user}]);
   assert.equal(body.stream,nativeThinking);assert.deepEqual(body.thinking,nativeThinking?{type:'enabled'}:undefined);
-  assert.equal(body.reasoning_effort,undefined);assert.equal(body.tools,undefined);
+  assert.equal(body.reasoning_effort,provider==='deepseek'?'low':undefined);assert.equal(body.tools,undefined);
   return nativeThinking?sse('{}'):Response.json({choices:[{message:{content:'{}'},finish_reason:'stop'}]});
  });
  assert.equal(await model.complete({...input,onAttempt:a=>attempts.push(a)}),'{}');assert.equal(calls,1);

@@ -1,4 +1,4 @@
-import type { AgentDecisionTrace, AppState, Chapter, Project, PartialDraft, QuoteSource, RuntimeBinding, RuntimeEngine, RuntimeInfo, RuntimeRequest, ReadingObservation, RuntimeResult, RuntimeTask, RuntimeTaskFailure, RuntimeTaskStatus } from './types';
+import type { AgentDecisionTrace, AppState, Chapter, Project, PartialDraft, QuoteSource, RuntimeBinding, RuntimeEngine, RuntimeInfo, RuntimeRequest, ReadingObservation, RuntimeResult, RuntimeTask, RuntimeTaskFailure, RuntimeTaskStatus, WritingGoals } from './types';
 
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const string = (value: unknown): value is string => typeof value === 'string';
@@ -80,6 +80,12 @@ function readQuoteSource(value: unknown): QuoteSource | undefined {
   return { chapterId: value.chapterId, start: value.start };
 }
 
+function readWritingGoals(value: unknown): WritingGoals | undefined {
+  if (!record(value) || value.schemaVersion !== 'creation-writing-goals-1' || !Array.isArray(value.goals)
+    || value.goals.length < 1 || value.goals.length > 3) return undefined;
+  return structuredClone(value) as unknown as WritingGoals;
+}
+
 function chapters(value: unknown): Chapter[] | null {
   if (!Array.isArray(value)) return null;
   const ids = new Set<string>();
@@ -136,6 +142,7 @@ function readResult(value: unknown): RuntimeResult | undefined {
     ...(wholeRevision ? { wholeRevision } : {}),
     ...(record(value.activeKnowledge) ? { activeKnowledge: value.activeKnowledge } : {}),
     ...(record(value.followupRetrieval) ? { followupRetrieval: value.followupRetrieval } : value.followupRetrieval !== undefined ? { followupRetrievalInvalid: true } : {}),
+    ...(record(value.deepReference) ? { deepReference: structuredClone(value.deepReference) } : {}),
     agentTrace: readAgentTrace(value.agentTrace) };
 }
 
@@ -170,15 +177,18 @@ export function readRuntimeBinding(value: unknown, projectId: string): RuntimeBi
   const context = record(request.context) ? request.context : {};
   const quoteSource = readQuoteSource(request.quoteSource);
   if (request.quoteSource !== undefined && !quoteSource) return undefined;
+  const writingGoals = readWritingGoals(request.writingGoals);
+  if (request.writingGoals !== undefined && (!writingGoals || request.kind !== 'revise' || request.revisionMode !== 'whole-manuscript-v2')) return undefined;
   const style = record(request.style) ? request.style : null;
   const task = readRuntimeTask(value.task);
   if (task && (task.projectId !== projectId || task.requestId !== request.requestId || task.baseRevision !== request.baseRevision || task.kind !== request.kind || task.revisionMode !== request.revisionMode)) return undefined;
+  const recheckSelection = value.candidateRecheckSelection;
   return { request: { projectId, requestId: request.requestId, baseRevision: request.baseRevision, kind: request.kind as RuntimeRequest['kind'], idea: request.idea,
     ...(string(request.projectTitle) ? { projectTitle: request.projectTitle } : {}),
     context: { character: string(context.character) ? context.character : '', world: string(context.world) ? context.world : '', plot: string(context.plot) ? context.plot : '', theme: string(context.theme) ? context.theme : '' },
     materials: Array.isArray(request.materials) ? request.materials.filter(record).filter(item => string(item.id) && string(item.title) && string(item.content)).map(item => ({ id: item.id as string, title: item.title as string, content: item.content as string })) : [],
     style: style ? { name: string(style.name) ? style.name : '', description: string(style.description) ? style.description : '', rules: string(style.rules) ? style.rules : '', traits: strings(style.traits) } : null,
-    chapters: inputChapters, instruction: string(request.instruction) ? request.instruction : '', quote: string(request.quote) ? request.quote : '', ...(['whole-manuscript-v1', 'whole-manuscript-v2'].includes(String(request.revisionMode)) ? { revisionMode: request.revisionMode as RuntimeRequest['revisionMode'] } : {}), ...(quoteSource ? { quoteSource } : {}) },
+    chapters: inputChapters, instruction: string(request.instruction) ? request.instruction : '', quote: string(request.quote) ? request.quote : '', ...(['whole-manuscript-v1', 'whole-manuscript-v2'].includes(String(request.revisionMode)) ? { revisionMode: request.revisionMode as RuntimeRequest['revisionMode'] } : {}), ...(quoteSource ? { quoteSource } : {}), ...(writingGoals ? { writingGoals } : {}) },
     baseManuscript: { title: value.baseManuscript.title, chapters: baseChapters }, task,
     submitting: false,
     connectionError: string(value.connectionError) ? value.connectionError : undefined,
@@ -191,6 +201,12 @@ export function readRuntimeBinding(value: unknown, projectId: string): RuntimeBi
         selectedGroupIds: [...value.qualityAdoption.selectedGroupIds], declinedGroupIds: [...value.qualityAdoption.declinedGroupIds],
         fullCandidateRereadInherited: value.qualityAdoption.fullCandidateRereadInherited,
         rereadScope: value.qualityAdoption.rereadScope as NonNullable<RuntimeBinding['qualityAdoption']>['rereadScope'],
+      } } : {}),
+    ...(record(recheckSelection) && ['id','sourceTaskId','candidateSha256','checkerVersion','selectedAt'].every(key => string(recheckSelection[key]))
+      ? { candidateRecheckSelection: {
+        id: recheckSelection.id as string, sourceTaskId: recheckSelection.sourceTaskId as string,
+        candidateSha256: recheckSelection.candidateSha256 as string, checkerVersion: recheckSelection.checkerVersion as string,
+        selectedAt: recheckSelection.selectedAt as string,
       } } : {}),
     message: string(value.message) ? value.message : undefined };
 }

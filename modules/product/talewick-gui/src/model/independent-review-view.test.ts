@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { independentReviewView } from './independent-review-view.ts';
+import { independentReviewView, isPartialBlindReport } from './independent-review-view.ts';
 
 const citations = Array.from({ length: 61 }, (_, index) => ({ blindId: index % 2 ? 'B' : 'A', chapterId: 'c1', quote: `证据${index}`, start: index }));
 const independent = (readerId: string, suffix: string) => ({
@@ -98,7 +98,7 @@ test('frozen body and citation retain whitespace and emoji UTF-16 offsets exactl
   };
   const view = independentReviewView(report, 'single'), evidence = view.sections[0].findings.find(item => item.statement === '引文包含首尾空白')?.evidence[0];
   assert.equal(view.snapshots[0].chapters[0].body, body);
-  assert.equal(view.snapshots[0].chapters[0].title, '第一章');
+  assert.equal(view.snapshots[0].chapters[0].title, ' 第一章 ');
   assert.equal(evidence?.quote, quote);
   assert.equal(evidence?.start, start);
   assert.equal(body.slice(start, start + quote.length), quote);
@@ -119,4 +119,25 @@ test('legacy severe harms are never relabelled from prose; explicit v2 attributi
   assert.match(uncertain.boundary, /复核/);
   assert.ok(uncertain.attributionLines.includes('候选严重损伤记录：1 条'));
   assert.ok(uncertain.attributionLines.includes('问题归属待核对：1 条'));
+});
+
+test('strict partial report displays all six sealed opinions while failed goal judgment stays outside accepted findings', () => {
+  const report = { schemaVersion: 'independent-review-partial-blind-report-1', completeBlindReview: true,
+    completedBlindStages: 6, taskStatus: 'needs_attention', goalAuditStatus: 'needs_attention', automaticAdoption: false, literaryPass: 'NOT_COMPUTED',
+    isolatedReadings: Array.from({ length: 4 }, (_, i) => ({ stageId: `stage-${i}`, recordSha256: `read-${i}`, record: independent(`reader-${i % 2 + 1}`, String(i)) })),
+    blindPairReviews: ['reader-1', 'reader-2'].map(id => ({ recordSha256: `pair-${id}`, record: pair(id) })),
+    readerBindings: [{ readerId: 'reader-1', originalPreference: 'mixed', mappedPreference: 'mixed', order: [{ blindId: 'A', role: 'baseline' }, { blindId: 'B', role: 'candidate' }] },
+      { readerId: 'reader-2', originalPreference: 'no_clear_preference', mappedPreference: 'no_clear_preference', order: [{ blindId: 'B', role: 'candidate' }, { blindId: 'A', role: 'baseline' }] }],
+    goalAudit: { validated: false, failure: { code: 'IMPLEMENTED_WITHOUT_CHANGE_EVIDENCE', message: 'Unchanged evidence cannot establish implementation' } },
+  };
+  const before = structuredClone(report), view = independentReviewView(report, 'compare');
+  assert.equal(isPartialBlindReport(report), true); assert.equal(view.headline, '全文盲评已完成；目标核查未通过');
+  assert.match(view.boundary, /目标核查仍失败/); assert.match(view.boundary, /不代表目标落实、事实通过或文学质量通过/);
+  assert.equal(view.sections.length, 6); assert.equal(view.sections.filter(item => item.stage === 'goal_audit').length, 0);
+  for (let i = 0; i < 4; i++) assert.ok(view.findings.includes(`reader-${i % 2 + 1}第14条判断${i}`));
+  assert.deepEqual(view.readerLines, ['读者 1：两稿各有取舍（独立意见，不汇总投票）', '读者 2：无明确偏好（独立意见，不汇总投票）']);
+  assert.ok(view.limitations.includes('本任务不计算文学质量通过。')); assert.deepEqual(report, before);
+  for (const invalid of [{ ...report, completeBlindReview: false }, { ...report, completedBlindStages: 5 }, { ...report, taskStatus: 'complete' }, { ...report, automaticAdoption: true }]) {
+    assert.equal(isPartialBlindReport(invalid), false); assert.notEqual(independentReviewView(invalid, 'compare').headline, view.headline);
+  }
 });

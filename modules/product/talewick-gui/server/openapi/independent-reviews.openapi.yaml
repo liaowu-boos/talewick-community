@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Talewick Independent Reviews API
-  version: 1.0.0
+  version: 1.2.0
   description: >-
     Local-only durable tasks for isolated whole-manuscript reading and trusted
     baseline/candidate comparison. Completion means records were saved; it is
@@ -27,6 +27,11 @@ paths:
                 properties:
                   available: { type: boolean }
                   versions: { type: [object, 'null'], additionalProperties: true }
+                  readingFocusVersions: { type: array, items: { type: string } }
+                  modelCitationModes:
+                    description: Explicit supported modes for new tasks. An empty or absent array never implies support.
+                    type: array
+                    items: { type: string, enum: [paragraph_refs_v1] }
                   tasks: { type: array, items: { $ref: '#/components/schemas/ReviewTask' } }
     post:
       summary: Create or idempotently recover an independent review
@@ -95,6 +100,39 @@ paths:
                 properties: { task: { $ref: '#/components/schemas/ReviewTask' } }
         '409': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/Error' }
+  /api/independent-reviews/{id}/retry-invalid-reading:
+    post:
+      summary: Explicitly reread one strictly rejected independent-reading stage once
+      description: >-
+        Uses the same saved task and frozen input. The server inspects eligibility
+        and obtains inspectionHash; clients cannot supply model inputs or corrections.
+        Prior opinions and failed attempts remain. Only a valid new seal permits
+        continuation of later stages. Failure or an unknown outcome is never resent.
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [requestId, stageId]
+              properties:
+                requestId: { type: string, pattern: '^[\w-]{1,160}$' }
+                stageId: { type: string, pattern: '^[\w-]{1,160}$' }
+      responses:
+        '202':
+          description: Same task queued or existing identical operation returned
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [task]
+                properties: { task: { $ref: '#/components/schemas/ReviewTask' } }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
 components:
   parameters:
     TaskId:
@@ -124,6 +162,11 @@ components:
       type: object
       additionalProperties: false
       required: [projectId, requestId, manuscriptRevision, title, chapters, mode]
+      dependentSchemas:
+        modelCitationMode:
+          required: [readingFocusVersion]
+          properties:
+            readingFocusVersion: { const: literary-reading-six-1 }
       properties:
         projectId: { type: string, pattern: '^[\w-]{1,160}$' }
         requestId: { type: string, pattern: '^[\w-]{1,160}$' }
@@ -132,6 +175,18 @@ components:
         title: { type: string, maxLength: 2000 }
         chapters: { type: array, minItems: 1, maxItems: 30, items: { $ref: '#/components/schemas/Chapter' } }
         mode: { type: string, enum: [single, compare] }
+        readingFocusVersion: { type: string, enum: [literary-reading-six-1] }
+        readingFocusDefinitions:
+          description: Optional exact server definitions; callers normally omit these.
+          type: array
+          items: { type: object }
+        modelCitationMode:
+          type: string
+          enum: [paragraph_refs_v1]
+          description: >-
+            Opt in only for a new six-focus review. Frozen in submission/task and
+            adapter metadata and bound by their hashes. Omission preserves the
+            original citation mode. Resume/recovery cannot change this field.
         sourceTaskId:
           type: string
           description: Required for compare; identifies a server-saved whole-manuscript-v2 result. Candidate text and goals are never accepted from the browser.
@@ -157,12 +212,35 @@ components:
         caseId: { type: string }
         mode: { type: string, enum: [single, compare] }
         sourceTaskId: { type: string }
+        readingFocusVersion: { type: string }
+        modelCitationMode: { type: string, enum: [paragraph_refs_v1] }
         linkedAttemptId: { type: string, format: uuid }
         status: { type: string, enum: [queued, running, complete, interrupted, cancelled, needs_attention, stale] }
         manuscriptRevision: { type: string }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
         progress: { $ref: '#/components/schemas/Progress' }
+        invalidReadingRetry:
+          description: Read-only runtime inspection; omission is unavailable, never implicit eligibility.
+          type: object
+          required: [available, eligible, remainingAttempts]
+          properties:
+            available: { type: boolean }
+            eligible: { type: boolean }
+            remainingAttempts: { type: integer, enum: [0, 1] }
+            stageId: { type: string }
+            reason: { type: string }
+        invalidReadingRetries:
+          description: Separate once-only reread history; never described as restoring the old opinion.
+          type: array
+          items:
+            type: object
+            required: [requestId, stageId, status]
+            properties:
+              requestId: { type: string }
+              stageId: { type: string }
+              status: { type: string }
+              originalError: { type: [object, 'null'], additionalProperties: true }
         report:
           description: Validation adapter's JSON-serializable public report. It never authorizes automatic adoption.
           type: [object, 'null']

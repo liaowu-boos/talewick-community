@@ -12,16 +12,16 @@ The project separates the writing interface, source material management, writing
 
 ![Talewick workspace](examples/workspace.png)
 
-## Latest update · 2026-10-19
+## Latest update · 2026-10-29
 
-- **Cross-chapter factual review**: separate extraction and adjudication for time, actors, event occurrences, and object states, with exact evidence, counterevidence, and unresolved findings. Speculation about lying or faulty memory cannot dismiss a conflict by itself.
-- **Revision and candidate rechecking**: carry confirmed factual issues into whole-manuscript revision, including adjacent question/answer edits, then recheck the candidate. Preserve failed attempts, the original, and editing evidence; a failed recheck never becomes a pass.
-- **Blind-review risk attribution**: distinguish problems in the baseline from candidate damage and unresolved attribution. Historical reports keep their original protocol; retries reset stale progress.
-- **Material processing**: query reviewed catalog analysis units, build offline observation packages, and prepare evidence-bound analysis candidates. Candidate generation, independent review, activation, and writing benefit remain separate states. The public library remains empty.
+- **Explicit writing goals**: specify psychological, emotional, or choice-related goals and preservation boundaries for whole-manuscript revision. Track material suitability and textual adoption evidence; retrieval does not imply use.
+- **Candidate rechecking and recovery**: recover manuscripts and candidates from local tasks, independently recheck them, and verify version and evidence bindings before author-controlled adoption. Failures and unresolved findings never count as passes.
+- **Independent review**: add an optional protocol focused on six reading dimensions, paragraph references, position-only recovery, and partial reports that retain failures and incomplete stages.
+- **Material and runtime reliability**: add optional deep-reference integration, guards for unavailable local files, and an explicit low-reasoning default for native DeepSeek requests. Stage-specific settings still take precedence.
 
-Development acceptance repaired three types of factual issue in one manuscript, with both reversed-order AI readers preferring the candidate. This supports improved factual consistency in that manuscript, not general detection accuracy, overall literary quality, or human-reader outcomes. Extraction format failures and unresolved candidate findings remain recorded. The separate Full15 entry still covers only C01–C06. Linking independent candidate rechecks back into adoption remains follow-up work; adoption is never automatic.
+This sync includes the delivered r11 functionality. The later material-scene candidate remains outside this release pending acceptance. Tests establish protocol and program behavior, not improved literary quality; development acceptance did not meet all writing goals for either manuscript. The separate Full15 entry still covers only C01–C06. Authors always decide whether to adopt changes.
 
-Private source texts, analysis samples, historical tasks, and captured provider responses are excluded. The six existing [reading examples](examples/README.md) are unchanged. Public code uses synthetic regression fixtures; see the [verification record](VERIFICATION.md) for the checks actually run.
+Private texts, analysis samples, historical tasks, and captured provider responses are excluded. The six existing [reading examples](examples/README.md) are unchanged. Built-in materials remain empty; deep references require an explicitly configured, verified user-owned installation and are not bundled data. See the [verification record](VERIFICATION.md).
 
 ## What you can do
 

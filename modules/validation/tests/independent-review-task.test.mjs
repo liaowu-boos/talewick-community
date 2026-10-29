@@ -7,7 +7,11 @@ import {
   startIndependentReview,
   resumeIndependentReview,
   readIndependentReviewProgress,
+  recoverIndependentReviewPositions,
+  buildIndependentReviewPartialReport,
+  resolveIndependentReviewPositions,
 } from '../runtime/independent-review-task.mjs';
+import { recoverWhitespaceCitations, applyPositionRepairs, findPositionProblems } from '../runtime/independent-review-position-recovery.mjs';
 import {
   validateWholeQualityProtocolArtifacts,
   wholeQualitySha256,
@@ -324,4 +328,238 @@ test('request hash, persisted request, and tool versions make old results stale 
   await writeFile(taskPath, `${JSON.stringify(task, null, 2)}\n`);
   const versionStale = await readIndependentReviewProgress({ runDir: versioned.runDir, requestHash: versioned.requestHash });
   assert.equal(versionStale.status, 'stale'); assert.deepEqual(versionStale.report, versioned.report);
+}));
+
+
+
+
+const positionPacket = body => ({ manuscripts: [{ blindId: 'M', chapters: [{ id: 'ch-1', body }] }] });
+const citationResponse = quote => ({ evidence: [{ blindId: 'M', chapterId: 'ch-1', quote, start: null }] });
+
+test('whitespace mapping restores only a unique exact source span, with UTF-16 offsets and an unchanged input', () => {
+  const packet = positionPacket('😀前言。“往里站一步。”我说。\n\n她没动。尾句。');
+  const response = citationResponse('“往里站一步。”我说。她没动。'), saved = structuredClone(response);
+  const restored = recoverWhitespaceCitations(packet, response);
+  assert.deepEqual(response, saved); assert.equal(restored.restorations.length, 1);
+  const citation = restored.response.evidence[0];
+  assert.equal(citation.start, 5); assert.equal(citation.quote, '“往里站一步。”我说。\n\n她没动。');
+  assert.equal(packet.manuscripts[0].chapters[0].body.slice(citation.start, citation.start + citation.quote.length), citation.quote);
+  assert.equal(resolveIndependentReviewPositions(packet, restored.response).record.evidence[0].start, 5);
+});
+
+test('whitespace mapping refuses exact and normalized ambiguity, punctuation, wording and invisible characters', () => {
+  for (const [body, quote] of [['甲。\n乙。甲。\n乙。', '甲。乙。'], ['甲。甲。', '甲。'], ['甲。\n乙。', '甲，乙。'], ['甲。\n乙。', '丙。乙。'], ['甲。\u200b乙。', '甲。乙。'], ['甲。\u00a0乙。', '甲。乙。']]) {
+    const packet = positionPacket(body), response = citationResponse(quote);
+    const restored = recoverWhitespaceCitations(packet, response);
+    assert.equal(restored.restorations.length, 0);
+    assert.throws(() => resolveIndependentReviewPositions(packet, restored.response), error => ['QUOTE_NOT_FOUND', 'QUOTE_POSITION_NOT_UNIQUE'].includes(error.code));
+  }
+  const wrongChapter = citationResponse('甲。乙。'); wrongChapter.evidence[0].chapterId = 'elsewhere';
+  assert.throws(() => recoverWhitespaceCitations(positionPacket('甲。\n乙。'), wrongChapter), { code: 'POSITION_RECOVERY_LOCATION' });
+  const explicit = citationResponse('甲。乙。'); explicit.evidence[0].start = 9;
+  assert.equal(recoverWhitespaceCitations(positionPacket('甲。\n乙。'), explicit).restorations.length, 0);
+});
+
+test('position-only patches cannot change judgments or evidence membership, and may explicitly select the second exact occurrence', () => {
+  const packet = positionPacket('甲。\n甲。\n结束。'), response = citationResponse('甲。'); response.preference = 'second';
+  const problems = findPositionProblems(packet, response), pointer = '/evidence/0';
+  const repaired = applyPositionRepairs(packet, response, { repairs: [{ JSONPointer: pointer, quote: '甲。', start: 3 }] }, problems);
+  assert.equal(repaired.preference, 'second'); assert.equal(repaired.evidence[0].start, 3); assert.equal(response.evidence[0].start, null);
+  for (const correction of [
+    { preference: 'first', repairs: [{ JSONPointer: pointer, quote: '甲。', start: 3 }] },
+    { repairs: [{ JSONPointer: '/preference', quote: '甲。', start: 3 }] },
+    { repairs: [{ JSONPointer: pointer, quote: '结束。', start: 6 }] },
+    { repairs: [{ JSONPointer: pointer, quote: '甲。', start: 2 }] },
+    { repairs: [{ JSONPointer: pointer, quote: '甲。', start: null }] },
+    { repairs: [] },
+  ]) assert.throws(() => applyPositionRepairs(packet, response, correction, problems));
+});
+
+function controlledAnalyze(mutate, prefix = 'controlled') {
+  const calls = [];
+  return { calls, analyze: async input => {
+    const index = calls.length; calls.push(input);
+    const response = responseFor(input); mutate?.(response, input, index);
+    return { outputText: JSON.stringify(response), receipt: { provider: 'fixture', invocationId: `${prefix}-invoke-${index}`, contextId: `${prefix}-context-${index}`, inputHash: input.inputHash } };
+  } };
+}
+async function snapshotTree(path) {
+  const out = {};
+  async function walk(folder, prefix = '') {
+    for (const item of await readdir(folder, { withFileTypes: true })) {
+      const relative = `${prefix}${item.name}`;
+      if (item.isDirectory()) await walk(join(folder, item.name), `${relative}/`);
+      else out[relative] = (await readFile(join(folder, item.name))).toString('base64');
+    }
+  }
+  await walk(path); return out;
+}
+async function failedGoal(root, mutate) {
+  const fixture = controlledAnalyze((response, input, index) => {
+    if (index === 6) {
+      if (mutate) mutate(response, input);
+      else response.goalAssessments[0].outcomes[0].baselineEvidence[0].quote = '正文中并不存在的引文';
+    }
+  });
+  const result = await startIndependentReview({ runRoot: root, request: compareRequest(), analyze: fixture.analyze });
+  assert.equal(result.status, 'needs_attention'); assert.equal(result.progress.completedStages, 6);
+  return { result, fixture };
+}
+
+test('six-stage partial report is read-only even without merge caches, keeps preferences and never completes the task', async () => withRoot(async root => {
+  const { result } = await failedGoal(root);
+  for (const reader of ['reader-1', 'reader-2']) await unlink(join(result.runDir, 'controller', 'readers', reader, 'merged-independent-record.json'));
+  const before = await snapshotTree(root);
+  const partial = await buildIndependentReviewPartialReport(result);
+  assert.equal(partial.completeBlindReview, true); assert.equal(partial.goalAuditStatus, 'needs_attention');
+  assert.equal(partial.taskStatus, 'needs_attention'); assert.equal(partial.automaticAdoption, false);
+  assert.equal(partial.literaryPass, 'NOT_COMPUTED'); assert.equal(partial.completedTaskStages, 6);
+  assert.equal(partial.isolatedReadings.length, 4); assert.equal(partial.blindPairReviews.length, 2);
+  assert.deepEqual(partial.blindPairReviews.map(item => item.record.preference), ['no_clear_preference', 'no_clear_preference']);
+  assert.deepEqual(await snapshotTree(root), before);
+  await assert.rejects(buildIndependentReviewPartialReport({ ...result, requestHash: '0'.repeat(64) }), { code: 'PARTIAL_REPORT_REQUEST_BINDING' });
+  assert.deepEqual(await snapshotTree(root), before);
+}));
+
+test('partial report rejects every missing seal and mismatched original raw without rebuilding or writing', async () => withRoot(async root => {
+  const { result } = await failedGoal(root);
+  for (const stage of ['01-reader-1-first', '02-reader-2-first', '03-reader-1-second', '04-reader-2-second', '05-reader-1-pair', '06-reader-2-pair']) {
+    const path = join(result.runDir, 'stages', stage, 'sealed.json'), saved = await readFile(path);
+    await unlink(path); const before = await snapshotTree(root);
+    await assert.rejects(buildIndependentReviewPartialReport(result), { code: 'PARTIAL_REPORT_MISSING_SEAL' });
+    assert.deepEqual(await snapshotTree(root), before); await writeFile(path, saved);
+  }
+  const seal = JSON.parse(await readFile(join(result.runDir, 'stages', '01-reader-1-first', 'sealed.json'), 'utf8'));
+  const rawPath = join(result.runDir, 'stages', seal.stageId, 'attempts', seal.attemptId, 'raw-response.txt');
+  await writeFile(rawPath, '{}'); const before = await snapshotTree(root);
+  await assert.rejects(buildIndependentReviewPartialReport(result), { code: 'PERSISTED_STAGE_SEAL_INVALID' });
+  assert.deepEqual(await snapshotTree(root), before);
+}));
+
+test('whitespace-only goal recovery seals the original response with zero new calls and preserves six seals and failed history', async () => withRoot(async root => {
+  const request = compareRequest(); request.candidate.chapters = structuredClone(request.candidate.chapters);
+  request.candidate.chapters[1].body = '她撕掉返程票，独自登上\n\n去南城的车。广播响了两遍。';
+  const fixture = controlledAnalyze();
+  const failed = await startIndependentReview({ runRoot: root, request, analyze: fixture.analyze });
+  assert.equal(failed.error.code, 'QUOTE_NOT_FOUND'); assert.equal(fixture.calls.length, 7);
+  const before = await snapshotTree(root);
+  const recovered = await recoverIndependentReviewPositions({ ...failed, mode: 'whitespace_only', analyzePositionRepair: () => assert.fail('no model allowed') });
+  assert.equal(recovered.status, 'complete', JSON.stringify(recovered.error)); assert.equal(fixture.calls.length, 7);
+  const after = await snapshotTree(root);
+  for (const [path, bytes] of Object.entries(before)) if (!path.endsWith('events.ndjson')) assert.equal(after[path], bytes, path);
+  assert.ok(Buffer.from(after[Object.keys(after).find(path => path.endsWith('events.ndjson'))], 'base64').toString().includes('stage_needs_attention'));
+  const read = await readIndependentReviewProgress(recovered); assert.equal(read.status, 'complete');
+  const seal = JSON.parse(await readFile(join(failed.runDir, 'stages', '07-goal-audit', 'sealed.json'), 'utf8'));
+  const proofPath = join(failed.runDir, 'stages', seal.stageId, 'attempts', seal.attemptId, 'position-recovery.json');
+  const proof = JSON.parse(await readFile(proofPath, 'utf8')); proof.originalRawSha256 = '0'.repeat(64); await writeFile(proofPath, JSON.stringify(proof));
+  const invalid = await readIndependentReviewProgress(recovered); assert.equal(invalid.status, 'needs_attention'); assert.equal(invalid.error.code, 'POSITION_RECOVERY_PROOF_BINDING');
+}));
+
+test('whitespace recovery never upgrades unchanged evidence to implemented and keeps the six-stage partial report available', async () => withRoot(async root => {
+  const request = compareRequest(); request.baselineChapters = structuredClone(baseline); request.candidate.chapters = structuredClone(candidateChapters);
+  request.baselineChapters[0].body += '\n末句。\n\n再一句。'; request.candidate.chapters[0].body += '\n末句。\n\n再一句。';
+  const fixture = controlledAnalyze((response, input, index) => {
+    if (index === 6) {
+      const outcome = response.goalAssessments[0].outcomes[0];
+      outcome.baselineEvidence = [{ blindId: input.packet.protocolPacket.baseline.blindId, chapterId: 'ch-1', quote: '末句。再一句。', start: null }];
+      outcome.candidateEvidence = [{ blindId: input.packet.protocolPacket.candidate.blindId, chapterId: 'ch-1', quote: '末句。再一句。', start: null }];
+      // The unchanged opening has equal offsets; use it as the unchanged implementation evidence.
+      outcome.baselineEvidence.unshift({ blindId: input.packet.protocolPacket.baseline.blindId, chapterId: 'ch-1', quote: '林遥站在门口', start: null });
+      outcome.candidateEvidence.unshift({ blindId: input.packet.protocolPacket.candidate.blindId, chapterId: 'ch-1', quote: '林遥站在门口', start: null });
+    }
+  });
+  // Make the appended passages start at equal offsets while retaining a real revision in chapter 2.
+  request.candidate.chapters[0].body = request.baselineChapters[0].body;
+  const failed = await startIndependentReview({ runRoot: root, request, analyze: fixture.analyze });
+  const recovered = await recoverIndependentReviewPositions({ ...failed, mode: 'position_repair', analyzePositionRepair: () => assert.fail('no judgment reroll') });
+  assert.equal(recovered.status, 'needs_attention'); assert.equal(recovered.error.code, 'IMPLEMENTED_WITHOUT_CHANGE_EVIDENCE');
+  assert.equal(recovered.progress.completedStages, 6); assert.equal(fixture.calls.length, 7);
+  const partial = await buildIndependentReviewPartialReport(recovered); assert.equal(partial.completeBlindReview, true); assert.equal(partial.goalAuditStatus, 'needs_attention');
+}));
+
+async function ambiguousFourth(root) {
+  const chapters = [{ id: 'ch-1', title: '重复记录', body: '同一条记录。\n\n同一条记录。\n唯一尾句。' }];
+  const request = { caseId: 'repeated-quote-control', mode: 'compare', baselineChapters: chapters, candidate: { mode: 'no_change', chapters }, goals: [] };
+  const fixture = controlledAnalyze((response, input, index) => {
+    const quote = index === 3 ? '同一条记录。' : '唯一尾句。';
+    response.entries[0].claims[0].evidence[0] = { blindId: 'M', chapterId: 'ch-1', quote, start: null };
+  });
+  const result = await startIndependentReview({ runRoot: root, request, analyze: fixture.analyze });
+  assert.equal(result.error.code, 'QUOTE_POSITION_NOT_UNIQUE'); assert.equal(result.progress.completedStages, 3);
+  return { result, fixture };
+}
+function repairFixture(mutator) {
+  const calls = [];
+  return { calls, analyze: async input => {
+    calls.push(input);
+    const response = { repairs: input.packet.invalidCitations.map(item => ({ JSONPointer: item.JSONPointer, quote: item.quote, start: item.exactStartOffsets.at(-1) })) };
+    mutator?.(response);
+    return { outputText: JSON.stringify(response), receipt: { provider: 'fixture', invocationId: 'repair-invocation', contextId: 'repair-context', inputHash: input.inputHash } };
+  } };
+}
+
+test('one position-only repair seals stage four; resume dispatches only stages five to seven and preserves the first three seals', async () => withRoot(async root => {
+  const { result, fixture } = await ambiguousFourth(root), repair = repairFixture();
+  const before = await snapshotTree(root);
+  const recovered = await recoverIndependentReviewPositions({ ...result, mode: 'position_repair', analyzePositionRepair: repair.analyze });
+  assert.equal(recovered.status, 'queued', JSON.stringify(recovered.error)); assert.equal(recovered.progress.completedStages, 4);
+  assert.equal(repair.calls.length, 1); assert.equal(fixture.calls.length, 4);
+  const forbidden = new Set(['bindings', 'baseline', 'candidate', 'goals', 'privateBinding', 'role']);
+  assert.equal(recursivelyHasKey(repair.calls[0].packet, forbidden), false);
+  const after = await snapshotTree(root);
+  for (const [path, bytes] of Object.entries(before)) if (!path.endsWith('events.ndjson')) assert.equal(after[path], bytes, path);
+  const continuation = controlledAnalyze((response, input) => {
+    if (input.stage === 'blind_pair') response.comparisons[0].evidence.forEach(item => { item.start = 0; });
+  }, 'remaining');
+  const complete = await resumeIndependentReview({ ...recovered, analyze: continuation.analyze });
+  assert.equal(complete.status, 'complete', JSON.stringify(complete.error));
+  assert.deepEqual(continuation.calls.map(item => item.stage), ['blind_pair', 'blind_pair', 'goal_audit']);
+  assert.equal((await readIndependentReviewProgress(complete)).status, 'complete');
+}));
+
+test('an invalid correction exhausts the sole repair and cannot resend or change a sealed opinion', async () => withRoot(async root => {
+  const { result } = await ambiguousFourth(root), repair = repairFixture(response => { response.preference = 'first'; });
+  const failed = await recoverIndependentReviewPositions({ ...result, mode: 'position_repair', analyzePositionRepair: repair.analyze });
+  assert.equal(failed.status, 'needs_attention'); assert.equal(failed.error.code, 'POSITION_REPAIR_FIELDS');
+  assert.equal(failed.progress.completedStages, 3);
+  await assert.rejects(recoverIndependentReviewPositions({ ...failed, mode: 'position_repair', analyzePositionRepair: repair.analyze }), { code: 'POSITION_RECOVERY_NOT_ELIGIBLE' });
+  assert.equal(repair.calls.length, 1);
+}));
+
+test('unknown repair outcome is never automatically resent and a wrong request cannot dispatch', async () => withRoot(async root => {
+  const { result } = await ambiguousFourth(root); let calls = 0;
+  const analyzePositionRepair = async () => { calls += 1; throw new Error('response lost'); };
+  await assert.rejects(recoverIndependentReviewPositions({ ...result, requestHash: '0'.repeat(64), mode: 'position_repair', analyzePositionRepair }), { code: 'POSITION_RECOVERY_NOT_ELIGIBLE' });
+  assert.equal(calls, 0);
+  const failed = await recoverIndependentReviewPositions({ ...result, mode: 'position_repair', analyzePositionRepair });
+  assert.equal(failed.error.code, 'POSITION_REPAIR_EXHAUSTED');
+  await assert.rejects(recoverIndependentReviewPositions({ ...failed, mode: 'position_repair', analyzePositionRepair }));
+  assert.equal(calls, 1); assert.equal(failed.progress.completedStages, 3);
+}));
+
+
+test('a recovered seal survives a crash before its event and never re-dispatches the repaired stage', async () => withRoot(async root => {
+  const { result } = await ambiguousFourth(root), repair = repairFixture();
+  const recovered = await recoverIndependentReviewPositions({ ...result, mode: 'position_repair', analyzePositionRepair: repair.analyze });
+  assert.equal(recovered.status, 'queued');
+  const eventPath = join(recovered.runDir, '..', 'events.ndjson');
+  const events = (await readFile(eventPath, 'utf8')).trimEnd().split('\n').map(JSON.parse);
+  await writeFile(eventPath, events.filter(event => !(event.type === 'stage_sealed' && event.stageId === '04-reader-2-second')).map(JSON.stringify).join('\n') + '\n');
+  const progress = await readIndependentReviewProgress(recovered);
+  assert.equal(progress.status, 'queued', JSON.stringify(progress.error)); assert.equal(progress.progress.completedStages, 4);
+  assert.equal(repair.calls.length, 1);
+  const restoredEvents = (await readFile(eventPath, 'utf8')).trimEnd().split('\n').map(JSON.parse);
+  assert.equal(restoredEvents.at(-1).positionRecovery, 'independent-review-position-recovery-1');
+  assert.equal(restoredEvents.at(-1).recoveredFromSeal, true);
+}));
+
+test('a repair with reused context is rejected without invalidating earlier valid seals', async () => withRoot(async root => {
+  const { result } = await ambiguousFourth(root), repair = repairFixture();
+  const failed = await recoverIndependentReviewPositions({ ...result, mode: 'position_repair', analyzePositionRepair: async input => {
+    const returned = await repair.analyze(input); returned.receipt.contextId = 'controlled-context-0'; return returned;
+  } });
+  assert.equal(failed.error.code, 'POSITION_REPAIR_RECEIPT_BINDING');
+  const progress = await readIndependentReviewProgress(failed);
+  assert.equal(progress.error.code, 'POSITION_REPAIR_RECEIPT_BINDING'); assert.equal(progress.progress.completedStages, 3);
+  assert.equal(repair.calls.length, 1);
 }));

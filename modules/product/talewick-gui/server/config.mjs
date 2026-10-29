@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { agentProviderFor, usesDeepSeekThinking } from './model-policy.mjs';
+import { agentProviderFor, usesDeepSeekThinking, NATIVE_DEEPSEEK_REASONING_POLICY, NATIVE_DEEPSEEK_DEFAULT_REASONING_EFFORT } from './model-policy.mjs';
 import { engineBinding, ENGINE_LABELS } from './engines.mjs';
 
 export const appRoot = fileURLToPath(new URL('../', import.meta.url));
@@ -48,7 +48,7 @@ export async function loadConfig(env = process.env, file = path.join(appRoot, '.
     const text = await readFile(file, 'utf8');
     for (const line of text.split(/\r?\n/)) {
       const match = line.match(/^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=\s*(.*?)\s*$/);
-      if (!match || !['TALEWICK_API_BASE_URL', 'TALEWICK_API_KEY', 'TALEWICK_MODEL', 'TALEWICK_RELEVANCE_MODEL', 'TALEWICK_RELEVANCE_PROVIDER', 'TALEWICK_RELEVANCE_EFFORT', 'TALEWICK_RELEVANCE_CODEX_EXECUTABLE', 'TALEWICK_RELEVANCE_ACCEPT_DISABLED_HOST_NOTICE', 'DEEPSEEK_API_KEY', 'TALEWICK_PORT', 'TALEWICK_RUNS_DIR', 'TALEWICK_LIBRARY_DIR', 'TALEWICK_MODEL_TIMEOUT_MS', 'TALEWICK_MODEL_IDLE_TIMEOUT_MS', 'TALEWICK_ENGINE', 'TALEWICK_AGENT_PROVIDER'].includes(match[1])) continue;
+      if (!match || !['TALEWICK_API_BASE_URL', 'TALEWICK_API_KEY', 'TALEWICK_MODEL', 'TALEWICK_RELEVANCE_MODEL', 'TALEWICK_RELEVANCE_PROVIDER', 'TALEWICK_RELEVANCE_EFFORT', 'TALEWICK_RELEVANCE_CODEX_EXECUTABLE', 'TALEWICK_RELEVANCE_ACCEPT_DISABLED_HOST_NOTICE', 'DEEPSEEK_API_KEY', 'TALEWICK_PORT', 'TALEWICK_RUNS_DIR', 'TALEWICK_LIBRARY_DIR', 'TALEWICK_DEEP_REFERENCE_INSTALL_ROOT', 'TALEWICK_MODEL_TIMEOUT_MS', 'TALEWICK_MODEL_IDLE_TIMEOUT_MS', 'TALEWICK_ENGINE', 'TALEWICK_AGENT_PROVIDER'].includes(match[1])) continue;
       let value = match[2];
       if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
       local[match[1]] = value;
@@ -85,7 +85,8 @@ export async function loadConfig(env = process.env, file = path.join(appRoot, '.
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('本地服务端口应在 1024–65535 之间。');
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 600000) throw new Error('模型等待时间应在 1000–600000 毫秒之间。');
   if (!Number.isInteger(idleTimeoutMs) || idleTimeoutMs < 1000 || idleTimeoutMs > timeoutMs) throw new Error('模型无进展等待时间应在 1000 毫秒与总等待时间之间。');
-  return { baseURL, apiKey, model, port, timeoutMs, idleTimeoutMs, engine, agentProvider, libraryDir: path.resolve(baseRoot, settings.TALEWICK_LIBRARY_DIR || path.join(settings.TALEWICK_RUNS_DIR || '.local-runs', 'library')), runsDir: path.resolve(baseRoot, settings.TALEWICK_RUNS_DIR || '.local-runs'), ...relevanceSelection };
+  return { baseURL, apiKey, model, port, timeoutMs, idleTimeoutMs, engine, agentProvider, libraryDir: path.resolve(baseRoot, settings.TALEWICK_LIBRARY_DIR || path.join(settings.TALEWICK_RUNS_DIR || '.local-runs', 'library')), runsDir: path.resolve(baseRoot, settings.TALEWICK_RUNS_DIR || '.local-runs'),
+    ...(settings.TALEWICK_DEEP_REFERENCE_INSTALL_ROOT ? { deepReferenceInstallRoot: path.resolve(baseRoot, settings.TALEWICK_DEEP_REFERENCE_INSTALL_ROOT) } : {}), ...relevanceSelection };
 }
 
 /** Safe configuration summary for the browser; never return a credential. */
@@ -93,5 +94,5 @@ export function publicConfig(config) {
   const configured = Boolean(config.apiKey && config.model);
   const binding = engineBinding(config.engine);
   const relevanceModel = validateRelevanceModel(config);
-  return { configured, ready: configured, provider: new URL(config.baseURL).hostname, model: config.model, ...binding, engineLabel: ENGINE_LABELS[binding.engine], message: configured ? '本地创作服务已就绪。' : '模型尚未配置。请在本机 .env.local 中填写模型服务信息后重启创作服务。', ...(relevanceModel ? { relevanceModel } : {}), ...(Object.hasOwn(config, 'relevanceProvider') ? { relevanceProvider: config.relevanceProvider } : {}), ...(config.relevanceProvider === 'codex-cli' ? { relevanceEffort: config.relevanceEffort } : {}) };
+  return { configured, ready: configured, provider: new URL(config.baseURL).hostname, model: config.model, ...binding, engineLabel: ENGINE_LABELS[binding.engine], message: configured ? '本地创作服务已就绪。' : '模型尚未配置。请在本机 .env.local 中填写模型服务信息后重启创作服务。', modelExecutionPolicy: { version: NATIVE_DEEPSEEK_REASONING_POLICY, nativeDeepSeekDefaultReasoningEffort: NATIVE_DEEPSEEK_DEFAULT_REASONING_EFFORT, applied: agentProviderFor(config) === 'deepseek', explicitStageSettingsTakePrecedence: true }, ...(relevanceModel ? { relevanceModel } : {}), ...(Object.hasOwn(config, 'relevanceProvider') ? { relevanceProvider: config.relevanceProvider } : {}), ...(config.relevanceProvider === 'codex-cli' ? { relevanceEffort: config.relevanceEffort } : {}) };
 }

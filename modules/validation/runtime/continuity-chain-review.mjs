@@ -14,6 +14,8 @@ export const CONTINUITY_CHAIN_REPAIR_VERSION = 'continuity-chain-repair-1';
 export const CONTINUITY_CHAIN_FORMAT_REPAIR_VERSION = 'continuity-chain-format-repair-1';
 export const CONTINUITY_CHAIN_HISTORICAL_OBSERVATION_VERSION = 'continuity-chain-unverified-observation-1';
 export const CONTINUITY_CHAIN_FAILURE_VERSION = 'continuity-chain-failure-1';
+export const CONTINUITY_CHAIN_PRIMARY_FAILURE_VERSION = 'continuity-chain-primary-failure-1';
+export const CONTINUITY_CHAIN_RELATION_REPAIR_FAILURE_VERSION = 'continuity-chain-relation-repair-failure-1';
 export const CONTINUITY_CHAIN_LIMITS = Object.freeze({...CONTINUITY_LOCATION_LIMITS,
   maxEvidenceLocations:12, maxAnchors:48, maxTransitions:48, maxCaseAnchors:12, maxReportChars:120000,
   maxResponseChars:80000, maxReasonChars:1200, maxTokens:9000});
@@ -585,9 +587,105 @@ function failureHistoricalObservation(input,repairRawResponse,failureCode,item) 
     revisionEligible:false,explicitlyClosed:false};
 }
 
-/** Extract every usable major unknown/contradiction from a bound, failed repair raw. */
+const primaryFailureCodes = new Set(['CASE_FACETS','CASE_NEEDS_DISTINCT_EVIDENCE']);
+
+/** Only these observed protocol errors may be archived from a saved primary response. */
+export function isContinuityChainPrimaryFailureError(error) {
+  return error instanceof ContinuityError && primaryFailureCodes.has(error.code);
+}
+
+/** Pure replay: no repair, model, checkpoint write, or semantic acceptance. */
+export function createContinuityChainPrimaryFailureEnvelope(args) {
+  const supplied=jsonCopy(args);
+  exactFields(supplied,['input','primaryRawResponse','failureCode']);
+  const input=inspectInput(supplied.input);
+  ensure(input.schemaVersion===CONTINUITY_CHAIN_V3_VERSION,'CONTINUITY_FAILURE_V3_ONLY');
+  ensure(typeof supplied.primaryRawResponse==='string','CONTINUITY_FAILURE_RAW_REQUIRED');
+  ensure(supplied.primaryRawResponse.length<=limits.maxResponseChars,'RESPONSE_BUDGET');
+  ensure(primaryFailureCodes.has(supplied.failureCode),'CONTINUITY_PRIMARY_FAILURE_NOT_ALLOWED');
+  let wire;
+  try { wire=jsonCopy(JSON.parse(supplied.primaryRawResponse)); }
+  catch(error) {
+    if(error instanceof SyntaxError)throw new ContinuityError('RESPONSE_JSON');
+    throw error;
+  }
+  ensure(object(wire)&&['inputHash','manuscriptSha256','reportSha256'].every(key=>wire[key]===input[key]),'CONTINUITY_PRIMARY_FAILURE_BINDING');
+  let failure;
+  try { inspectContinuityChainReview(supplied.primaryRawResponse,input); }
+  catch(error) {
+    if(!isContinuityChainPrimaryFailureError(error))throw error;
+    failure=error;
+  }
+  ensure(failure?.code===supplied.failureCode,'CONTINUITY_FAILURE_NOT_REPRODUCED');
+  return {schemaVersion:CONTINUITY_CHAIN_PRIMARY_FAILURE_VERSION,chainSchemaVersion:input.schemaVersion,
+    status:'continuity_chain_incomplete',inputHash:input.inputHash,manuscriptSha256:input.manuscriptSha256,
+    reportSha256:input.reportSha256,primaryRequestSha256:input.requestSha256,
+    primaryResponseSha256:sha256(supplied.primaryRawResponse),failureCode:supplied.failureCode,
+    repairAttempted:false,semanticAcceptance:false,automaticRevisionEligible:false,
+    historicalObservations:collectFailureHistoricalObservations(input,wire,supplied.primaryRawResponse,supplied.failureCode)};
+}
+
+/** A classifier only; the constructor must separately verify the saved repair and raw. */
+export function isContinuityChainRelationRepairFailureError(error) {
+  return error instanceof ContinuityError && typeof error.code === 'string' && error.code.length > 0;
+}
+
+function boundRelationFailureRaw(rawResponse,input) {
+  ensure(typeof rawResponse==='string'&&rawResponse.length<=limits.maxResponseChars,'RESPONSE_BUDGET');
+  let wire;
+  try { wire=jsonCopy(JSON.parse(rawResponse)); }
+  catch(error) {
+    if(error instanceof SyntaxError)throw new ContinuityError('RESPONSE_JSON');
+    throw error;
+  }
+  ensure(object(wire)&&['inputHash','manuscriptSha256','reportSha256'].every(key=>wire[key]===input[key]),'CONTINUITY_RELATION_FAILURE_BINDING');
+  return wire;
+}
+
+/** Archive the unique saved relation repair's protocol rejection, never its acceptance. */
+export function createContinuityChainRelationRepairFailureEnvelope(args) {
+  const supplied=jsonCopy(args);
+  exactFields(supplied,['input','primaryRawResponse','repairInput','repairRawResponse','failureCode']);
+  const input=inspectInput(supplied.input);
+  ensure(input.schemaVersion===CONTINUITY_CHAIN_V3_VERSION,'CONTINUITY_FAILURE_V3_ONLY');
+  ensure(typeof supplied.failureCode==='string'&&supplied.failureCode.length>0,'CONTINUITY_FAILURE_CODE');
+  const repairInput=inspectContinuityChainRepairInput(supplied.repairInput);
+  ensure(isDeepStrictEqual(repairInput.input,input)&&repairInput.invalidResponse===supplied.primaryRawResponse&&
+    repairInput.invalidResponseSha256===sha256(supplied.primaryRawResponse),'CONTINUITY_FAILURE_REPAIR_BINDING');
+  const primaryWire=boundRelationFailureRaw(supplied.primaryRawResponse,input);
+  const repairWire=boundRelationFailureRaw(supplied.repairRawResponse,input);
+  let failure;
+  try { inspectContinuityChainRepairResponse(supplied.repairRawResponse,repairInput); }
+  catch(error) {
+    if(!isContinuityChainRelationRepairFailureError(error))throw error;
+    failure=error;
+  }
+  ensure(failure?.code===supplied.failureCode,'CONTINUITY_FAILURE_NOT_REPRODUCED');
+  const historicalObservations=[],seen=new Set();
+  // Keep both raw sources: a content-changing repair must not erase a primary observation.
+  for(const observation of [
+    ...collectFailureHistoricalObservations(input,primaryWire,supplied.primaryRawResponse,repairInput.diagnostics.code),
+    ...collectFailureHistoricalObservations(input,repairWire,supplied.repairRawResponse,supplied.failureCode),
+  ]) {
+    const key=JSON.stringify([observation.sourceResponseSha256,observation.case.id]);
+    if(!seen.has(key)){seen.add(key);historicalObservations.push(observation);}
+  }
+  return {schemaVersion:CONTINUITY_CHAIN_RELATION_REPAIR_FAILURE_VERSION,chainSchemaVersion:input.schemaVersion,
+    status:'continuity_chain_incomplete',inputHash:input.inputHash,manuscriptSha256:input.manuscriptSha256,
+    reportSha256:input.reportSha256,primaryRequestSha256:input.requestSha256,
+    primaryResponseSha256:sha256(supplied.primaryRawResponse),repairSchemaVersion:repairInput.schemaVersion,
+    repairRequestSha256:repairInput.requestSha256,repairResponseSha256:sha256(supplied.repairRawResponse),
+    primaryFailureCode:repairInput.diagnostics.code,failureCode:supplied.failureCode,repairAttempted:true,
+    semanticAcceptance:false,automaticRevisionEligible:false,historicalObservations};
+}
+
+/** Extract unverified history from a strictly replayed, versioned failure. */
 export function extractContinuityChainFailureHistoricalObservations(args) {
   const supplied=jsonCopy(args);
+  if(object(supplied)&&supplied.repairInput?.schemaVersion===CONTINUITY_CHAIN_REPAIR_VERSION)
+    return createContinuityChainRelationRepairFailureEnvelope(supplied).historicalObservations;
+  if(object(supplied)&&Object.hasOwn(supplied,'primaryRawResponse'))
+    return createContinuityChainPrimaryFailureEnvelope(supplied).historicalObservations;
   exactFields(supplied,['input','repairInput','repairRawResponse','failureCode']);
   const input=inspectInput(supplied.input);
   ensure(input.schemaVersion===CONTINUITY_CHAIN_V3_VERSION,'CONTINUITY_FAILURE_V3_ONLY');
@@ -603,6 +701,10 @@ export function extractContinuityChainFailureHistoricalObservations(args) {
   try { wire=jsonCopy(JSON.parse(supplied.repairRawResponse)); }
   catch { return []; }
   if(wire.inputHash!==input.inputHash||wire.manuscriptSha256!==input.manuscriptSha256||wire.reportSha256!==input.reportSha256)return [];
+  return collectFailureHistoricalObservations(input,wire,supplied.repairRawResponse,supplied.failureCode);
+}
+
+function collectFailureHistoricalObservations(input,wire,rawResponse,failureCode) {
   if(!Array.isArray(wire.cases))return [];
   const seen=new Set(),observations=[];
   for(const item of wire.cases) {
@@ -611,7 +713,7 @@ export function extractContinuityChainFailureHistoricalObservations(args) {
       typeof item.subject!=='string'||item.subject.trim().length===0||item.impact!=='major'||
       !['unknown','contradiction'].includes(item.assessment)||typeof item.reason!=='string'||item.reason.trim().length===0)continue;
     seen.add(item.id);
-    observations.push(failureHistoricalObservation(input,supplied.repairRawResponse,supplied.failureCode,item));
+    observations.push(failureHistoricalObservation(input,rawResponse,failureCode,item));
   }
   return observations;
 }
@@ -643,7 +745,9 @@ export function createContinuityChainFailureEnvelope(args) {
 }
 
 export function validateContinuityChainFailureEnvelope(value,args) {
-  const saved=jsonCopy(value),rebuilt=createContinuityChainFailureEnvelope(args);
+  const saved=jsonCopy(value),rebuilt=saved?.schemaVersion===CONTINUITY_CHAIN_PRIMARY_FAILURE_VERSION
+    ?createContinuityChainPrimaryFailureEnvelope(args):saved?.schemaVersion===CONTINUITY_CHAIN_RELATION_REPAIR_FAILURE_VERSION
+      ?createContinuityChainRelationRepairFailureEnvelope(args):createContinuityChainFailureEnvelope(args);
   ensure(isDeepStrictEqual(saved,rebuilt),'CONTINUITY_FAILURE_TAMPER');return rebuilt;
 }
 

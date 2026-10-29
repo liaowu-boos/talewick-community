@@ -17,8 +17,11 @@ import { Full15Service, createFull15Router, productManuscriptRevision } from './
 import { createFull15Analyze } from './full15-analyze.mjs';
 import { defaultFull15Input, full15InputFromRequestSpec } from './full15-input.mjs';
 import { IndependentReviewService, createIndependentReviewRouter } from './independent-review-service.mjs';
-import { createIndependentReviewAnalyze } from './independent-review-analyze.mjs';
+import { createIndependentReviewAnalyze, createIndependentReviewPositionRepairAnalyze } from './independent-review-analyze.mjs';
 import { full15InputFromWholeQuality } from './whole-quality-data-bridge.mjs';
+import { CandidateRecheckService, PRODUCT_RECHECK_VERSION, createCandidateRecheckRouter } from './candidate-rechecks.mjs';
+import { resolveDeepReferenceLayer, queryDeepReferences as queryDeepReferenceLayer } from '../../../data/runtime/deep-reference-layer.mjs';
+import { listImportableProjects, projectImportSnapshot } from './project-import.mjs';
 
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.woff2': 'font/woff2', '.ico': 'image/x-icon' };
 const json = (res, status, data) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); res.end(JSON.stringify(data)); };
@@ -33,16 +36,32 @@ async function bodyJSON(req) {
 
 /** Bind only loopback; the browser sees status/results and never receives the model key. */
 export async function createRuntime({ config, model = createModel(config), workflow, agentModel, conversationModel, library: injectedLibrary,
+  libraryBatchFileState,
   narrativeObservation: injectedNarrativeObservation, publicationFeedback: injectedFeedback, full15Adapter, full15Analyze,
-  full15InputForManuscript, independentReviewAdapter, independentReviewAnalyze, independentReviewHandoff,
+  full15InputForManuscript, independentReviewAdapter, independentReviewAnalyze, independentReviewPositionRepairAnalyze, independentReviewZeroDispatchAuditForTask, independentReviewReadingFocus, independentReviewHandoff,
   distDir = path.join(appRoot, 'dist') }) {
   const resolvedFull15Adapter = full15Adapter === undefined ? await import('../../../validation/runtime/full15-task.mjs').catch(() => null) : full15Adapter;
   const resolvedIndependentReviewAdapter = independentReviewAdapter === undefined ? await import('../../../validation/runtime/independent-review-task.mjs').catch(() => null) : independentReviewAdapter;
+  const resolvedIndependentReviewReadingFocus = independentReviewReadingFocus === undefined ? await import('../../../validation/runtime/focused-whole-quality-evaluation.mjs').catch(() => null) : independentReviewReadingFocus;
   const resolvedIndependentReviewHandoff = independentReviewHandoff === undefined ? await import('../../../creation/runtime/independent-review-handoff.mjs').catch(() => null) : independentReviewHandoff;
   const libraryRoot = config.libraryDir || path.join(config.runsDir, 'library');
   const narrativeObservation = injectedNarrativeObservation ?? (injectedLibrary === undefined
     ? await loadNarrativeObservationProjection({libraryRoot})
     : unavailableNarrativeObservationProjection('library_injected'));
+  let deepReferenceInstallation = null;
+  let deepReferenceStatus = { available: false, reason: 'not_installed' };
+  const deepReferenceInstallRoot = config.deepReferenceInstallRoot || path.join(libraryRoot, 'deep-reference-layer');
+  {
+    try {
+      deepReferenceInstallation = await resolveDeepReferenceLayer({ installRoot: deepReferenceInstallRoot });
+      deepReferenceStatus = { available: true, contractVersion: deepReferenceInstallation.schemaVersion,
+        installId: deepReferenceInstallation.installId, sourceCount: deepReferenceInstallation.sourceCount,
+        frozenCatalogSnapshotSha256: deepReferenceInstallation.bindings.frozenCatalogSnapshotSha256,
+        liveBoundSourcesSha256: deepReferenceInstallation.bindings.liveBoundSourcesSha256,
+        boundary: '99份资料是证据约束的分析假说；检索不等于采用。' };
+    } catch (error) { deepReferenceStatus = { available: false, reason: error?.code === 'ENOENT' ? 'not_installed' : error?.code || 'verification_failed' }; }
+  }
+  const queryDeepReferences = deepReferenceInstallation ? (query => queryDeepReferenceLayer({ installation: deepReferenceInstallation, ...query })) : undefined;
   let library = injectedLibrary ?? null;
   const retrieveKnowledge = (query, options) => createRetrieveKnowledge(library)(query, options);
   let tasks, full15, independentReviews, releaseFull15;
@@ -50,7 +69,7 @@ export async function createRuntime({ config, model = createModel(config), workf
   try {
     tasks = await new TaskService({ runsDir: config.runsDir, model, engine: config.engine || 'fixed',
       newPlanningFollowupDecisionMode: PLANNING_FOLLOWUP_DECISION_MODE,
-      workflow: workflow || createWorkflowRouter({ config, agentModel, retrieveKnowledge, queryNarrativeObservations: narrativeObservation.query }), onCompleted: async (task, _request, artifacts) => {
+      workflow: workflow || createWorkflowRouter({ config, agentModel, retrieveKnowledge, queryDeepReferences, queryNarrativeObservations: narrativeObservation.query }), onCompleted: async (task, _request, artifacts) => {
       const service = await full15Ready;
       if (!service?.available() || task.kind !== 'create' || !task.result) return;
       await service.start({ projectId: task.projectId, requestId: `creation-${task.id}`, title: task.result.title, chapters: task.result.chapters, manuscriptRevision: productManuscriptRevision(task.result.title, task.result.chapters) }, { trigger: 'automatic', sourceTaskId: task.id, configuredInput: full15InputFromRequestSpec(artifacts?.requestSpec) });
@@ -73,6 +92,11 @@ export async function createRuntime({ config, model = createModel(config), workf
     full15 = await new Full15Service({ rootDir: path.join(config.runsDir, 'full15-product'), adapter: resolvedFull15Adapter, analyze: full15Analyze ?? createFull15Analyze({ model }), inputForManuscript: resolveFull15Input }).init();
     independentReviews = await new IndependentReviewService({ rootDir: path.join(config.runsDir, 'independent-reviews'),
       adapter: resolvedIndependentReviewAdapter, analyze: independentReviewAnalyze ?? createIndependentReviewAnalyze({ model }),
+      analyzePositionRepair: independentReviewPositionRepairAnalyze === undefined
+        ? (publicConfig(config).configured ? createIndependentReviewPositionRepairAnalyze({ model }) : undefined)
+        : independentReviewPositionRepairAnalyze,
+      zeroDispatchAuditForTask: independentReviewZeroDispatchAuditForTask,
+      readingFocus: resolvedIndependentReviewReadingFocus,
       prepareRequest: async input => {
         if (input.mode === 'single') return { request: { caseId: input.caseId, mode: 'single', baselineChapters: structuredClone(input.chapters) },
           provenance: { role: 'source', manuscriptRevision: input.manuscriptRevision } };
@@ -95,10 +119,14 @@ export async function createRuntime({ config, model = createModel(config), workf
   catch (error) { await tasks.close(); await full15.close(); await independentReviews.close(); throw error; }
   const libraryRouter = createLibraryRouter({ library, json, bodyJSON });
   let libraryBatches=null;
+  let libraryBatchesUnavailableCode=null;
   try {
-    if(library&&['registerSource','startSource','waitSource','verifyIndexBinding'].every(key=>typeof library[key]==='function'))libraryBatches=await createLibraryBatchService({library,rootDir:path.join(await realpath(config.runsDir),'library-batches'),concurrency:2,ownsLibrary:false});
-  }catch(error){await tasks.close();await full15.close();await independentReviews.close();await library?.close();throw error;}
-  const batchRouter=createLibraryBatchRouter({service:libraryBatches,json,bodyJSON,canRun:()=>publicConfig(config).configured});
+    if(library&&['registerSource','startSource','waitSource','verifyIndexBinding'].every(key=>typeof library[key]==='function'))libraryBatches=await createLibraryBatchService({library,rootDir:path.join(await realpath(config.runsDir),'library-batches'),concurrency:2,ownsLibrary:false,fileState:libraryBatchFileState});
+  }catch(error){
+    if(error?.code==='BATCH_LOCAL_FILE_WAIT')libraryBatchesUnavailableCode=error.code;
+    else{await tasks.close();await full15.close();await independentReviews.close();await library?.close();throw error;}
+  }
+  const batchRouter=createLibraryBatchRouter({service:libraryBatches,json,bodyJSON,canRun:()=>publicConfig(config).configured,unavailableCode:libraryBatchesUnavailableCode});
   let conversations;
   try { conversations = await new ConversationService({ runsDir: config.runsDir, tasks, config, conversationModel }).init(); }
   catch (error) { await libraryBatches?.close(); await tasks.close(); await full15.close(); await independentReviews.close(); await library?.close(); throw error; }
@@ -106,10 +134,12 @@ export async function createRuntime({ config, model = createModel(config), workf
   try { publicationFeedback=injectedFeedback??await createPublicationFeedbackService({rootDir:path.join(config.runsDir,'publication-feedback'),model,configured:()=>publicConfig(config).configured}); }
   catch(error){await Promise.allSettled([conversations.close(),libraryBatches?.close(),tasks.close(),full15.close(),independentReviews.close(),library?.close()]);throw error;}
   const feedbackRouter=createPublicationFeedbackRouter({service:publicationFeedback,json,bodyJSON});
+  const candidateRechecks = await new CandidateRecheckService({ rootDir: path.join(config.runsDir, 'candidate-rechecks'), tasks, model }).init();
+  const candidateRecheckRouter = createCandidateRecheckRouter({ service: candidateRechecks, json, bodyJSON, canRun: () => publicConfig(config).configured });
   const full15Router=createFull15Router({service:full15,json,bodyJSON});
   const independentReviewRouter=createIndependentReviewRouter({service:independentReviews,json,bodyJSON});
   const sockets = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, perMessageDeflate: false });
-  const close = async () => { for (const socket of sockets.clients) socket.terminate(); sockets.close(); const results=await Promise.allSettled([independentReviews.close(),full15.close(),publicationFeedback.close(),conversations.close(),libraryBatches?.close(),tasks.close(),library?.close()]); const failed=results.find(r=>r.status==='rejected');if(failed)throw failed.reason; };
+  const close = async () => { for (const socket of sockets.clients) socket.terminate(); sockets.close(); const results=await Promise.allSettled([candidateRechecks.close(),independentReviews.close(),full15.close(),publicationFeedback.close(),conversations.close(),libraryBatches?.close(),tasks.close(),library?.close()]); const failed=results.find(r=>r.status==='rejected');if(failed)throw failed.reason; };
   const allowedOrigins = new Set([`http://127.0.0.1:${config.port}`, `http://localhost:${config.port}`, 'http://127.0.0.1:4323', 'http://localhost:4323']);
   const server = http.createServer(async (req, res) => {
     try {
@@ -118,11 +148,12 @@ export async function createRuntime({ config, model = createModel(config), workf
       if (req.headers.origin && !allowedOrigins.has(req.headers.origin)) throw fail('当前页面不能访问这台电脑的创作服务。', 403);
       const url = new URL(req.url, `http://${host}`);
       if (await independentReviewRouter(req,res,url)) return;
+      if (await candidateRecheckRouter(req,res,url)) return;
       if (await full15Router(req,res,url)) return;
       if (await feedbackRouter(req,res,url)) return;
       if (await batchRouter(req, res, url)) return;
       if (await libraryRouter(req, res, url)) return;
-      if (url.pathname === '/api/runtime' && req.method === 'GET') return json(res, 200, { ...publicConfig(config), library: { available: Boolean(library), batchesAvailable:Boolean(libraryBatches), contractVersion: 'v04-contract-1', narrativeObservations: narrativeObservation.status }, full15: { available: full15.available(), contractVersion: 'full15-product-task-1' }, independentReviews: { available: independentReviews.available(), contractVersion: 'independent-review-product-task-1' } });
+      if (url.pathname === '/api/runtime' && req.method === 'GET') return json(res, 200, { ...publicConfig(config), library: { available: Boolean(library), batchesAvailable:Boolean(libraryBatches), ...(libraryBatchesUnavailableCode?{batchesUnavailableCode:libraryBatchesUnavailableCode}:{}), contractVersion: 'v04-contract-1', narrativeObservations: narrativeObservation.status }, deepReferences: deepReferenceStatus, full15: { available: full15.available(), contractVersion: 'full15-product-task-1' }, independentReviews: { available: independentReviews.available(), contractVersion: 'independent-review-product-task-1' }, candidateRechecks: { available: true, contractVersion: PRODUCT_RECHECK_VERSION } });
       const chat = url.pathname.match(/^\/api\/conversations\/([\w-]{1,160})(?:\/turns(?:\/([\w-]{1,160})\/(stream|cancel))?)?$/);
       if (chat) {
         const [, projectId, turnId, action] = chat;
@@ -136,6 +167,13 @@ export async function createRuntime({ config, model = createModel(config), workf
         throw fail('这个对话入口不支持当前操作。', 405);
       }
       if (url.pathname === '/api/tasks' && req.method === 'GET') return json(res, 200, { tasks: tasks.list(url.searchParams.get('projectId')) });
+      if (url.pathname === '/api/projects' && req.method === 'GET') {
+        return json(res, 200, { projects: listImportableProjects(tasks) });
+      }
+      const snapshotMatch = url.pathname.match(/^\/api\/projects\/([\w-]{1,160})\/import-snapshot$/);
+      if (snapshotMatch && req.method === 'GET') {
+        return json(res, 200, projectImportSnapshot(tasks, snapshotMatch[1]));
+      }
       if (url.pathname === '/api/tasks' && req.method === 'POST') {
         if (!publicConfig(config).configured) throw fail(publicConfig(config).message, 503);
         return json(res, 202, { task: await tasks.create(await bodyJSON(req)) });
@@ -177,7 +215,7 @@ export async function createRuntime({ config, model = createModel(config), workf
       sockets.handleUpgrade(req, socket, head, client => conversations.socket(route[1], route[2], client));
     } catch (error) { reject(error.status || 400); }
   });
-  return { server, tasks, conversations, library, libraryBatches, publicationFeedback, full15, independentReviews, close };
+  return { server, tasks, conversations, library, libraryBatches, publicationFeedback, full15, independentReviews, candidateRechecks, close };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

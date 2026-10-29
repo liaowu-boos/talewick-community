@@ -2,7 +2,7 @@ import { mkdir, open, readFile, rename, lstat, realpath, unlink } from 'node:fs/
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { createLibraryBatchQueue } from './library-batches.mjs';
+import { createLibraryBatchQueue, assertLibraryBatchLocalFile, libraryBatchFileState } from './library-batches.mjs';
 import { decodeImport } from './library.mjs';
 import { LIBRARY_LIMITS } from '../../../data/runtime/library.mjs';
 import { inspectAnalysisReview } from '../../../data/runtime/analysis-review.mjs';
@@ -17,7 +17,7 @@ const require = (ok, code = 'INVALID_BATCH_INPUT') => { if (!ok) throw issue(cod
 const safeCodes = new Set(['INVALID_BATCH_INPUT', 'INVALID_INPUT', 'INVALID_ENCODING', 'INPUT_TOO_LARGE', 'FILE_TOO_LARGE',
   'REQUEST_CONFLICT', 'CAPACITY_EXCEEDED', 'BATCH_CONFLICT', 'DUPLICATE_SOURCE', 'BATCH_TARGET_CAPACITY',
   'BATCH_SERVICE_CLOSED', 'BATCH_SERVICE_BUSY', 'BATCH_STORE_BUSY', 'BATCH_STORE_INVALID', 'BATCH_STORE_CONFLICT',
-  'BATCH_STORE_SYMLINK', 'BATCH_QUEUE_HALTED', 'SOURCE_BINDING_CONFLICT', 'RESULT_BINDING_CONFLICT',
+  'BATCH_STORE_SYMLINK', 'BATCH_LOCAL_FILE_WAIT', 'BATCH_QUEUE_HALTED', 'SOURCE_BINDING_CONFLICT', 'RESULT_BINDING_CONFLICT',
   'CHECKED_RESULT_REQUIRED', 'DATA_INTERFACE_MISSING', 'DATA_CLOSE_FAILED', 'DATA_WAIT_FAILED', 'UNKNOWN_BATCH', 'INTERRUPTED',
   'STORAGE_FAILED', 'PROCESSING_FAILED', 'INVALID_ANALYSIS', 'CANCELLED']);
 const safe = error => issue(safeCodes.has(error?.code) ? error.code
@@ -65,9 +65,10 @@ const snapshot = row => ({ sourceId: row.sourceId, sourceSha256: row.sourceSha25
   activeRevisionId: row.activeRevisionId ?? null, revisionIds: row.revisionIds ?? [], deferred: row.deferred ?? false });
 
 /** ownsLibrary=false joins only this queue's work and never closes the shared DATA instance. */
-export async function createLibraryBatchService({ library, rootDir, concurrency = 2, ownsLibrary = true } = {}) {
+export async function createLibraryBatchService({ library, rootDir, concurrency = 2, ownsLibrary = true, fileState = libraryBatchFileState } = {}) {
   require(['registerSource', 'startSource', 'waitSource', 'verifyIndexBinding', 'get', 'readSource', 'cancel', ...(ownsLibrary ? ['close'] : [])].every(key => typeof library?.[key] === 'function'), 'DATA_INTERFACE_MISSING');
   require(typeof rootDir === 'string' && path.isAbsolute(rootDir) && [2, 4].includes(concurrency) && typeof ownsLibrary === 'boolean');
+  await assertLibraryBatchLocalFile(rootDir, fileState);
   await mkdir(rootDir, { recursive: true, mode: 0o700 });
   require(await realpath(rootDir) === rootDir, 'BATCH_STORE_SYMLINK');
   let state, diskHash = null, serial = Promise.resolve(), submissions = Promise.resolve(), runPromise = null;
@@ -75,7 +76,10 @@ export async function createLibraryBatchService({ library, rootDir, concurrency 
   let recoveryWork = null, dataClosePromise = null;
   const active = new Map();
   const stateFile = path.join(rootDir, 'service.json');
+  // Do this before the queue acquires its owner or reconciles any old state.
+  await assertLibraryBatchLocalFile(stateFile, fileState);
   const readState = async () => {
+    await assertLibraryBatchLocalFile(stateFile, fileState);
     const stat = await lstat(stateFile);
     require(stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1 && stat.size < 8 * 1024 * 1024, 'BATCH_STORE_INVALID');
     return readFile(stateFile, 'utf8');
@@ -330,7 +334,7 @@ export async function createLibraryBatchService({ library, rootDir, concurrency 
   }
 
   try {
-    queue = await createLibraryBatchQueue({ rootDir: path.join(rootDir, 'queue'), processOne, concurrency });
+    queue = await createLibraryBatchQueue({ rootDir: path.join(rootDir, 'queue'), processOne, concurrency, fileState });
     try { const raw = await readState(); state = validate(JSON.parse(raw)); diskHash = hash(raw); }
     catch (error) {
       if (error.code !== 'ENOENT') throw error;

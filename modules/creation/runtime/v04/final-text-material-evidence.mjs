@@ -46,7 +46,10 @@ export function buildFinalTextMaterialEvidence({ chapters, materialDecisions, cl
     const decision = adoptedById.get(claim.materialId);
     ensure(decision && claim.sourceMaterialSha256 === decision.sourceMaterialSha256, '核验记录与采用声明的材料或来源哈希不一致');
     ensure(Array.isArray(claim.sourceBindings) && claim.sourceBindings.length > 0, '缺少DATA来源绑定');
-    ensure(Array.isArray(claim.manuscriptEvidence) && claim.manuscriptEvidence.length > 0, '缺少最终正文逐字证据');
+    const status = claim.status ?? 'located';
+    ensure(['located', 'not_proven'].includes(status) && Array.isArray(claim.manuscriptEvidence), '最终正文核验状态或证据无效');
+    if (status === 'located') ensure(claim.manuscriptEvidence.length > 0 && claim.reason === undefined, 'located 缺少最终正文逐字证据或携带无效原因');
+    else ensure(claim.manuscriptEvidence.length === 0 && typeof claim.reason === 'string' && claim.reason.trim(), 'not_proven 须保留具体原因且不能携带引文');
     ensure(Array.isArray(claim.limitations) && claim.limitations.length > 0
       && claim.limitations.every(item => typeof item === 'string' && item.trim()), '须保留核验限制');
     const evidence = claim.manuscriptEvidence.map(entry => {
@@ -65,7 +68,8 @@ export function buildFinalTextMaterialEvidence({ chapters, materialDecisions, cl
       authorDeclaration: { mechanism: decision.mechanism, plannedTarget: structuredClone(decision.target),
         status: decision.status ?? 'author_declared_not_text_verified' },
       manuscriptEvidence: evidence,
-      verificationStatus: 'literal_text_located_not_literary_effect_verified',
+      verificationStatus: status === 'located' ? 'literal_text_located_not_literary_effect_verified' : 'not_proven',
+      ...(status === 'not_proven' ? { reason: claim.reason } : {}),
       limitations: [...claim.limitations],
     };
   });

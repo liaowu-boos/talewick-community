@@ -36,7 +36,7 @@ test('Full15 stages alone receive 65536 and explicit low thinking', () => {
   assert.equal(outputTokenLimit(config, 65536, 'continuity-review'), 65536, 'existing continuity policy is unchanged');
 });
 
-test('ordinary review, creation and library request semantics remain unchanged', async () => {
+test('ordinary review, creation and library retain token and JSON semantics with explicit low reasoning', async () => {
   const cases = [
     ['review', 6000, 32768, undefined, undefined, { type: 'json_object' }],
     ['draft:ch-1', 6500, 32768, undefined, undefined, undefined],
@@ -50,7 +50,7 @@ test('ordinary review, creation and library request semantics remain unchanged',
     assert.equal(bodies.length, 1);
     assert.equal(bodies[0].max_tokens, expectedMax, stage);
     assert.deepEqual(bodies[0].thinking, thinking, stage);
-    assert.equal(bodies[0].reasoning_effort, effort, stage);
+    assert.equal(bodies[0].reasoning_effort, thinking?.type === 'disabled' ? effort : 'low', stage);
     assert.deepEqual(bodies[0].response_format, format, stage);
   }
 });

@@ -1,6 +1,8 @@
 import { createId, createInitialState, createProject, directions, emptyContext, makeChapters } from './seed';
 import { manuscriptRevision, readRuntimeBinding, readRuntimeTask, taskActive } from './runtime';
 import { getEditStart } from './revision-anchor';
+import { CANDIDATE_RECHECK_VERSION, type CandidateRecheckTask } from './candidate-recheck';
+import { readImportedBaseline } from './project-import';
 import type {
   AppState, Attachment, Chapter, CompareMode, ConversationTurn, DocMode, EditResult, FlowResult,
   GenerationKind, InspirationContext, LibraryItem, Message, Mode, Page, PendingEdit,
@@ -102,6 +104,7 @@ function readProject(value: unknown): Project | null {
     editorVersionId: text(value.editorVersionId) || null, editorVersionCompare: flag(value.editorVersionCompare),
     runtime,
     runtimeHistory: list(value.runtimeHistory).map(readRuntimeTask).filter((task): task is RuntimeTask => Boolean(task && task.projectId === text(value.id))),
+    importedBaseline: readImportedBaseline(value.importedBaseline),
   };
 }
 
@@ -537,9 +540,40 @@ export function canAdoptWholeQualityGroups(project: Project, selectedGroupIds: s
   const adoption = record(task?.result?.wholeRevision?.adoption) ? task.result.wholeRevision.adoption : undefined;
   if (!binding || binding.request.revisionMode !== 'whole-manuscript-v2' || task?.status !== 'completed' || task.revisionMode !== 'whole-manuscript-v2'
     || task.result?.wholeRevision?.schemaVersion !== 'whole-manuscript-quality-1' || binding.resultDisposition !== 'whole-quality-groups'
-    || text(adoption?.requiredBaseRevision) !== binding.request.baseRevision) return false;
+    || text(adoption?.requiredBaseRevision) !== binding.request.baseRevision
+    || task.result?.wholeRevision?.status === 'candidate_ready_cross_check_incomplete') return false;
   return manuscriptRevision(project) === binding.request.baseRevision && JSON.stringify({ title: project.title, chapters: project.chapters }) === JSON.stringify(binding.baseManuscript)
     && Boolean(selectedQualityCandidate(project, selectedGroupIds));
+}
+
+/** Explicit complete-candidate choice after the server replays a new bound factual recheck. */
+export function acceptCheckedWholeCandidate(project: Project, checked: CandidateRecheckTask, candidateSha256: string, frozenCandidateJSON: string): boolean {
+  const binding = project.runtime, task = binding?.task, result = task?.result;
+  const adoption = record(result?.wholeRevision?.adoption) ? result.wholeRevision.adoption : undefined;
+  if (!binding || !task || !result || binding.request.revisionMode !== 'whole-manuscript-v2'
+    || task.status !== 'completed' || task.revisionMode !== 'whole-manuscript-v2'
+    || result.wholeRevision?.schemaVersion !== 'whole-manuscript-quality-1'
+    || !['candidate_ready', 'candidate_ready_cross_check_incomplete', 'candidate_ready_reread_incomplete'].includes(text(result.wholeRevision.status))
+    || binding.resultDisposition !== 'whole-quality-groups' || text(adoption?.requiredBaseRevision) !== binding.request.baseRevision
+    || checked.projectId !== project.id || checked.sourceTaskId !== task.id || checked.checkerVersion !== CANDIDATE_RECHECK_VERSION
+    || checked.status !== 'reviewed_no_reported_conflict' || checked.gate.eligible !== true || checked.candidateSha256 !== candidateSha256
+    || JSON.stringify(result.chapters) !== frozenCandidateJSON || manuscriptRevision(project) !== binding.request.baseRevision
+    || JSON.stringify({ title: project.title, chapters: project.chapters }) !== JSON.stringify(binding.baseManuscript)
+    || result.chapters.length !== project.chapters.length || result.chapters.some((chapter, index) => chapter.id !== project.chapters[index]?.id)
+    || pendingEdits(project).length) return false;
+  snapshotProject(project, '采纳复查后整稿候选前');
+  project.title = result.title || project.title;
+  project.chapters = clone(result.chapters);
+  snapshotProject(project, '已选择的整稿候选');
+  const groups = wholeQualityAdoptionGroups(result);
+  binding.qualityAdoption = { selectedGroupIds: groups.map(group => group.id), declinedGroupIds: [], fullCandidateRereadInherited: false,
+    rereadScope: 'full-candidate' };
+  binding.candidateRecheckSelection = { id: checked.id, sourceTaskId: task.id, candidateSha256, checkerVersion: checked.checkerVersion,
+    selectedAt: now() };
+  binding.resultDisposition = 'applied';
+  binding.message = '已明确选择复查后的完整候选；原稿已保存为历史版本。事实复查不代表文学质量通过。';
+  project.docMode = 'read'; project.compare = 'after'; project.updatedAt = now();
+  return true;
 }
 
 export function acceptWholeQualityGroups(project: Project, selectedGroupIds: string[]): boolean {

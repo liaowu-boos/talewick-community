@@ -4,6 +4,8 @@ import { WHOLE_MANUSCRIPT_QUALITY_MODE, WHOLE_MANUSCRIPT_REVISION_MODE } from '.
 
 const supportedPolicies = new Set([ADJUDICATION_VERSION, ADJUDICATION_RELIABILITY_VERSION, ADJUDICATION_CONTINUITY_VERSION]);
 const currentFailureWarning = '事件链检查未完成；已保留原始与唯一纠正响应的绑定失败状态，这不是检查通过，也未授权自动修订。';
+const primaryFailureWarning = '事件链检查未完成；已保留原始响应的协议失败状态和未经验证的观察，未重抽或纠正，也未授权自动修订。';
+const relationRepairFailureWarning = '事件链检查未完成；已保留原始与唯一关系纠正响应的绑定失败状态和未经验证的观察，未新增纠正，也未授权自动修订。';
 const historicalFailureWarning = '先前正文的事件链检查未完成状态仍作为历史保留；当前结果不能据此宣称全部质量检查完成。';
 
 /** Check only the contract opted into by the saved workflow request specification.
@@ -58,9 +60,13 @@ export function assertWorkflowResultReady(result, requestSpec, request, wholeRev
   const hasHistoricalFailure = Array.isArray(result.review?.continuityChainFailureHistory) &&
     result.review.continuityChainFailureHistory.length > 0;
   const isIncomplete = hasCurrentFailure || hasHistoricalFailure;
+  const requiredCurrentFailureWarning = result.review?.continuityChainFailure?.schemaVersion === 'continuity-chain-primary-failure-1'
+    ? primaryFailureWarning
+    : result.review?.continuityChainFailure?.schemaVersion === 'continuity-chain-relation-repair-failure-1'
+      ? relationRepairFailureWarning : currentFailureWarning;
   if (isIncomplete) {
     if (result.qualityCheckStatus !== 'incomplete' || !Array.isArray(result.warnings) ||
-      (hasCurrentFailure && !result.warnings.includes(currentFailureWarning)) ||
+      (hasCurrentFailure && !result.warnings.includes(requiredCurrentFailureWarning)) ||
       (hasHistoricalFailure && !result.warnings.includes(historicalFailureWarning))) reject();
   } else if (result.qualityCheckStatus !== undefined) reject();
 }

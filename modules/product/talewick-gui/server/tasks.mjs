@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { engineBinding } from './engines.mjs';
 import { projectReviewAdjudication } from './service-public.mjs';
 import { assertWorkflowResultReady } from './workflow-result-gate.mjs';
@@ -10,6 +11,7 @@ import { projectCodexAttempt } from './model.mjs';
 import { FOLLOWUP_CONTINUITY_MODEL_POLICY, WHOLE_QUALITY_MODEL_POLICY, WHOLE_REVISION_MODEL_POLICY } from './model-policy.mjs';
 import { applyStoredFailurePolicy, cancelledFailure, classifyTaskFailure, interruptedFailure, isStoredWholeQualityReadingFailureCandidate, taskFailureRecoverable } from './task-failure.mjs';
 import { WHOLE_MANUSCRIPT_QUALITY_MODE, WHOLE_MANUSCRIPT_REVISION_MODE } from './workflow-engine.mjs';
+import { validateWritingGoals } from '../../../creation/runtime/writing-goals.mjs';
 
 const active = new Set(['queued', 'running']);
 const recoverable = new Set(['failed', 'interrupted', 'cancelled']);
@@ -95,6 +97,12 @@ export function validateRequest(body) {
     if (body.kind !== 'revise') throw fail('整稿修订只能用于已有完整稿件。');
     if ((typeof body.quote === 'string' && body.quote.length) || body.quoteSource !== undefined || body.existingReviewMode !== undefined || body.createStateReviewMode !== undefined) throw fail('整稿修订不能与选段或旧审阅模式混用。');
   }
+  let writingGoals;
+  if (body.writingGoals !== undefined) {
+    if (body.kind !== 'revise' || body.revisionMode !== WHOLE_MANUSCRIPT_QUALITY_MODE) throw fail('写作目标目前只支持 whole-manuscript-v2 整稿修订。');
+    try { writingGoals = validateWritingGoals(body.writingGoals, chapters); }
+    catch (error) { throw fail(error?.message || '写作目标格式不正确。'); }
+  }
   if ((body.instruction !== undefined && typeof body.instruction !== 'string') || (body.quote !== undefined && typeof body.quote !== 'string')) throw fail('修改要求和选段必须是文字。');
   if ((body.instruction?.length ?? 0) > 12000 || (body.quote?.length ?? 0) > 100000) throw fail('修改要求或选段过长。');
   let quoteSource;
@@ -105,7 +113,7 @@ export function validateRequest(body) {
     if (!chapter || chapter.body.slice(source.start, source.start + body.quote.length) !== body.quote) throw fail('选段与本次稿件不一致，请重新选择原文后提交。');
     quoteSource = { chapterId: source.chapterId, start: source.start };
   }
-  return { projectId: body.projectId, requestId: body.requestId, kind: body.kind, idea: body.idea, context, materials, style, chapters, instruction: body.instruction ?? '', quote: body.quote ?? '', baseRevision: body.baseRevision, ...(body.projectTitle !== undefined ? { projectTitle: body.projectTitle } : {}), ...(body.revisionMode ? { revisionMode: body.revisionMode } : {}), ...(quoteSource ? { quoteSource } : {}) };
+  return { projectId: body.projectId, requestId: body.requestId, kind: body.kind, idea: body.idea, context, materials, style, chapters, instruction: body.instruction ?? '', quote: body.quote ?? '', baseRevision: body.baseRevision, ...(body.projectTitle !== undefined ? { projectTitle: body.projectTitle } : {}), ...(body.revisionMode ? { revisionMode: body.revisionMode } : {}), ...(quoteSource ? { quoteSource } : {}), ...(writingGoals === undefined ? {} : { writingGoals }) };
 }
 
 /** File-backed sequential task runner; each successful stage is saved for recovery. */
@@ -154,6 +162,8 @@ export class TaskService {
     if (task.projectId !== request.projectId || task.requestId !== request.requestId || task.baseRevision !== request.baseRevision || task.kind !== request.kind || task.revisionMode !== request.revisionMode) throw new Error('invalid task binding');
     const artifacts = JSON.parse(artifactsText);
     if (!record(artifacts)) throw new Error('invalid artifacts');
+    if (request.revisionMode === WHOLE_MANUSCRIPT_QUALITY_MODE && artifacts.requestSpec
+      && !isDeepStrictEqual(request.writingGoals, artifacts.requestSpec.writingGoals)) throw new Error('invalid writing goals binding');
     await this.applyStoredFailurePolicy(task, artifacts);
     return { waiting: false, folder, task, request, artifacts };
   }

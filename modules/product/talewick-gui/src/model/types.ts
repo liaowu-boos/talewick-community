@@ -11,8 +11,35 @@ export type InspirationContext = Record<InspirationKey, string>;
 
 export interface Chapter { id: string; title: string; body: string }
 export interface Version { id: string; label: string; date: string; title?: string; chapters: Chapter[] }
+export interface ImportedBaseline {
+  provenance: 'whole_revision_source';
+  sourceTaskId: string;
+  sourceRequestId: string;
+  title: string;
+  baseRevision: string;
+  sourceManuscriptSha256: string;
+  qualityCheckStatus: 'incomplete';
+}
 /** UTF-16 offset, matching textarea selectionStart and string.slice. */
 export interface QuoteSource { chapterId: string; start: number }
+export interface WritingGoalProblem {
+  problemId: string;
+  statement: string;
+  searchTerms: string[];
+  requiredTermGroups: string[][];
+  context: Record<string, unknown>;
+}
+export interface WritingGoal {
+  id: string;
+  dimension: 'psychology' | 'emotion' | 'choice';
+  problem: WritingGoalProblem;
+  chapterIds: string[];
+  preservationBoundaries: string[];
+}
+export interface WritingGoals {
+  schemaVersion: 'creation-writing-goals-1';
+  goals: WritingGoal[];
+}
 export interface PendingEdit {
   id: string;
   chapterId: string;
@@ -96,6 +123,7 @@ export interface Project {
   editorVersionCompare?: boolean;
   runtime?: RuntimeBinding;
   runtimeHistory?: RuntimeTask[];
+  importedBaseline?: ImportedBaseline;
 }
 
 export type RuntimeEngine = 'ai-sdk' | 'fixed';
@@ -133,6 +161,7 @@ export interface RuntimeRequest {
   instruction: string;
   quote: string;
   quoteSource?: QuoteSource;
+  writingGoals?: WritingGoals;
   baseRevision: string;
 }
 /** Public action summaries supplied by the runtime, never private model reasoning. */
@@ -197,6 +226,7 @@ export interface RuntimeResult {
   /** Optional public ledger; older results have no follow-up record. */
   followupRetrieval?: Record<string, unknown>;
   followupRetrievalInvalid?: boolean;
+  deepReference?: Record<string, unknown>;
   warnings: string[];
   agentTrace?: AgentDecisionTrace[];
   /** Creation owns the internal schema; product preserves and presents its public fields. */
@@ -243,6 +273,7 @@ export interface RuntimeBinding {
     fullCandidateRereadInherited: boolean;
     rereadScope: 'full-candidate' | 'selected-groups-unchecked';
   };
+  candidateRecheckSelection?: { id: string; sourceTaskId: string; candidateSha256: string; checkerVersion: string; selectedAt: string };
   message?: string;
 }
 

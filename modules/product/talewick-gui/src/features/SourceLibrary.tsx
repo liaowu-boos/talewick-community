@@ -39,6 +39,13 @@ export function SourceLibrary({ uploadOpen, onClose, legacyItem }: { uploadOpen:
   const [batchImport, setBatchImport] = useState<BatchImport | null>(null);
   const importRef = useRef<BatchImport | null>(null);
   const [batchPending, setBatchPending] = useState<string[]>([]);
+  const [deepStatus, setDeepStatus] = useState<{ available: boolean; sourceCount?: number; installId?: string; boundary?: string;
+    frozenCatalogSnapshotSha256?: string; liveBoundSourcesSha256?: string; reason?: string } | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void fetch('/api/runtime').then(response => response.json()).then(value => { if (alive) setDeepStatus(value.deepReferences ?? { available: false, reason: 'unavailable' }); }).catch(() => { if (alive) setDeepStatus({ available: false, reason: 'runtime_unavailable' }); });
+    return () => { alive = false; };
+  }, [refresh]);
   const requestGate = useRef(createBatchRequestGate());
   // Keep a late GET, started before an operation, from re-enabling its controls.
   const acceptBatchState = (result: BatchResponse) => {
@@ -136,6 +143,12 @@ export function SourceLibrary({ uploadOpen, onClose, legacyItem }: { uploadOpen:
   return <section className="source-library" aria-label="后台小说库">
     <div className="source-library-heading"><h2 className="font-story text-title-2-medium">小说拆解</h2><Button variant="ghost" size="small" onClick={() => setRefresh(value => value + 1)}>刷新状态</Button></div>
     <p className="text-body-regular text-text-secondary">上传后在本机后台保存，并由已配置的模型服务分析。创作可从可用结果中查找少量相关材料。</p>
+    <section className="mt-3 rounded-xl border border-border-button-default bg-tw-glass p-3" aria-label="深层参考状态"><p className="text-body-2-medium">{deepStatus?.available ? `${deepStatus.sourceCount ?? 0}份深层参考：已接通，可按问题查询` : deepStatus ? '深层参考：当前未接通' : '深层参考：正在检查连接'}</p>
+      <p className="mt-1 text-caption-1-regular text-text-secondary">分析用于提供写作参考；是否适合当前故事、是否实际采用，会在创作结果中分别记录。</p>
+      <details className="mt-2 text-caption-1-regular text-text-tertiary"><summary className="cursor-pointer">数据来源与校验信息</summary>
+        {deepStatus?.available ? <><p className="mt-1 break-all">安装标识 {deepStatus.installId}</p><p className="mt-1 break-all">参考边界 {deepStatus.boundary}</p>
+          <p className="mt-1 break-all">冻结目录快照 SHA {deepStatus.frozenCatalogSnapshotSha256}</p><p className="mt-1 break-all">当前 {deepStatus.sourceCount ?? 0} 项绑定 SHA {deepStatus.liveBoundSourcesSha256}</p></> : <p className="mt-1 break-all">{deepStatus?.reason || '正在检查本机安装'}</p>}
+      </details></section>
     <div className="mt-3 flex flex-wrap items-center gap-3"><Button variant="secondary" size="small" onClick={() => setBatchOpen(true)}>批量拆解（每批10篇）</Button><p className="text-body-2-regular text-text-tertiary">先登记，再手动开始；普通上传照常使用。</p></div>
     {batchReadError && <p role="alert" className="mt-3 text-body-regular text-text-error-primary">{batchReadError} 已显示的批量状态保留，操作暂不可用。</p>}
     {batchOperationError && <p role="alert" className="mt-3 text-body-regular text-text-error-primary">{batchOperationError}</p>}

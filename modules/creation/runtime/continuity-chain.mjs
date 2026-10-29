@@ -7,6 +7,8 @@ import {
   createContinuityChainRepairInput, inspectContinuityChainRepairResponse, validateContinuityChainRepairResult,
   createContinuityChainFormatRepairInput, inspectContinuityChainFormatRepairResponse, validateContinuityChainFormatRepairResult,
   createContinuityChainFailureEnvelope, validateContinuityChainFailureEnvelope,
+  CONTINUITY_CHAIN_PRIMARY_FAILURE_VERSION, isContinuityChainPrimaryFailureError, createContinuityChainPrimaryFailureEnvelope,
+  CONTINUITY_CHAIN_RELATION_REPAIR_FAILURE_VERSION, isContinuityChainRelationRepairFailureError, createContinuityChainRelationRepairFailureEnvelope,
 } from '../../validation/runtime/continuity-chain-review.mjs';
 
 const reject = message => {
@@ -46,6 +48,18 @@ export async function reviewWorkflowContinuityChain({key, chapters, review, requ
   let rebuilt, formatRecovered = false;
   try { rebuilt = inspectContinuityChainReview(response.rawResponse, input); }
   catch (error) {
+    if (version === 'continuity-chain-review-3' && isContinuityChainPrimaryFailureError(error)) {
+      const failureArgs = {input,primaryRawResponse:response.rawResponse,failureCode:error.code};
+      const failure = createContinuityChainPrimaryFailureEnvelope(failureArgs);
+      const savedFailure = await step(`${prefix}:primary-failure`, () => failure);
+      const checkedFailure = validateContinuityChainFailureEnvelope(savedFailure,failureArgs);
+      if (!isDeepStrictEqual(checkedFailure,failure)) reject('事件链主响应未完成状态未对应已保存的原始响应。');
+      if (Object.hasOwn(review,'continuityChain')) reject('事件链成功结果与未完成状态不能同时存在。');
+      const failureReview = {...review,continuityChainFailure:checkedFailure};
+      const mergedFailure = await step(key, () => failureReview);
+      if (!isDeepStrictEqual(mergedFailure,failureReview)) reject('事件链未完成审稿保存点被替换，不能伪装检查完成。');
+      return mergedFailure;
+    }
     const relationRepair=['CASE_TRANSITIONS','EXPLANATION_WITHOUT_EVIDENCE'].includes(error.code);
     if (!relationRepair&&error.code!=='RESPONSE_JSON') throw error;
     formatRecovered = !relationRepair;
@@ -76,11 +90,14 @@ export async function reviewWorkflowContinuityChain({key, chapters, review, requ
         ? inspectContinuityChainRepairResponse(repairRaw.rawResponse,repairInput)
         : inspectContinuityChainFormatRepairResponse(repairRaw.rawResponse,repairInput);
     } catch (repairError) {
-      if (version !== 'continuity-chain-review-3' || relationRepair) throw repairError;
+      if (version !== 'continuity-chain-review-3'
+        || (relationRepair && !isContinuityChainRelationRepairFailureError(repairError))) throw repairError;
       const failureArgs = {input,primaryRawResponse:response.rawResponse,repairInput,
         repairRawResponse:repairRaw.rawResponse,failureCode:repairError?.code};
-      const failure = createContinuityChainFailureEnvelope(failureArgs);
-      const savedFailure = await step(`${prefix}:failure`, () => failure);
+      const failure = relationRepair
+        ? createContinuityChainRelationRepairFailureEnvelope(failureArgs)
+        : createContinuityChainFailureEnvelope(failureArgs);
+      const savedFailure = await step(`${prefix}:${relationRepair ? 'relation-repair-failure' : 'failure'}`, () => failure);
       const checkedFailure = validateContinuityChainFailureEnvelope(savedFailure,failureArgs);
       if (!isDeepStrictEqual(checkedFailure,failure)) reject('事件链未完成状态未对应已保存的原始与纠正响应。');
       if (Object.hasOwn(review,'continuityChain')) reject('事件链成功结果与未完成状态不能同时存在。');
@@ -149,7 +166,8 @@ export function inheritContinuityDisputes(review, previousReview, suppliedHistor
     ? previousFailure.historicalObservations ?? [] : [];
   const protocolHistory = [...(previousReview?.continuityProtocolHistory ?? []), ...failureObservations, ...suppliedHistory]
     .map(historicalObservation).filter((item,index,all) => all.findIndex(old =>
-      old.sourceInputHash === item.sourceInputHash && old.case.id === item.case.id) === index);
+      old.sourceInputHash === item.sourceInputHash && old.sourceResponseSha256 === item.sourceResponseSha256
+      && old.case.id === item.case.id) === index);
   return history.length || protocolHistory.length || sameManuscriptFailure || failureHistory.length ? {...review,
     ...(history.length ? {continuityDisputeHistory:history} : {}),
     ...(protocolHistory.length ? {continuityProtocolHistory:protocolHistory} : {}),
@@ -167,7 +185,11 @@ export function continuityChainWarnings(review) {
     ...(review.continuityProtocolHistory?.length
       ? ['此前协议失败响应中保留了未经验证的历史观察；未据此自动修订，后续复读未提及也不表示关闭。'] : []),
     ...(review.continuityChainFailure
-      ? ['事件链检查未完成；已保留原始与唯一纠正响应的绑定失败状态，这不是检查通过，也未授权自动修订。'] : []),
+      ? [review.continuityChainFailure.schemaVersion === CONTINUITY_CHAIN_PRIMARY_FAILURE_VERSION
+        ? '事件链检查未完成；已保留原始响应的协议失败状态和未经验证的观察，未重抽或纠正，也未授权自动修订。'
+        : review.continuityChainFailure.schemaVersion === CONTINUITY_CHAIN_RELATION_REPAIR_FAILURE_VERSION
+          ? '事件链检查未完成；已保留原始与唯一关系纠正响应的绑定失败状态和未经验证的观察，未新增纠正，也未授权自动修订。'
+        : '事件链检查未完成；已保留原始与唯一纠正响应的绑定失败状态，这不是检查通过，也未授权自动修订。'] : []),
     ...(review.continuityChainFailureHistory?.length
       ? ['先前正文的事件链检查未完成状态仍作为历史保留；当前结果不能据此宣称全部质量检查完成。'] : []),
     ...(disputes.some(item => item.status === 'retained_unknown_not_revision_eligible')

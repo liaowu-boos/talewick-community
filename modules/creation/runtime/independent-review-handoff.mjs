@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import { manuscriptFingerprint } from '../../validation/runtime/checks.mjs';
 import { buildRevisionAdjacencyEvidence } from './revision-adjacency-evidence.mjs';
+import { DEEP_REFERENCE_INTEGRATION_VERSION } from './v04/deep-reference.mjs';
+import { validateWritingGoals } from './writing-goals.mjs';
 
 export const INDEPENDENT_REVIEW_HANDOFF_VERSION = 'independent-review-handoff-2';
 export const INDEPENDENT_REVIEW_PROVENANCE_VERSION = 'independent-review-handoff-provenance-2';
@@ -36,7 +38,7 @@ function validateCrossChapterBinding(binding) {
   return clone(binding);
 }
 
-function requestFingerprint(request, sourceChapters, runtimeCrossChapterReview) {
+function requestFingerprint(request, sourceChapters, runtimeCrossChapterReview, deepReferencePolicyVersion) {
   ensure(object(request) && request.kind === 'revise' && request.revisionMode === 'whole-manuscript-v2',
     'HANDOFF_REQUEST_MODE', '只接受whole-manuscript-v2修订请求。');
   ensure(typeof request.baseRevision === 'string', 'HANDOFF_BASE_REVISION', '起点版本无效。');
@@ -54,10 +56,14 @@ function requestFingerprint(request, sourceChapters, runtimeCrossChapterReview) 
     || sha256(persistedCrossChapterReview) === sha256(normalizedCrossChapterReview),
   'HANDOFF_CROSS_CHAPTER_BINDING', '持久化请求与运行时跨章核对绑定不一致。');
   const crossChapterReview = persistedCrossChapterReview ?? normalizedCrossChapterReview;
+  ensure(deepReferencePolicyVersion === undefined || deepReferencePolicyVersion === DEEP_REFERENCE_INTEGRATION_VERSION,
+    'HANDOFF_REQUEST_BINDING', '深层参考请求策略版本无效。');
   const core = { kind: 'revise', revisionMode: 'whole-manuscript-v2', sourceBaseRevision: request.baseRevision,
     objective, chapters: sourceChapters,
     ...(request.sourceIds !== undefined ? { sourceIds: [...new Set(request.sourceIds)] } : {}),
-    ...(crossChapterReview !== undefined ? { crossChapterReview } : {}) };
+    ...(crossChapterReview !== undefined ? { crossChapterReview } : {}),
+    ...(deepReferencePolicyVersion !== undefined ? { deepReferencePolicyVersion } : {}),
+    ...(request.writingGoals === undefined ? {} : { writingGoals: validateWritingGoals(request.writingGoals, sourceChapters) }) };
   return { objective, inputFingerprint: sha256(core),
     bindingMode: persistedCrossChapterReview !== undefined ? 'persisted_exact'
       : normalizedCrossChapterReview !== undefined ? 'runtime_normalized_cross_binding' : 'legacy_exact' };
@@ -106,15 +112,19 @@ function goalsForGroups(whole, selectedGroupIds, sourceChapters) {
   const crossIssues = confirmed.map(conflict => ({ id: conflict.id, claimType: 'textual_conflict',
     evidence: conflict.evidence.slice(0,1), counterEvidence: conflict.evidence.slice(1) }));
   const issueById = new Map([...reading.issues, ...crossIssues].map(issue => [issue.id, issue]));
+  const writingGoalById = new Map((whole.requestSpec.writingGoals?.goals ?? []).map(goal => [goal.id, goal]));
   const itemById = new Map(whole.plan.items.map(item => [item.id, item]));
   return selectedGroupIds.map(groupId => {
     const item = itemById.get(groupId);
-    ensure(item?.decision === 'revise' && Array.isArray(item.issueIds) && item.issueIds.length > 0,
+    const goalIds = item?.goalIds ?? [];
+    ensure(Array.isArray(goalIds) && new Set(goalIds).size === goalIds.length && goalIds.every(id => writingGoalById.has(id)),
+      'HANDOFF_GOAL_ITEM', '方案包含未冻结的写作目标。');
+    ensure(item?.decision === 'revise' && Array.isArray(item.issueIds) && (item.issueIds.length > 0 || goalIds.length > 0),
       'HANDOFF_GOAL_ITEM', '采纳组没有修订前方案目标。');
     const issues = item.issueIds.map(id => issueById.get(id));
     ensure(issues.every(Boolean), 'HANDOFF_GOAL_ISSUE', '方案引用的修订前问题缺失。');
-    const sourceEvidence = citationList(issues.flatMap(issue => issue.evidence ?? []), sourceChapters, 'HANDOFF_GOAL_SOURCE');
-    const counterCase = citationList(issues.flatMap(issue => issue.counterEvidence ?? []), sourceChapters, 'HANDOFF_GOAL_COUNTER');
+    const sourceEvidence = citationList([...issues.flatMap(issue => issue.evidence ?? []), ...(goalIds.length ? item.targets : [])], sourceChapters, 'HANDOFF_GOAL_SOURCE');
+    const counterCase = citationList([...issues.flatMap(issue => issue.counterEvidence ?? []), ...(goalIds.length ? item.preserve : [])], sourceChapters, 'HANDOFF_GOAL_COUNTER');
     ensure(sourceEvidence.length > 0 && counterCase.length > 0, 'HANDOFF_GOAL_BALANCE', '目标缺少修订前证据或反例，不能事后补写。');
     ensure(Array.isArray(item.actionRequirements) && item.actionRequirements.length > 0,
       'HANDOFF_GOAL_OUTCOME', '目标缺少修订前可见结果要求。');
@@ -124,7 +134,7 @@ function goalsForGroups(whole, selectedGroupIds, sourceChapters) {
     return {
       id: item.id,
       statement: item.action,
-      claimType: issues.every(issue => issue.claimType === 'textual_conflict') ? 'hard_fact' : 'editorial_hypothesis',
+      claimType: !goalIds.length && issues.every(issue => issue.claimType === 'textual_conflict') ? 'hard_fact' : 'editorial_hypothesis',
       sourceEvidence,
       counterCase,
       expectedEffect: item.expectedEffect,
@@ -152,11 +162,14 @@ export function buildIndependentReviewRequest({ caseId, request, result, selecti
     && Array.isArray(whole.plan?.items) && object(whole.adoption), 'HANDOFF_RESULT', '全文质量结果版本或字段无效。');
   const sourceChapters = validateChapters(whole.sourceChapters, '原稿');
   const candidateChapters = validateChapters(result.chapters, '完整候选稿');
+  ensure(whole.requestSpec.writingGoals === undefined ? request?.writingGoals === undefined
+    : request?.writingGoals !== undefined && sha256(validateWritingGoals(whole.requestSpec.writingGoals, sourceChapters))
+      === sha256(validateWritingGoals(request.writingGoals, sourceChapters)), 'HANDOFF_REQUEST_BINDING', '写作目标与冻结请求不一致。');
   const resultCrossChapterReview = whole.requestSpec.crossChapterReview === undefined
     ? undefined : validateCrossChapterBinding(whole.requestSpec.crossChapterReview);
   const persistedRequestHasCrossBinding = object(request) && request.crossChapterReview !== undefined;
   const requestBinding = requestFingerprint(request, sourceChapters,
-    persistedRequestHasCrossBinding ? undefined : resultCrossChapterReview);
+    persistedRequestHasCrossBinding ? undefined : resultCrossChapterReview, whole.requestSpec.deepReferencePolicyVersion);
   ensure(whole.requestSpec.inputFingerprint === requestBinding.inputFingerprint
     && whole.requestSpec.objective === requestBinding.objective
     && whole.requestSpec.sourceBaseRevision === request.baseRevision
@@ -233,6 +246,7 @@ export function buildIndependentReviewRequest({ caseId, request, result, selecti
       : explicitSelection ? 'selected_adopted' : 'full_candidate',
     sourceBaseRevision: whole.requestSpec.sourceBaseRevision,
     requestInputFingerprint: whole.requestSpec.inputFingerprint,
+    ...(whole.requestSpec.writingGoals === undefined ? {} : { writingGoalsSha256: sha256(whole.requestSpec.writingGoals) }),
     requestBindingMode: requestBinding.bindingMode,
     wholeRevisionResultSha256: sha256(result),
     sourceManuscriptSha256: manuscriptFingerprint(sourceChapters),
@@ -248,10 +262,14 @@ export function buildIndependentReviewRequest({ caseId, request, result, selecti
     selectedGroupIds,
     declinedGroupIds: allGroupIds.filter(id => !selected.has(id)),
     rereadScope: explicitSelection ? 'selected-groups-unchecked' : 'full-candidate',
+    candidateSelectionScope: explicitSelection ? 'partial_mixed_candidate' : 'complete_frozen_candidate',
+    candidateRecheckTrustBoundary: explicitSelection
+      ? 'complete-candidate recheck is inapplicable; every selected atomic group still requires eligible_for_user_choice'
+      : 'a separately verified candidate recheck may authorize only this exact complete candidate for explicit UI selection; blind review remains independent of that fact gate',
     adjacencyEvidence,
     ...(crossEnabled ? { confirmedConflictIds, unresolvedConfirmedConflictIds,
       crossChapterResolutionSha256: sha256(crossResolution) } : {}),
-    boundary: 'provenance只供产品控制器做版本绑定，不得进入盲读模型输入；完整候选审计全部修订前目标，未执行目标仍须进入独立核查；部分采纳只覆盖所选目标，declinedGroupIds不声称已落实；CREATION内部复读不是独立盲评结论。',
+    boundary: 'provenance只供产品控制器做版本绑定，不得进入盲读模型输入；完整候选审计全部修订前目标，未执行目标仍须进入独立核查；候选级事实复查只绑定完整候选，不能升级旧原子组、不能授权部分混合稿；部分采纳仍只覆盖eligible_for_user_choice所选目标，declinedGroupIds不声称已落实；CREATION内部复读和候选事实复查都不是独立盲评偏好结论。',
   };
   return { request: requestPayload, provenance: { ...provenanceBody, provenanceSha256: sha256(provenanceBody) } };
 }

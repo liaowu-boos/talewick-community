@@ -7,7 +7,7 @@ import { authorizedRevisionIssues, checkedReviewAdjudication } from '../../../cr
 import { bindRevisionScope, automaticRevisionScope, BOUNDED_REVISION_POLICY } from '../../../creation/runtime/bounded-revision.mjs';
 import { manuscriptFingerprint } from '../../../validation/runtime/checks.mjs';
 import { ENGINE_VERSIONS } from './engines.mjs';
-import { agentProviderFor, outputTokenLimit } from './model-policy.mjs';
+import { agentProviderFor, outputTokenLimit, withNativeDeepSeekReasoningDefault } from './model-policy.mjs';
 import { agentModelFailure } from './model-error.mjs';
 import { ModelOutputError } from '../../../creation/runtime/business-tools.mjs';
 
@@ -52,10 +52,18 @@ export function agentCallSettings(config) {
 /** SDK provider only owns the decision conversation; ordinary business calls stay framework-neutral. */
 export function createAgentModel(config, fetchImpl = globalThis.fetch) {
   if (!config.apiKey || !config.model) throw new AgentRuntimeError('Agent 模型尚未配置，请填写本机模型配置后重试。');
-  const fetch = (url, init) => fetchImpl(url, { ...init, redirect: 'error',
-    signal: AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(config.timeoutMs || 180000)]) });
-  const options = { apiKey: config.apiKey, baseURL: config.baseURL, fetch };
   const provider = agentProviderFor(config);
+  const fetch = (url, init) => {
+    let request = init;
+    if (provider === 'deepseek' && typeof init?.body === 'string') {
+      const body = JSON.parse(init.body);
+      const effective = withNativeDeepSeekReasoningDefault(config, body);
+      if (effective !== body) request = { ...init, body: JSON.stringify(effective) };
+    }
+    return fetchImpl(url, { ...request, redirect: 'error',
+      signal: AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(config.timeoutMs || 180000)]) });
+  };
+  const options = { apiKey: config.apiKey, baseURL: config.baseURL, fetch };
   if (provider === 'deepseek') return createDeepSeek(options).languageModel(config.model);
   if (provider === 'openai-compatible') return createOpenAICompatible({ ...options, name: 'talewick-compatible' }).chatModel(config.model);
   throw new AgentRuntimeError('Agent 模型适配不可用。');

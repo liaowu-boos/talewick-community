@@ -15,7 +15,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const sourceRoot = fileURLToPath(new URL('../src/model/', import.meta.url));
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'talewick-paper-state-test-'));
 after(() => rm(temporary, { recursive: true, force: true }));
-for (const name of ['seed', 'runtime', 'revision-anchor', 'store', 'conversation', 'project-link']) {
+for (const name of ['candidate-recheck', 'project-import', 'seed', 'runtime', 'revision-anchor', 'store', 'conversation', 'project-link']) {
   const source = await readFile(path.join(sourceRoot, `${name}.ts`), 'utf8');
   const javascript = stripTypeScriptTypes(source, { mode: 'transform' })
     .replace(/(from\s+['"])(\.\/[^'"]+)(['"])/g, '$1$2.mjs$3');

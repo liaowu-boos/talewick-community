@@ -14,6 +14,7 @@ const messages = {
   CHECKED_RESULT_REQUIRED:[409,'分析或索引尚未通过完整检查。'],
   DATA_WAIT_FAILED:[503,'后台尚未确认任务停止，请保留当前服务并检查处理状态。'],
   MODEL_UNAVAILABLE:[503,'分析模型尚未配置。'], BATCH_UNAVAILABLE:[503,'批量拆解服务暂不可用。'],
+  BATCH_LOCAL_FILE_WAIT:[503,'批量资料记录尚未下载到本机，暂时无法使用。写作与全文评阅仍可使用；下载完成后重新启动本机服务。'],
   PROCESSING_FAILED:[503,'批量操作未完成，已保存的资料和记录保留。'],
 };
 const fault=code=>Object.assign(new Error(code),{code});
@@ -22,7 +23,7 @@ const object=(body,keys=[])=>{if(!body||typeof body!=='object'||Array.isArray(bo
 const identity=value=>typeof value==='string'&&/^[\w-]{1,160}$/.test(value);
 
 /** Shared host/origin and 2 MiB body checks belong to createRuntime. No operation runs on GET or startup. */
-export function createLibraryBatchRouter({service,json,bodyJSON,canRun=()=>true}) {
+export function createLibraryBatchRouter({service,json,bodyJSON,canRun=()=>true,unavailableCode}) {
   const actions=new Map();
   function schedule(key,operation) {
     if(actions.get(key)?.status==='running')throw fault('BATCH_SERVICE_BUSY');
@@ -39,7 +40,7 @@ export function createLibraryBatchRouter({service,json,bodyJSON,canRun=()=>true}
       const[,action,batchId]=match;
       const allowed=action||batchId?['POST']:['GET','POST'];
       if(!allowed.includes(req.method)){json(res,405,{error:{code:'METHOD_NOT_ALLOWED',message:'此入口不支持当前操作。',retryable:false}});return true;}
-      if(!service)throw fault('BATCH_UNAVAILABLE');
+      if(!service)throw fault(unavailableCode==='BATCH_LOCAL_FILE_WAIT'?unavailableCode:'BATCH_UNAVAILABLE');
       if(req.method==='GET'){json(res,200,progress());return true;}
       const body=await bodyJSON(req);
       if(!action&&!batchId){

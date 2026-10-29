@@ -1,5 +1,6 @@
 import { MATERIAL_USE_EVIDENCE_POLICY, normalizeMaterialUseEvidence } from './material-use-evidence.mjs';
 export const CREATION_POLICY_VERSION = 'v04-creation-2';
+export const DEEP_REFERENCE_DECISION_POLICY = 'creation-deep-reference-decisions-1';
 const text = value => typeof value === 'string' ? value.trim() : '';
 const list = value => Array.isArray(value) ? value.map(text).filter(Boolean) : [];
 const required = (value, keys, path, fieldErrors) => {
@@ -13,9 +14,11 @@ const assertRequiredFields = fieldErrors => {
   });
 };
 
-export function normalizePsychology(value, chapters, { materialEvidencePolicyVersion, materialSources = [] } = {}) {
+export function normalizePsychology(value, chapters, { materialEvidencePolicyVersion, materialSources = [], deepReferencePolicyVersion } = {}) {
   if (materialEvidencePolicyVersion !== undefined && materialEvidencePolicyVersion !== MATERIAL_USE_EVIDENCE_POLICY)
     throw new Error('未知材料使用证据策略版本。');
+  if (deepReferencePolicyVersion !== undefined && deepReferencePolicyVersion !== DEEP_REFERENCE_DECISION_POLICY)
+    throw new Error('未知深层参考决定策略版本。');
   if (!Array.isArray(value.characterArcs) || !value.characterArcs.length || value.characterArcs.length > 12) {
     throw new Error('心理规划需要 1–12 个人物的经历、认知和行动联系。');
   }
@@ -59,6 +62,15 @@ export function normalizePsychology(value, chapters, { materialEvidencePolicyVer
       throw new Error('材料使用证据无效：须逐份声明本次供应材料的 adopt 或 decline；可全部拒用。');
     materialDecisions = materialDecisions.map((decision, index) => ({ ...decision,
       ...normalizeMaterialUseEvidence(value.materialDecisions[index], byId.get(decision.materialId), chapters) }));
+  }
+  if (deepReferencePolicyVersion === DEEP_REFERENCE_DECISION_POLICY) {
+    materialDecisions = materialDecisions.map((decision, index) => {
+      const creativeUse = value.materialDecisions[index]?.creativeUse;
+      const normalized = required(creativeUse, ['functionalChoice', 'intendedChapter', 'psychologicalChange', 'characterChoice', 'consequence', 'caveat'],
+        `materialDecisions[${index}].creativeUse`, fieldErrors);
+      return { ...decision, creativeUse: normalized };
+    });
+    assertRequiredFields(fieldErrors);
   }
   return { creationPolicyVersion: CREATION_POLICY_VERSION, characterArcs, emotionalScenes, choiceCausality, materialDecisions,
     psychologyLimitations: list(value.psychologyLimitations) };

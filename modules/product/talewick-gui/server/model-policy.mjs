@@ -36,15 +36,25 @@ const CROSS_CHAPTER_NO_THINKING_STAGES = new Set([
   'whole-quality:cross-chapter:adjudicate:format-repair',
 ]);
 export const crossChapterThinkingMode = stage => CROSS_CHAPTER_THINKING_STAGES.has(stage) ? 'enabled' : CROSS_CHAPTER_NO_THINKING_STAGES.has(stage) ? 'disabled' : undefined;
-const INDEPENDENT_REVIEW_STAGES = new Set(['independent-reading', 'blind-pair', 'goal-audit'].map(name => `independent-review:${name}`));
+const INDEPENDENT_REVIEW_STAGES = new Set(['independent-reading', 'blind-pair', 'goal-audit', 'position-repair'].map(name => `independent-review:${name}`));
 export const isIndependentReviewStage = stage => INDEPENDENT_REVIEW_STAGES.has(stage);
 export const agentProviderFor = config => config.agentProvider || (new URL(config.baseURL).hostname === 'api.deepseek.com' ? 'deepseek' : 'openai-compatible');
+
+export const NATIVE_DEEPSEEK_REASONING_POLICY = 'native-deepseek-explicit-low-1';
+export const NATIVE_DEEPSEEK_DEFAULT_REASONING_EFFORT = 'low';
+
+/** Execution default only: explicit stage/SDK settings and disabled thinking win.
+ * This does not change token budgets, task bindings, or historical checkpoints. */
+export function withNativeDeepSeekReasoningDefault(config, body) {
+  if (agentProviderFor(config) !== 'deepseek' || body.thinking?.type === 'disabled' || body.reasoning_effort !== undefined) return body;
+  return { ...body, reasoning_effort: NATIVE_DEEPSEEK_DEFAULT_REASONING_EFFORT };
+}
 
 // Current Flash and legacy V4 aliases share the thinking/streaming contract.
 export const usesDeepSeekThinking = config => agentProviderFor(config) === 'deepseek' &&
   (config.model === 'deepseek-flash' || /^deepseek-v4-(?:flash(?:-vision-exp)?|pro)$/.test(config.model ?? ''));
 
-const BUSINESS_STAGES = new Set(['requirements', 'requirements:repair', 'planning', 'planning:material-decisions', 'agent:replan', 'review', 'agent:reviewManuscript', 'revisionReview', 'review-adjudication', 'review-adjudication:repair', 'review-adjudication:continuity-v4', 'review-adjudication:repair:continuity-v4', 'requestedRevision', 'continuity-review', 'continuity-chain-review', ...WHOLE_REVISION_STAGES]);
+const BUSINESS_STAGES = new Set(['requirements', 'requirements:repair', 'planning', 'planning:material-decisions', 'material-evidence', 'agent:replan', 'review', 'agent:reviewManuscript', 'revisionReview', 'review-adjudication', 'review-adjudication:repair', 'review-adjudication:continuity-v4', 'review-adjudication:repair:continuity-v4', 'requestedRevision', 'continuity-review', 'continuity-chain-review', ...WHOLE_REVISION_STAGES]);
 export const isBusinessStage = stage => typeof stage === 'string' && (BUSINESS_STAGES.has(stage) || isWholeQualityStage(stage) || isCrossChapterReviewStage(stage) || isIndependentReviewStage(stage) || /^(draft|revision|agent:reviseChapter):[\w-]+$/.test(stage));
 
 export function outputTextLimit(requestedTokens, ceiling = 16000) {

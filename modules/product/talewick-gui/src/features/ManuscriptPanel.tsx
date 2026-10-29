@@ -11,7 +11,7 @@ import { Select, SelectItem } from '@/components/base/select/select';
 import { Tabs, TabList, Tab, TabPanel } from '@/components/base/tabs/tabs';
 import { SegmentedControl, SegmentedControlItem } from '@/components/base/segmented-control/segmented-control';
 import {
-  acceptPendingEdits, acceptWholeQualityGroups, acceptWholeRevisionCandidate, beginEditing, canAdoptWholeQualityGroups, canAdoptWholeRevisionCandidate, canApplyPendingEdit, characterCount,
+  acceptPendingEdits, acceptCheckedWholeCandidate, acceptWholeQualityGroups, acceptWholeRevisionCandidate, beginEditing, canAdoptWholeQualityGroups, canAdoptWholeRevisionCandidate, canApplyPendingEdit, characterCount,
   declineWholeQualityCandidate, declineWholeRevisionCandidate, hanCharacterCount, exportManuscript, linkedWholeQualityGroupIds, pendingEdits,
   rejectPendingEdits, restoreVersion, saveEditorVersion, snapshotProject, undoEditing, updateChapter, wholeQualityAdoptionGroups,
 } from '@/model/store';
@@ -23,8 +23,11 @@ import { useWorkspace } from '@/features/context';
 import { DialogShell, downloadText, EmptyState, formatDate, TextAreaField } from '@/features/shared';
 import { Full15ReviewPanel } from '@/features/Full15ReviewPanel';
 import { IndependentReviewPanel } from '@/features/IndependentReviewPanel';
+import { CandidateRecheckPanel } from '@/features/CandidateRecheckPanel';
+import { authorizeCandidateRecheck, candidateChapterSha256, type CandidateRecheckTask } from '@/model/candidate-recheck';
 import type { ReviewEvidenceLocation } from '@/model/independent-review-view';
 import { countercheckAssessment, countercheckName, crossChapterSummary, crossChapterBoundaryNote } from '@/model/cross-chapter-view';
+import { makeWritingGoalInput, writingGoalLabels, type WritingGoalDimension, type WritingGoalsInput } from '@/model/writing-goal-input';
 
 interface LocalDraft {
   key: string;
@@ -53,7 +56,7 @@ const makeDraft = (projectId: string, chapter: Chapter): LocalDraft => ({
 const differs = (left: Pick<Chapter, 'title' | 'body'>, right: Pick<Chapter, 'title' | 'body'>) =>
   left.title !== right.title || left.body !== right.body;
 
-export interface ManuscriptPanelProps { projectId: string; onQuote: (text: string, source?: QuoteSource) => void; onWholeRevision?: (instruction: string) => void; savedLabel?: string; progress?: ReactNode }
+export interface ManuscriptPanelProps { projectId: string; onQuote: (text: string, source?: QuoteSource) => void; onWholeRevision?: (instruction: string, writingGoals?: WritingGoalsInput) => void; savedLabel?: string; progress?: ReactNode }
 
 export function ManuscriptPanel({ projectId, onQuote, onWholeRevision, savedLabel = '已保存到本机', progress }: ManuscriptPanelProps) {
   const { state } = useWorkspace();
@@ -68,7 +71,7 @@ export function ManuscriptPanel({ projectId, onQuote, onWholeRevision, savedLabe
   return <ManuscriptContent key={projectId} project={project} onQuote={onQuote} onWholeRevision={onWholeRevision} savedLabel={savedLabel} progress={progress} />;
 }
 
-function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, progress }: { project: Project; onQuote: (text: string, source?: QuoteSource) => void; onWholeRevision?: (instruction: string) => void; savedLabel: string; progress?: ReactNode }) {
+function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, progress }: { project: Project; onQuote: (text: string, source?: QuoteSource) => void; onWholeRevision?: (instruction: string, writingGoals?: WritingGoalsInput) => void; savedLabel: string; progress?: ReactNode }) {
   const { state, update, notify } = useWorkspace();
   const chapter = project.chapters[project.selectedChapter] || project.chapters[0];
   const key = draftKey(project.id, chapter.id);
@@ -76,6 +79,10 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
   const [selection, setSelection] = useState<SelectionAnchor | null>(null);
   const [dialog, setDialog] = useState<'versions' | 'export' | 'unsaved' | 'conflict' | 'whole-request' | 'whole-candidate' | null>(null);
   const [wholeInstruction, setWholeInstruction] = useState('');
+  const [useWritingGoal, setUseWritingGoal] = useState(false);
+  const [writingGoalDimension, setWritingGoalDimension] = useState<WritingGoalDimension>('emotion');
+  const [writingGoalText, setWritingGoalText] = useState('');
+  const [writingGoalBoundary, setWritingGoalBoundary] = useState('');
   const [deferred, setDeferred] = useState<DeferredAction | null>(null);
   const [versionId, setVersionId] = useState<string | null>(null);
   const [versionCompare, setVersionCompare] = useState(false);
@@ -305,6 +312,19 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
     } else notify('当前稿件已变化、关联组未完整选择，或候选绑定无效；没有覆盖原稿。');
   }
 
+  async function adoptCheckedCandidate(check: CandidateRecheckTask) {
+    const task = project.runtime?.task;
+    if (!task?.result || task.id !== check.sourceTaskId || hasUnsavedDraft) throw new Error('当前候选或编辑稿已变化，请重新查看。');
+    const frozenCandidateJSON = JSON.stringify(task.result.chapters);
+    const candidateSha256 = await candidateChapterSha256(task.result.chapters);
+    if (candidateSha256 !== check.candidateSha256) throw new Error('候选哈希与复查记录不一致。');
+    const authorized = await authorizeCandidateRecheck(check.id, project.id, task.id);
+    let adopted = false;
+    mutate(item => { adopted = acceptCheckedWholeCandidate(item, authorized, candidateSha256, frozenCandidateJSON); });
+    if (!adopted) throw new Error('当前原稿、来源任务或复查版本已变化，候选没有覆盖正文。');
+    setDialog(null); notify('已明确选择完整候选；采纳前原稿和复查身份已保存。事实通过不代表文学质量通过。');
+  }
+
   useEffect(() => {
     if (!acceptingIds) return;
     const accepted = project.pendingEdits.filter(edit => acceptingIds.includes(edit.id) && edit.status === 'accepted').length;
@@ -353,12 +373,20 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
         <Button variant="ghost" size="small" leadingIcon={progress ? RiArrowLeftLine : RiCloseLine} aria-label={progress ? '返回对话' : '收起文稿'} onClick={() => guard({ run: () => mutate(item => { item.docOpen = false; item.docClosedByUser = true; item.docExpanded = false; }) })}>{progress ? '返回对话' : '收起文稿'}</Button>
       </div>
     </header>
+    {project.importedBaseline?.provenance === 'whole_revision_source' && <div className="mx-5 mt-3 rounded-xl border border-border-button-default bg-tw-glass p-3" role="status">
+      <p className="text-body-2-medium">原始全文 · 原稿检查未完成</p>
+      <p className="mt-1 text-caption-1-regular text-text-secondary">原始全文来自整稿修订保存的输入快照，已单独保存在版本记录中。原稿的检查未完成状态和失败任务仍保留；候选需要另行查看并明确选择。</p>
+      <details className="mt-2 text-caption-1-regular text-text-tertiary"><summary className="cursor-pointer">原稿来源与校验信息</summary>
+        <dl className="mt-2 break-all"><dt>来源类型</dt><dd>{project.importedBaseline.provenance}</dd><dt>来源任务</dt><dd>{project.importedBaseline.sourceTaskId}</dd><dt>原稿 SHA-256</dt><dd>{project.importedBaseline.sourceManuscriptSha256}</dd></dl>
+      </details>
+    </div>}
     <div className="tw-manuscript-book-heading"><h2 className="font-story text-display-4-regular text-text-primary">{project.title}</h2>
       <div className="flex flex-wrap items-center gap-2 text-caption-1-regular text-text-tertiary"><span>{project.chapters.length} 章</span><span>·</span><span>{hanCharacterCount(project.chapters.map(item => item.body).join('')).toLocaleString()} 汉字</span><span>·</span><span aria-live="polite">{hasUnsavedDraft ? '有未保存的修改' : savedLabel}</span><span className="tw-manuscript-demo">{project.runtime ? '本机稿件' : '演示稿件'}</span></div>
     </div>
     {progress}
     <IndependentReviewPanel project={project} hasUnsavedDraft={hasUnsavedDraft} onLocate={locateReviewEvidence} />
     <Full15ReviewPanel project={project} hasUnsavedDraft={hasUnsavedDraft} onLocate={locateReviewEvidence} />
+    {project.runtime?.task?.result?.deepReference && <DeepReferenceDetails value={project.runtime.task.result.deepReference} />}
     {wholeResult && <section className="mx-5 mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border-button-default bg-tw-glass p-4" aria-label="整稿修订候选">
       <div className="min-w-0 flex-1"><p className="text-body-medium">{qualityReady ? `${qualityGroups.length} 个修订组待确认` : wholeReady ? '整稿修订候选待确认' : project.runtime?.resultDisposition === 'partially-applied' ? '已采纳部分修订组' : project.runtime?.resultDisposition === 'applied' ? '整稿候选已采纳' : project.runtime?.resultDisposition === 'declined' ? '已保留原稿' : '整稿修订结果已保留'}</p><p className="mt-1 text-caption-1-regular text-text-secondary">候选生成、检查和用户采纳分别记录；查看候选不会修改当前正文。</p>{wholeMode === 'whole-manuscript-v2' ? <p className="mt-1 text-caption-1-regular text-text-secondary">关联修订组必须一起选择；混合采纳后需重新复核所选组合。</p> : <p className="mt-1 text-caption-1-regular text-text-secondary">复读报告提出：新增疑问 {wholeRereadReport.introducedIssueCount} 项 · 未充分支持修改 {wholeRereadReport.unsupportedChangeCount} 项。</p>}</div>
       <Button variant="secondary" size="small" onClick={() => setDialog('whole-candidate')}>查看候选与原稿</Button>
@@ -414,11 +442,22 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
       <p className="font-story text-title-3-medium">{activeDraft.title}</p><p className="mt-2 text-body-regular text-text-secondary">{hanCharacterCount(activeDraft.body).toLocaleString()} 汉字 · 草稿尚未写入项目数据。</p>
     </DialogShell>
     <DialogShell title="当前稿件已经更新" description="这份草稿基于更早的正文。保存草稿时，会先保留当前稿件的版本副本。" open={dialog === 'conflict'} onClose={() => { setDialog(null); setDeferred(null); }} footer={<><Button variant="ghost" onClick={() => { setDialog(null); setDeferred(null); }}>继续编辑</Button><Button variant="secondary" leadingIcon={RiDownload2Line} onClick={() => downloadText(`${project.title}-未保存草稿.md`, `# ${activeDraft.title}\n\n${activeDraft.body}`)}>导出草稿</Button><Button variant="primary" onClick={() => saveAndContinue(true)}>保存草稿为当前稿</Button></>}><p className="text-body-regular text-text-secondary">你可以导出草稿留存，或保存为当前稿。已有版本不会被删除。</p></DialogShell>
-    <DialogShell title="发起整稿质量修订" description="系统会保存完整原稿，先独立阅读全文、核对主要问题，再形成有限候选。候选不会自动覆盖当前稿件。" open={dialog === 'whole-request'} onClose={() => setDialog(null)} footer={<><Button variant="secondary" onClick={() => setDialog(null)}>取消</Button><Button variant="primary" leadingIcon={RiSparklingLine} disabled={!wholeInstruction.trim()} onClick={() => { const instruction = wholeInstruction.trim(); if (!instruction || !onWholeRevision) return; setDialog(null); onWholeRevision(instruction); }}>开始整稿修订</Button></>}>
+    <DialogShell title="发起整稿质量修订" description="系统会保存完整原稿，先独立阅读全文、核对主要问题，再形成有限候选。候选不会自动覆盖当前稿件。" open={dialog === 'whole-request'} onClose={() => setDialog(null)} footer={<><Button variant="secondary" onClick={() => setDialog(null)}>取消</Button><Button variant="primary" leadingIcon={RiSparklingLine} disabled={!wholeInstruction.trim() || (useWritingGoal && !writingGoalText.trim())} onClick={() => { const instruction = wholeInstruction.trim(); if (!instruction || !onWholeRevision) return; try { const goals = useWritingGoal ? makeWritingGoalInput(writingGoalDimension, writingGoalText, writingGoalBoundary) : undefined; setDialog(null); onWholeRevision(instruction, goals); } catch(error) { notify(error instanceof Error ? error.message : '写作目标无效。'); } }}>开始整稿修订</Button></>}>
       <div className="flex flex-col gap-4"><TextAreaField label="本轮整稿修改目标" value={wholeInstruction} onChange={setWholeInstruction} rows={6} maxLength={12000} autoFocus placeholder="例如：检查人物情绪变化与结尾代价，只修改有多处原文证据支持的问题；保留有效回环、留白和克制。" /><p className="text-caption-1-regular text-text-secondary">修改按独立修订组提供；关联组必须一起选择。系统会保留不用理由、未解决项和原稿版本。</p></div>
+      <div className="mt-5 rounded-2xl border border-border-button-default p-4">
+        <label className="flex cursor-pointer items-center gap-3 text-body-medium"><input type="checkbox" checked={useWritingGoal} onChange={event=>setUseWritingGoal(event.target.checked)} />按写作目标查找参考（可选）</label>
+        {useWritingGoal && <div className="mt-4 flex flex-col gap-4">
+          <Select aria-label="想加强的方面" selectedKey={writingGoalDimension} onSelectionChange={value=>setWritingGoalDimension(String(value) as WritingGoalDimension)} triggerClassName="w-full">
+            {(Object.keys(writingGoalLabels) as WritingGoalDimension[]).map(value=><SelectItem key={value} id={value} textValue={writingGoalLabels[value]}>{writingGoalLabels[value]}</SelectItem>)}
+          </Select>
+          <TextAreaField label="具体想加强什么" value={writingGoalText} onChange={setWritingGoalText} rows={3} maxLength={2000} placeholder="例如：让妹妹的无偿付出被真正看见，但保留她不愿和解的选择。" />
+          <TextAreaField label="需要保留的内容（选填）" value={writingGoalBoundary} onChange={setWritingGoalBoundary} rows={2} maxLength={1000} placeholder="例如：仍按期关店，不改变原稿结尾。" />
+          <p className="text-caption-1-regular text-text-secondary">系统会先查找相关写法，再判断是否适合这篇稿件；结果中会记录实际采用或不用的原因。</p>
+        </div>}
+      </div>
     </DialogShell>
     <DialogShell title="整稿候选与原稿" description="先看主要问题和候选结果；证据、材料与未解决细节默认收起。文学判断仍需你审阅。" open={dialog === 'whole-candidate'} onClose={() => setDialog(null)} className="tw-manuscript-version-dialog" footer={qualityReady ? <><Button variant="secondary" onClick={keepWholeOriginal}>保留原稿</Button><Button variant="primary" leadingIcon={RiCheckLine} disabled={!qualityAdoptable} onClick={adoptQualityGroups}>采纳所选修订组</Button></> : wholeReady ? <><Button variant="secondary" onClick={keepWholeOriginal}>保留原稿</Button><Button variant="primary" leadingIcon={RiCheckLine} disabled={!wholeAdoptable} onClick={adoptWholeRevision}>整体采纳候选</Button></> : <Button onClick={() => setDialog(null)}>关闭</Button>}>
-      {wholeResult && project.runtime ? wholeMode === 'whole-manuscript-v2' ? <WholeQualityDetails result={wholeResult} source={project.runtime.baseManuscript.chapters} disposition={project.runtime.resultDisposition} conflicted={project.runtime.resultDisposition === 'held'} groups={qualityGroups} selectedGroupIds={qualitySelectedGroupIds} onToggleGroup={toggleQualityGroup} /> : <WholeRevisionDetails result={wholeResult} source={project.runtime.baseManuscript.chapters} disposition={project.runtime.resultDisposition} conflicted={project.runtime.resultDisposition === 'held'} /> : <p className="text-body-regular text-text-secondary">当前没有可查看的整稿候选。</p>}
+      {wholeResult && project.runtime ? wholeMode === 'whole-manuscript-v2' ? <><CandidateRecheckPanel project={project} onSelect={adoptCheckedCandidate} /><WholeQualityDetails result={wholeResult} source={project.runtime.baseManuscript.chapters} disposition={project.runtime.resultDisposition} conflicted={project.runtime.resultDisposition === 'held'} groups={qualityGroups} selectedGroupIds={qualitySelectedGroupIds} onToggleGroup={toggleQualityGroup} /></> : <WholeRevisionDetails result={wholeResult} source={project.runtime.baseManuscript.chapters} disposition={project.runtime.resultDisposition} conflicted={project.runtime.resultDisposition === 'held'} /> : <p className="text-body-regular text-text-secondary">当前没有可查看的整稿候选。</p>}
     </DialogShell>
     <DialogShell title="把故事带走" description="只导出当前已保存、已采纳的稿件，待审建议不会写入文件。" open={dialog === 'export'} onClose={() => setDialog(null)}>
       <div className="mb-6 flex items-center gap-4 rounded-3xl border border-border-button-default bg-tw-glass p-4"><RiFileTextLine className="size-8 text-tw-warm" /><div><p className="text-headline-medium">{project.title}</p><p className="text-body-2-regular text-text-secondary">{project.chapters.length} 章 · {hanCharacterCount(project.chapters.map(item => item.body).join('')).toLocaleString()} 汉字</p></div></div>
@@ -443,10 +482,69 @@ const arrayValue = (value: unknown): unknown[] => Array.isArray(value) ? value :
 const textValue = (value: unknown): string => typeof value === 'string' ? value : '';
 const textList = (value: unknown): string[] => arrayValue(value).filter((item): item is string => typeof item === 'string');
 
+export function WritingGoalDetails({ value }: { value: unknown }) {
+  const report=objectValue(value);
+  if(report?.schemaVersion!=='whole-quality-writing-goals-report-1')return null;
+  const goals=arrayValue(report.goals).map(objectValue).filter((row): row is Record<string,unknown>=>Boolean(row));
+  if(!goals.length)return null;
+  const outcomes: Record<string,string>={query_unavailable:'参考查询暂不可用',no_hits:'已查询，未找到匹配参考',
+    hits_not_supplied_budget:'找到参考，本次未进入审查',supplied_all_declined:'命中后未采用',use_not_proven:'采用尚未证实',used_exact_text_located:'已记录采用及正文位置'};
+  const count=(value:unknown)=>Number.isSafeInteger(value)&&Number(value)>=0?String(value):'未核实';
+  return <details className="rounded-2xl border border-border-button-default p-4" aria-label="写作目标与参考使用">
+    <summary className="cursor-pointer text-body-medium">写作目标与参考使用 · {goals.length} 项</summary>
+    <p className="mt-2 text-caption-1-regular text-text-secondary">这些是你希望加强的方向，和原稿已确认的问题分别记录。采用记录不代表写作质量已经通过。</p>
+    <div className="mt-3 flex flex-col gap-3">{goals.map((row,index)=>{
+      const goal=objectValue(row.goal)??{},problem=objectValue(goal.problem)??{},query=objectValue(row.deepQuery)??{},disposition=objectValue(row.disposition)??{};
+      const materials=arrayValue(row.materials).map(objectValue).filter((item):item is Record<string,unknown>=>Boolean(item));
+      return <section key={textValue(goal.id)||index} className="rounded-xl border border-border-button-default p-3">
+        <p className="text-body-medium">{writingGoalLabels[textValue(goal.dimension) as WritingGoalDimension]||`写作目标 ${index+1}`} · {outcomes[textValue(row.deepMaterialOutcome)]||'采用状态待核实'}</p>
+        <p className="mt-2 whitespace-pre-wrap text-body-regular">{textValue(problem.statement)}</p>
+        <p className="mt-2 text-caption-1-regular text-text-secondary">查询命中 {count(query.returnedCandidateCount)} 份 · 本次进入审查 {count(query.suppliedMaterialCount)} 份</p>
+        <p className="mt-1 text-body-2-regular text-text-secondary">{disposition.decision==='attempt'?'方案：尝试修订':disposition.decision==='preserve'?'方案：保留原稿':'方案：尚未确认'}{textValue(disposition.reason)?`。${textValue(disposition.reason)}`:''}</p>
+        {materials.length>0&&<details className="mt-3"><summary className="cursor-pointer text-body-2-medium">查看采用或不用的原因</summary>{materials.map((item,i)=><div key={textValue(item.supplyId)||i} className="mt-3">
+          <p className="text-body-2-regular">{item.status==='used_exact_text_located'?'已记录正文落点':item.status==='unused'?'未采用':'采用未证实'}：{textValue(item.reason)||'尚未提供理由。'}</p>
+          {textValue(item.caveat)&&<p className="mt-1 text-caption-1-regular text-text-secondary">适用边界：{textValue(item.caveat)}</p>}
+          {arrayValue(item.manuscriptEvidence).length>0&&<EvidenceList value={item.manuscriptEvidence}/>}
+        </div>)}</details>}
+      </section>;
+    })}</div>
+  </details>;
+}
+
+export function DeepReferenceDetails({ value }: { value: unknown }) {
+  const bundle = objectValue(value);
+  if (!bundle) return null;
+  const candidates = arrayValue(bundle.candidates).map(objectValue).filter((item): item is Record<string, unknown> => Boolean(item));
+  const used = candidates.filter(item => item.status === 'used_exact_text_located').length;
+  const noWholeQuery = bundle.path === 'whole_manuscript_quality' && Array.isArray(bundle.dataQueries) && bundle.dataQueries.length === 0;
+  const availability = noWholeQuery ? '本轮未发起深层参考查询'
+    : ({ matched: '已查询到深层参考', uncovered: '已查询，当前问题无可用命中', unavailable: '深层参考暂不可用', not_connected: '深层参考未接通' } as Record<string, string>)[textValue(bundle.callbackStatus)] || '查询状态未验证';
+  return <details className="mx-5 mb-3 rounded-2xl border border-border-button-default bg-tw-glass p-4" aria-label="深层分析材料采用详情">
+    <summary className="cursor-pointer text-body-medium">深层分析 · {availability} · 正文逐字落点 {used}/{candidates.length}</summary>
+    <p className="mt-2 text-caption-1-regular text-text-secondary">材料召回、方案决定与正文逐字落点分别记录；逐字落点不证明文学改善。</p>
+    <div className="mt-3 flex flex-col gap-3">{candidates.map((item, index) => {
+      const evidence = arrayValue(item.manuscriptEvidence).map(objectValue).filter((entry): entry is Record<string, unknown> => Boolean(entry));
+      return <section key={textValue(item.materialId) || index} className="rounded-xl border border-border-button-default p-3">
+        <p className="text-body-2-medium">{textValue(item.materialId) || `材料 ${index + 1}`} · {item.status === 'used_exact_text_located' ? '正文有逐字落点' : item.status === 'unused' ? '未采用' : '采用未证实'}</p>
+        <p className="mt-1 break-all text-caption-1-regular text-text-tertiary">来源 SHA {textValue(item.sourceMaterialSha256) || textValue(item.contentSha256) || '未提供'} · 决定 {textValue(item.decision) || '未提供'}</p>
+        {textValue(item.functionalChoice) && <p className="mt-2 text-body-2-regular text-text-secondary">写作功能：{textValue(item.functionalChoice)}</p>}
+        {textValue(item.psychologicalChange) && <p className="mt-1 text-body-2-regular text-text-secondary">心理变化：{textValue(item.psychologicalChange)}</p>}
+        {textValue(item.characterChoice) && <p className="mt-1 text-body-2-regular text-text-secondary">人物选择：{textValue(item.characterChoice)}</p>}
+        {textValue(item.consequence) && <p className="mt-1 text-body-2-regular text-text-secondary">后果：{textValue(item.consequence)}</p>}
+        {textValue(item.notProvenReason) && <p className="mt-2 text-body-2-regular text-text-tertiary">未证实：{textValue(item.notProvenReason)}</p>}
+        {evidence.length > 0 && <details className="mt-2"><summary className="cursor-pointer text-body-2-medium">实际正文位置 · {evidence.length}</summary><div className="mt-2"><EvidenceList value={evidence.flatMap(entry => arrayValue(entry.evidence).length ? arrayValue(entry.evidence) : [entry])} /></div></details>}
+        {textValue(item.caveat) && <p className="mt-2 text-caption-1-regular text-text-tertiary">适用边界：{textValue(item.caveat)}</p>}
+        {textList(item.limitations).map((line, lineIndex) => <p key={lineIndex} className="mt-1 text-caption-1-regular text-text-tertiary">局限：{line}</p>)}
+      </section>;
+    })}{!candidates.length && <p className="text-body-2-regular text-text-secondary">没有可展示的深层参考候选；不可视为没有相关材料。</p>}</div>
+    {textList(bundle.limitations).map((line, index) => <p key={index} className="mt-2 text-caption-1-regular text-text-tertiary">{line}</p>)}
+  </details>;
+}
+
 function EvidenceList({ value }: { value: unknown }) {
   const rows = arrayValue(value).map(objectValue).filter((item): item is Record<string, unknown> => Boolean(item));
   if (!rows.length) return <p className="text-body-2-regular text-text-tertiary">未列出可定位证据。</p>;
-  return <div className="flex flex-col gap-2">{rows.map((row, index) => <blockquote key={`${textValue(row.chapterId)}-${index}`} className="rounded-xl border border-border-button-default p-3"><p className="text-caption-1-medium text-text-tertiary">{textValue(row.chapterId) || '未标明章节'}{Number.isSafeInteger(row.start) ? ` · 位置 ${row.start}` : ''}{textValue(row.purpose) ? ` · ${textValue(row.purpose)}` : ''}</p><p className="mt-2 whitespace-pre-wrap font-story text-body-regular">{textValue(row.quote) || '未提供引文'}</p></blockquote>)}</div>;
+  return <div className="flex flex-col gap-2">{rows.map((row, index) => <blockquote key={`${textValue(row.chapterId)}-${index}`} className="rounded-xl border border-border-button-default p-3"><p className="text-caption-1-medium text-text-tertiary">{textValue(row.chapterId) || '未标明章节'}{Number.isSafeInteger(row.start) ? ` · UTF-16 位置 ${row.start}` : ''}{textValue(row.purpose) ? ` · ${textValue(row.purpose)}` : ''}{textValue(row.textRole) ? ` · ${textValue(row.textRole)}` : ''}</p><p className="mt-2 whitespace-pre-wrap font-story text-body-regular">{textValue(row.quote) || '未提供引文'}</p>{textList(row.sourceEvidenceIds).length > 0 && <p className="mt-2 break-all text-caption-1-regular text-text-tertiary">来源证据 {textList(row.sourceEvidenceIds).join('、')}</p>}{textValue(row.explanation) && <p className="mt-1 text-caption-1-regular text-text-secondary">{textValue(row.explanation)}</p>}</blockquote>)}</div>;
 }
 
 const displayItemText = (value: unknown, fallback: string): string => {
@@ -535,12 +633,14 @@ function WholeQualityDetails({ result, source, disposition, conflicted, groups, 
     <section className="rounded-2xl border border-border-button-default p-4">
       <p className="text-body-medium">候选状态：{statusLabel}</p>
       <p className="mt-2 text-body-regular text-text-secondary">主要问题 {priorities.length} 项 · 修订组 {groups.length} 个 · 变化章节 {changedIds.length || '0'} 个。</p>
-      <p className="mt-2 text-body-regular text-text-secondary">任务流程 completed 只表示结果已保存，不代表文学质量通过。</p>
+      <p className="mt-2 text-body-regular text-text-secondary">任务完成只表示结果已保存，不代表文学质量通过。</p>
       <p className="mt-2 text-body-regular text-text-secondary">{qualityAdoption}</p>
       {conflicted && <p className="mt-2 text-body-regular text-text-error-primary">当前工作稿与任务起点不一致，修订组不可采纳。</p>}
       {textValue(result.warnings?.[0]) && <p className="mt-2 text-body-regular text-text-error-primary">{result.warnings[0]}</p>}
       <p className="mt-2 text-caption-1-regular text-text-tertiary">采纳状态：{wholeRevisionDispositionLabel(disposition)}{requiredBaseRevision ? ` · 基准版本 ${requiredBaseRevision.slice(0, 12)}…` : ''}</p>
     </section>
+
+    <WritingGoalDetails value={quality.writingGoals}/>
 
     <section>
       <h3 className="mb-3 text-headline-medium">独立修订组</h3>
@@ -564,6 +664,7 @@ function WholeQualityDetails({ result, source, disposition, conflicted, groups, 
     <details className="rounded-2xl border border-border-button-default p-4"><summary className="cursor-pointer text-body-medium">原稿与完整候选对比（{changedIds.length} 章）</summary><div className="mt-4"><VersionComparison previous={{ id: 'whole-quality-source', label: '任务起点原稿', date: '', chapters: sourceChapters }} current={result.chapters} beforeLabel="原稿" afterLabel="完整候选" /></div></details>
 
     <CrossChapterReviewDetails quality={quality} source={sourceChapters} candidate={result.chapters} />
+    {objectValue(quality.deepReference) && <DeepReferenceDetails value={quality.deepReference} />}
 
     <details className="rounded-2xl border border-border-button-default p-4"><summary className="cursor-pointer text-body-medium">主要问题与独立阅读（{priorities.length}）</summary><div className="mt-4 flex flex-col gap-3">{priorities.length ? priorities.map((item, index) => { const row = objectValue(item); return <section key={textValue(row?.id) || index} className="rounded-xl bg-tw-glass p-4"><p className="text-body-medium">{displayItemText(item, `问题 ${index + 1}`)}</p>{row && textValue(row.expectedEffect) && <p className="mt-2 text-body-regular text-text-secondary">预期作用：{textValue(row.expectedEffect)}</p>}{row && <div className="mt-3"><EvidenceList value={row.evidence} /></div>}{row && textList(row.limitations).map((line, lineIndex) => <p key={lineIndex} className="mt-2 text-body-2-regular text-text-tertiary">边界：{line}</p>)}</section>; }) : <p className="text-body-regular text-text-secondary">独立阅读没有列出需要修改的主要问题。</p>}{sceneChanges.length > 0 && <p className="text-body-2-regular text-text-secondary">全文阅读记录了 {sceneChanges.length} 条场景变化；详细记录由任务结果保留。</p>}</div></details>
 

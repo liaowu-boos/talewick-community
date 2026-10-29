@@ -50,7 +50,7 @@ test('native thinking aliases send 65536 and JSON only on opt-in, preserving pri
     assert.equal(body.model, model);
     assert.equal(body.stream, true);
     assert.equal(body.thinking, undefined);
-    assert.equal(body.reasoning_effort, undefined);
+    assert.equal(body.reasoning_effort, 'low');
     assert.equal(body.tools, undefined);
     assert.deepEqual(body.response_format, { type: 'json_object' });
     assert.deepEqual(body.messages, [{ role: 'system', content: input.system }, { role: 'user', content: input.user }]);
@@ -74,7 +74,7 @@ test('wire recovery retains the requested visible allowance with a 32768 ceiling
     assert.equal(f.sent.length, 2);
     assert.deepEqual(f.sent.map(x => x.body.max_tokens), [65536, expected]);
     assert.equal(f.sent[0].signal, f.sent[1].signal);
-    assert.deepEqual(f.sent[1].body, { ...f.sent[0].body, max_tokens: expected, thinking: { type: 'disabled' } });
+    assert.deepEqual(f.sent[1].body, { ...Object.fromEntries(Object.entries(f.sent[0].body).filter(([key]) => key !== 'reasoning_effort')), max_tokens: expected, thinking: { type: 'disabled' } });
     assert.deepEqual(f.attempts.map(a => [a.stage, a.attempt, a.mode, a.maxOutputTokens, a.finishReason, a.hasReasoning]), [
       [input.stage, 1, 'primary', 65536, 'length', true],
       [input.stage, 2, 'recovery', expected, 'stop', false],

@@ -138,27 +138,35 @@ function validateContinuityEnvelope(review){
  if(hasFailure){
   const failed=review.continuityChainFailure;
   requireThat(object(failed),'CONTINUITY_FAILURE_ENVELOPE');
+   const primaryFailure=failed.schemaVersion==='continuity-chain-primary-failure-1';
+   const relationFailure=failed.schemaVersion==='continuity-chain-relation-repair-failure-1';
   exact(failed,['schemaVersion','chainSchemaVersion','status','inputHash','manuscriptSha256','reportSha256',
-   'primaryRequestSha256','primaryResponseSha256','repairSchemaVersion','repairRequestSha256','repairResponseSha256',
-   'failureCode','repairAttempted','semanticAcceptance','automaticRevisionEligible','historicalObservations']);
-  requireThat(failed.schemaVersion==='continuity-chain-failure-1'&&failed.chainSchemaVersion==='continuity-chain-review-3'&&
-   failed.status==='continuity_chain_incomplete'&&failed.repairSchemaVersion==='continuity-chain-format-repair-1','CONTINUITY_FAILURE_ENVELOPE');
-  for(const key of ['inputHash','manuscriptSha256','reportSha256','primaryRequestSha256','primaryResponseSha256','repairRequestSha256','repairResponseSha256'])
+    'primaryRequestSha256','primaryResponseSha256',...(primaryFailure?[]:['repairSchemaVersion','repairRequestSha256','repairResponseSha256']),
+    ...(relationFailure?['primaryFailureCode']:[]),'failureCode','repairAttempted','semanticAcceptance','automaticRevisionEligible','historicalObservations']);
+   requireThat((primaryFailure||(relationFailure&&failed.repairSchemaVersion==='continuity-chain-repair-1')||
+    (failed.schemaVersion==='continuity-chain-failure-1'&&failed.repairSchemaVersion==='continuity-chain-format-repair-1'))&&
+    failed.chainSchemaVersion==='continuity-chain-review-3'&&failed.status==='continuity_chain_incomplete','CONTINUITY_FAILURE_ENVELOPE');
+   for(const key of ['inputHash','manuscriptSha256','reportSha256','primaryRequestSha256','primaryResponseSha256',...(primaryFailure?[]:['repairRequestSha256','repairResponseSha256'])])
    requireThat(typeof failed[key]==='string'&&/^[0-9a-f]{64}$/.test(failed[key]),'CONTINUITY_FAILURE_BINDING');
-  requireThat(nonempty(failed.failureCode)&&failed.repairAttempted===true&&failed.semanticAcceptance===false&&failed.automaticRevisionEligible===false,'CONTINUITY_FAILURE_FIELDS');
+   requireThat(nonempty(failed.failureCode)&&(!primaryFailure||['CASE_FACETS','CASE_NEEDS_DISTINCT_EVIDENCE'].includes(failed.failureCode))&&failed.repairAttempted===!primaryFailure&&failed.semanticAcceptance===false&&failed.automaticRevisionEligible===false,'CONTINUITY_FAILURE_FIELDS');
+   if(relationFailure)requireThat(['CASE_TRANSITIONS','EXPLANATION_WITHOUT_EVIDENCE'].includes(failed.primaryFailureCode),'CONTINUITY_FAILURE_FIELDS');
   requireThat(Array.isArray(failed.historicalObservations),'CONTINUITY_FAILURE_HISTORY');
   const historicalIds=new Set();
   for(const item of failed.historicalObservations){
    exact(item,['schemaVersion','sourceProtocolVersion','sourceInputHash','sourceManuscriptSha256','sourceRequestSha256','sourceResponseSha256','failureCode','case','status','semanticValidity','revisionEligible','explicitlyClosed']);
    exact(item.case,['id','kind','subject','impact','reportedAssessment','reportedReason']);
+    const boundFailure=relationFailure
+     ?((item.sourceResponseSha256===failed.primaryResponseSha256&&item.failureCode===failed.primaryFailureCode)||
+       (item.sourceResponseSha256===failed.repairResponseSha256&&item.failureCode===failed.failureCode))
+     :item.sourceResponseSha256===(primaryFailure?failed.primaryResponseSha256:failed.repairResponseSha256)&&item.failureCode===failed.failureCode;
+    const historicalId=relationFailure?JSON.stringify([item.sourceResponseSha256,item.case.id]):item.case.id;
    requireThat(item.schemaVersion==='continuity-chain-unverified-observation-1'&&item.sourceProtocolVersion===failed.chainSchemaVersion&&
     item.sourceInputHash===failed.inputHash&&item.sourceManuscriptSha256===failed.manuscriptSha256&&
-    item.sourceRequestSha256===failed.primaryRequestSha256&&item.sourceResponseSha256===failed.repairResponseSha256&&
-    item.failureCode===failed.failureCode&&item.status==='protocol_failed_unverified_historical_observation'&&
+     item.sourceRequestSha256===failed.primaryRequestSha256&&boundFailure&&item.status==='protocol_failed_unverified_historical_observation'&&
     item.semanticValidity==='unverified'&&item.revisionEligible===false&&item.explicitlyClosed===false,'CONTINUITY_FAILURE_HISTORY');
-   requireThat(nonempty(item.case.id)&&!historicalIds.has(item.case.id)&&item.case.impact==='major'&&['unknown','contradiction'].includes(item.case.reportedAssessment)&&
+    requireThat(nonempty(item.case.id)&&!historicalIds.has(historicalId)&&item.case.impact==='major'&&['unknown','contradiction'].includes(item.case.reportedAssessment)&&
     ['timeline','object_custody','site_availability','handover'].includes(item.case.kind)&&nonempty(item.case.subject)&&nonempty(item.case.reportedReason),'CONTINUITY_FAILURE_HISTORY');
-   historicalIds.add(item.case.id);
+    historicalIds.add(historicalId);
   }
   requireThat(review.issues.every(issue=>!Object.hasOwn(issue,'continuityCaseId')),'CONTINUITY_FAILURE_ISSUES');
   return 'failure';

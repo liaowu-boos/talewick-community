@@ -2,7 +2,8 @@
 import { mkdir, open, readFile, rename, unlink, lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { isDeepStrictEqual } from 'node:util';
+import { execFile } from 'node:child_process';
+import { isDeepStrictEqual, promisify } from 'node:util';
 
 export const LIBRARY_BATCH_VERSION = 'library-batches-1';
 export const LIBRARY_BATCH_SIZE = 10;
@@ -19,6 +20,28 @@ const id = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(v
 const version = value => typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,199}$/.test(value);
 const sha = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const keys = (value, names) => record(value) && isDeepStrictEqual(Object.keys(value).sort(), [...names].sort());
+const execFileAsync = promisify(execFile);
+
+// Metadata only: opening an iCloud placeholder can block while downloading it.
+export async function libraryBatchFileState(file) {
+  try {
+    await lstat(file);
+    if (process.platform !== 'darwin') return { available: true };
+    const { stdout } = await execFileAsync('/usr/bin/stat', ['-f', '%f', file], { encoding: 'utf8', timeout: 2000 });
+    const flags = Number(stdout.trim());
+    require(Number.isSafeInteger(flags) && flags >= 0, 'BATCH_STORE_INVALID');
+    return flags & 0x40000000 ? { available: false, reason: 'dataless' } : { available: true };
+  } catch (error) {
+    if (error.code === 'ENOENT') return { available: false, reason: 'missing' };
+    throw error;
+  }
+}
+
+export async function assertLibraryBatchLocalFile(file, fileState = libraryBatchFileState) {
+  const state = await fileState(file);
+  if (state?.reason === 'dataless') throw issue('BATCH_LOCAL_FILE_WAIT');
+  require(state?.available === true || state?.reason === 'missing', 'BATCH_STORE_INVALID');
+}
 const items = state => state.batches.flatMap(batch => batch.items);
 
 function sourceBinding(source) {
@@ -109,11 +132,14 @@ export function projectLibraryBatchProgress(state) {
 }
 
 /** One owner per dedicated root. Opening never dispatches work; run() is explicit. */
-export async function createLibraryBatchQueue({ rootDir, processOne, concurrency = 2 }) {
+export async function createLibraryBatchQueue({ rootDir, processOne, concurrency = 2, fileState = libraryBatchFileState }) {
   require(typeof rootDir === 'string' && path.isAbsolute(rootDir) && typeof processOne === 'function' && [2, 4].includes(concurrency));
+  await assertLibraryBatchLocalFile(rootDir, fileState);
   await mkdir(rootDir, { recursive: true, mode: 0o700 });
   require(await realpath(rootDir) === rootDir, 'BATCH_STORE_SYMLINK');
   const stateFile = path.join(rootDir, 'queue.json'), ownerFile = path.join(rootDir, '.owner.json');
+  await assertLibraryBatchLocalFile(stateFile, fileState);
+  await assertLibraryBatchLocalFile(ownerFile, fileState);
   const owner = { pid: process.pid, token: randomUUID() };
   let ownerHandle;
   try { ownerHandle = await open(ownerFile, 'wx', 0o600); }
@@ -122,9 +148,13 @@ export async function createLibraryBatchQueue({ rootDir, processOne, concurrency
   let state, diskHash = null, serial = Promise.resolve(), pump = null, closing = false, closed = false, fault = null;
   const active = new Map(), controllers = new Map();
   const now = () => new Date().toISOString();
-  const assertOwner = async () => require(isDeepStrictEqual(JSON.parse(await readFile(ownerFile, 'utf8')), owner), 'BATCH_STORE_CONFLICT');
+  const assertOwner = async () => {
+    await assertLibraryBatchLocalFile(ownerFile, fileState);
+    require(isDeepStrictEqual(JSON.parse(await readFile(ownerFile, 'utf8')), owner), 'BATCH_STORE_CONFLICT');
+  };
   const releaseOwner = async () => { await assertOwner(); await unlink(ownerFile); };
   const readState = async () => {
+    await assertLibraryBatchLocalFile(stateFile, fileState);
     const stat = await lstat(stateFile);
     require(stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1 && stat.size <= 4 * 1024 * 1024, 'BATCH_STORE_INVALID');
     return readFile(stateFile, 'utf8');

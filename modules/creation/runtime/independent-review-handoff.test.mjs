@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import { manuscriptFingerprint } from '../../validation/runtime/checks.mjs';
 import { buildIndependentReviewRequest } from './independent-review-handoff.mjs';
+import { createWholeQualityRequestSpec } from './whole-manuscript-quality.mjs';
 
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const canonical = value => Array.isArray(value) ? value.map(canonical) : object(value)
@@ -81,7 +82,22 @@ test('selected groups rebuild the actual mixed manuscript and cannot inherit ful
   assert.deepEqual(handoff.provenance.declinedGroupIds, ['p-1']);
   assert.equal(handoff.provenance.goalCoverage, 'selected_groups_only');
   assert.equal(handoff.provenance.rereadScope, 'selected-groups-unchecked');
+  assert.equal(handoff.provenance.candidateSelectionScope, 'partial_mixed_candidate');
+  assert.match(handoff.provenance.candidateRecheckTrustBoundary, /inapplicable/);
   assert.notEqual(handoff.provenance.reviewCandidateManuscriptSha256, handoff.provenance.fullCandidateManuscriptSha256);
+});
+
+test('candidate-level recheck boundary permits the full blind pair but never upgrades not-recommended groups', () => {
+  const result = fixture();
+  result.wholeRevision.status = 'candidate_ready_cross_check_incomplete';
+  result.wholeRevision.adoption.atomicGroups.forEach(group => { group.recommendation = 'not_recommended'; });
+  const full = buildIndependentReviewRequest({ caseId: 'case-rechecked-full', request, result });
+  assert.equal(full.provenance.artifactRole, 'full_candidate');
+  assert.equal(full.provenance.candidateSelectionScope, 'complete_frozen_candidate');
+  assert.match(full.provenance.candidateRecheckTrustBoundary, /exact complete candidate/);
+  assert.deepEqual(full.request.candidate.chapters, result.chapters);
+  assert.throws(() => buildIndependentReviewRequest({ caseId: 'case-rechecked-partial', request, result, selection: ['p-1','p-2'] }),
+    { code: 'HANDOFF_SELECTION_NOT_ELIGIBLE' });
 });
 
 test('adjacency evidence exposes unchanged pronoun context and refuses to call attribution safe', () => {
@@ -191,6 +207,42 @@ test('runtime-normalized cross binding repairs persisted-request omission withou
   assert.throws(() => buildIndependentReviewRequest({ caseId: 'bad-normalized-core', request: changedPersistedRequest, result }),
     { code: 'HANDOFF_REQUEST_BINDING' });
 });
+
+test('deep-reference handoff matches the shared request spec for persisted and normalized cross bindings without mutation', () => {
+  for (const unresolved of [false, true]) {
+    const { result, crossRequest } = crossFixture({ unresolved });
+    result.wholeRevision.requestSpec = createWholeQualityRequestSpec(crossRequest, { deepReferenceEnabled: true });
+    const before = structuredClone(result), persistedRequest = structuredClone(crossRequest);
+    delete persistedRequest.crossChapterReview;
+    const exact = buildIndependentReviewRequest({ caseId: 'deep-policy', request: crossRequest, result });
+    const normalized = buildIndependentReviewRequest({ caseId: 'deep-policy', request: persistedRequest, result });
+    assert.deepEqual(exact.request, normalized.request);
+    assert.deepEqual(result, before);
+    assert.equal(normalized.provenance.requestInputFingerprint, result.wholeRevision.requestSpec.inputFingerprint);
+    assert.equal(normalized.provenance.wholeRevisionResultSha256, sha256(before));
+    assert.equal(normalized.request.candidate.mode, unresolved ? 'no_change' : 'revised');
+    assert.equal(JSON.stringify(normalized.request).includes('deepReferencePolicyVersion'), false);
+  }
+});
+
+test('deep-reference policy omission, unknown version, stale fingerprint, and addition to legacy fail closed', () => {
+  const original = fixture();
+  original.wholeRevision.requestSpec = createWholeQualityRequestSpec(request, { deepReferenceEnabled: true });
+  for (const mutate of [
+    result => { delete result.wholeRevision.requestSpec.deepReferencePolicyVersion; },
+    result => { result.wholeRevision.requestSpec.deepReferencePolicyVersion = 'unknown-policy'; },
+    result => { result.wholeRevision.requestSpec.deepReferencePolicyVersion = null; },
+    result => { result.wholeRevision.requestSpec.inputFingerprint = createWholeQualityRequestSpec(request).inputFingerprint; },
+  ]) {
+    const result = structuredClone(original); mutate(result);
+    assert.throws(() => buildIndependentReviewRequest({ caseId: 'tampered-deep-policy', request, result }), { code: 'HANDOFF_REQUEST_BINDING' });
+  }
+  const legacy = fixture();
+  legacy.wholeRevision.requestSpec.deepReferencePolicyVersion = original.wholeRevision.requestSpec.deepReferencePolicyVersion;
+  assert.throws(() => buildIndependentReviewRequest({ caseId: 'tampered-legacy-policy', request, result: legacy }), { code: 'HANDOFF_REQUEST_BINDING' });
+});
+
+
 
 test('handoff accepts new no_change only with an explicit unresolved confirmed conflict retained in provenance', () => {
   const { result, crossRequest } = crossFixture({ unresolved: true });

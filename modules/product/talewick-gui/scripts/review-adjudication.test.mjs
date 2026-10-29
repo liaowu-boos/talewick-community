@@ -10,7 +10,7 @@ import { adjudicationFixture } from './review-adjudication-fixtures.mjs';
 const root = fileURLToPath(new URL('../src/model/', import.meta.url));
 const temporary = await mkdtemp(path.join(tmpdir(), 'talewick-adjudication-state-'));
 after(() => rm(temporary, { recursive: true, force: true }));
-for (const name of ['seed', 'runtime', 'revision-anchor', 'store', 'conversation', 'project-link', 'review-adjudication']) {
+for (const name of ['candidate-recheck', 'project-import', 'seed', 'runtime', 'revision-anchor', 'store', 'conversation', 'project-link', 'review-adjudication']) {
   const source = stripTypeScriptTypes(await readFile(path.join(root, name + '.ts'), 'utf8'), { mode: 'transform' }).replace(/(from\s+['"])(\.\/[^'"]+)(['"])/g, '$1$2.mjs$3');
   await writeFile(path.join(temporary, name + '.mjs'), source);
 }

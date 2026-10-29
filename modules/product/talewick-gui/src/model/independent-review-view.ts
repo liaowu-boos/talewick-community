@@ -10,6 +10,7 @@ export interface ReviewEvidenceLocation {
   readerId?: string;
   stage?: string;
   documentRole?: ReviewManuscriptRole;
+  evidenceKind?: 'supporting' | 'counter';
 }
 export interface IndependentReviewSnapshot {
   id: string;
@@ -24,6 +25,7 @@ export interface IndependentReviewFinding {
   statement: string;
   detail?: string;
   status?: string;
+  uncertainty?: string;
   evidence: ReviewEvidenceLocation[];
 }
 export interface IndependentReviewSection {
@@ -57,13 +59,24 @@ const texts = (value: unknown) => Array.isArray(value) ? value.map(text).filter(
 const statusNames: Record<string, string> = {
   implemented: '已落实', partially_implemented: '部分落实', not_implemented: '未落实', not_applicable: '不适用',
   first: '倾向先读稿', second: '倾向后读稿', mixed: '两稿各有取舍', no_clear_preference: '无明确偏好',
-  hard_fact: '文本事实', editorial_hypothesis: '编辑判断',
+  hard_fact: '模型事实判断', editorial_hypothesis: '编辑判断',
 };
 const stageNames: Record<string, string> = { independent_reading: '独立全文阅读', blind_pair: '盲态两稿比较', goal_audit: '冻结目标核查' };
+const focusNames: Record<string, string> = {
+  continuation_desire: '继续阅读意愿的变化', psychological_turns: '心理转折的可信度', emotional_payoff: '情绪累积与兑现',
+  middle_late_pacing: '中后段节奏', scene_explanation: '场景与解释的关系', choice_cost: '人物选择及其代价',
+};
+export const isPartialBlindReport = (value: unknown): value is UnknownRecord => record(value)
+  && value.schemaVersion === 'independent-review-partial-blind-report-1' && value.completeBlindReview === true
+  && value.completedBlindStages === 6 && value.taskStatus === 'needs_attention' && value.goalAuditStatus === 'needs_attention'
+  && value.automaticAdoption === false && value.literaryPass === 'NOT_COMPUTED';
 const limitationNames: Record<string, string> = {
   'Blind preference does not prove goal implementation.': '盲评偏好不能证明预定目标已经落实。',
   'Goal implementation does not by itself grant adoption.': '目标落实本身不代表候选稿可以直接采用。',
   'Mixed or divergent findings require a narrowed recheck rather than aggregation.': '意见混合或存在分歧时，需要缩小范围复核，不能合并为统一结论。',
+  'Six blind stages are valid; the goal audit remains failed and the task remains needs_attention.': '六个盲评阶段的记录已核验；目标核查仍未通过，任务仍需处理。',
+  'Reader judgments, negative opinions and disagreement are preserved without aggregation.': '各读者的判断、负面意见和分歧均原样保留，不合并为统一结论。',
+  'No goal compliance, factual clearance, literary pass or automatic adoption is inferred.': '这些记录不表示目标已落实、事实核查通过或文学质量通过，也不会自动采用候选稿。',
 };
 
 interface FrozenGoalLabels {
@@ -135,14 +148,14 @@ function collectSnapshots(value: unknown, roles: Map<string, ReviewManuscriptRol
   if (depth > 12) return;
   if (Array.isArray(value)) { value.forEach(item => collectSnapshots(item, roles, found, hint, depth + 1)); return; }
   if (!record(value)) return;
-  const chapters = Array.isArray(value.chapters) ? value.chapters.filter(record).map(item => ({ id: text(item.id), title: text(item.title), body: exactText(item.body) })).filter(item => item.id && item.body) : [];
+  const chapters = Array.isArray(value.chapters) ? value.chapters.filter(record).map(item => ({ id: exactText(item.id), title: exactText(item.title), body: exactText(item.body) })).filter(item => item.id && item.body) : [];
   if (chapters.length) {
     const blindId = text(value.blindId ?? value.id);
     let role = normalizeRole(value.role ?? value.manuscriptRole ?? value.identity ?? value.documentRole ?? hint);
     if (role === 'unknown' && blindId) role = roles.get(blindId) ?? 'unknown';
     if (blindId && role !== 'unknown') roles.set(blindId, role);
     const id = `${role}:${blindId || text(value.manuscriptSha256) || found.length}`;
-    if (!found.some(item => item.id === id)) found.push({ id, blindId, role, label: roleLabel(role, blindId), ...(text(value.title) ? { title: text(value.title) } : {}), chapters });
+    if (!found.some(item => item.id === id)) found.push({ id, blindId, role, label: roleLabel(role, blindId), ...(exactText(value.title) ? { title: exactText(value.title) } : {}), chapters });
     return;
   }
   for (const [key, item] of Object.entries(value)) collectSnapshots(item, roles, found, key, depth + 1);
@@ -180,6 +193,16 @@ function stageOf(value: UnknownRecord, envelope: UnknownRecord) {
 
 function recordEnvelopes(source: UnknownRecord) {
   const candidates: unknown[] = [];
+  if (isPartialBlindReport(source)) {
+    const merged = source.independentReadings;
+    const completeMerged = Array.isArray(merged) && merged.length === 2 && merged.every(item => record(item) && record(item.record)
+      && Array.isArray(item.record.entries) && item.record.entries.length === 2
+      && item.record.entries.every(entry => record(entry) && ['A', 'B'].includes(text(entry.blindId)))
+      && new Set(item.record.entries.map(entry => record(entry) ? entry.blindId : null)).size === 2);
+    const readings = completeMerged ? merged : source.isolatedReadings;
+    if (Array.isArray(readings)) candidates.push(...readings);
+    if (Array.isArray(source.blindPairReviews)) candidates.push(...source.blindPairReviews);
+  }
   if (record(source.completionEvidence)) {
     for (const key of ['independentReadings', 'blindPairReviews']) if (Array.isArray(source.completionEvidence[key])) candidates.push(...source.completionEvidence[key] as unknown[]);
     if (record(source.completionEvidence.goalAudit)) candidates.push(source.completionEvidence.goalAudit);
@@ -200,14 +223,22 @@ function recordEnvelopes(source: UnknownRecord) {
 }
 
 function findingsForRecord(value: UnknownRecord, readerId: string | undefined, stage: string, roles: Map<string, ReviewManuscriptRole>, completionRoles: Map<string, ReviewManuscriptRole>, goalLabels: FrozenGoalLabels) {
-  const result: IndependentReviewFinding[] = [], add = (id: string, statement: unknown, evidenceValue?: unknown, status?: unknown, detail?: unknown) => {
+  const result: IndependentReviewFinding[] = [], add = (id: string, statement: unknown, evidenceValue?: unknown, status?: unknown, detail?: unknown, uncertainty?: unknown, counterEvidence?: unknown) => {
     const line = text(statement); if (!line) return;
-    result.push({ id, statement: line, ...(text(detail) ? { detail: text(detail) } : {}), ...(text(status) ? { status: statusNames[text(status)] ?? text(status) } : {}), evidence: collectEvidence(evidenceValue, line, readerId, stage, roles) });
+    const supporting = collectEvidence(evidenceValue, line, readerId, stage, roles), counter = collectEvidence(counterEvidence, line, readerId, stage, roles);
+    result.push({ id, statement: line, ...(text(detail) ? { detail: text(detail) } : {}), ...(text(status) ? { status: statusNames[text(status)] ?? text(status) } : {}),
+      ...(text(uncertainty) ? { uncertainty: text(uncertainty) } : {}),
+      evidence: counterEvidence === undefined ? supporting : [...supporting.map(item => ({ ...item, evidenceKind: 'supporting' as const })), ...counter.map(item => ({ ...item, evidenceKind: 'counter' as const }))] });
   };
   if (Array.isArray(value.entries)) value.entries.filter(record).forEach((entry, entryIndex) => {
     const blindId = text(entry.blindId), detail = roleLabel(blindId ? completionRoles.get(blindId) ?? 'unknown' : 'unknown', blindId);
     add(`entry-${entryIndex}-impression`, entry.overallImpression, undefined, undefined, detail);
     if (Array.isArray(entry.claims)) entry.claims.filter(record).forEach((claim, claimIndex) => add(`entry-${entryIndex}-claim-${text(claim.id) || claimIndex}`, claim.statement, claim.evidence, claim.claimType, detail));
+    if (Array.isArray(entry.focusAssessments)) entry.focusAssessments.filter(record).forEach((assessment, index) => {
+      const focus = focusNames[text(assessment.focusId)] || text(assessment.focusId);
+      add(`entry-${entryIndex}-focus-${text(assessment.focusId) || index}`, assessment.statement, assessment.evidence, assessment.claimType,
+        `${detail} · ${focus}`, assessment.uncertainty, assessment.counterEvidence);
+    });
   });
   if (Array.isArray(value.comparisons)) value.comparisons.filter(record).forEach((comparison, index) => {
     const harm = comparison.severeHarm;
@@ -218,7 +249,8 @@ function findingsForRecord(value: UnknownRecord, readerId: string | undefined, s
       const labels = texts(harm.blindIds).map(id => roleLabel(completionRoles.get(id) ?? 'unknown', id));
       status = `严重问题 · ${labels.join('、')}`;
     }
-    add(`comparison-${text(comparison.id) || index}`, comparison.statement, [comparison.evidence, record(harm) ? harm.evidence : []], status);
+    add(`comparison-${text(comparison.id) || index}`, comparison.statement, [comparison.evidence, record(harm) ? harm.evidence : []], status,
+      focusNames[text(comparison.focusId)] || text(comparison.focusId), comparison.uncertainty, comparison.counterEvidence);
   });
   if (Array.isArray(value.goalAssessments)) value.goalAssessments.filter(record).forEach((goal, goalIndex) => {
     const goalId = text(goal.goalId), goalStatement = goalLabels.statements.get(goalId);
@@ -245,12 +277,42 @@ function findingsForRecord(value: UnknownRecord, readerId: string | undefined, s
   return result;
 }
 
-export function independentReviewView(report: unknown, mode: 'single' | 'compare'): IndependentReviewView {
+interface IndependentReviewDisplayContext { taskId: string; partialSnapshotProjection?: unknown }
+
+function boundPartialSnapshots(source: UnknownRecord, context?: IndependentReviewDisplayContext) {
+  const projection = context?.partialSnapshotProjection;
+  if (!record(projection) || projection.schemaVersion !== 'independent-review-partial-snapshots-1'
+    || projection.reviewTaskId !== context?.taskId || projection.caseId !== source.caseId
+    || projection.requestHash !== source.requestHash || projection.partialReportSha256 !== source.reportSha256
+    || !/^[a-f0-9]{64}$/.test(text(source.reportSha256)) || !record(source.privateBinding)
+    || !record(source.privateBinding.bindings) || !Array.isArray(projection.snapshots) || projection.snapshots.length !== 2) return null;
+  const binding = source.privateBinding, roles = binding.bindings as UnknownRecord;
+  const valid = projection.snapshots.every(item => record(item) && ['A', 'B'].includes(text(item.blindId))
+    && ['baseline', 'candidate'].includes(text(item.role)) && roles[text(item.blindId)] === item.role
+    && item.manuscriptSha256 === binding[item.role === 'baseline' ? 'baselineManuscriptSha256' : 'candidateManuscriptSha256']
+    && Array.isArray(item.chapters) && item.chapters.length > 0 && item.chapters.every(chapter => record(chapter)
+      && typeof chapter.id === 'string' && typeof chapter.title === 'string' && typeof chapter.body === 'string'));
+  return valid && new Set(projection.snapshots.map(item => record(item) ? item.blindId : null)).size === 2 ? projection : null;
+}
+
+/** A supplied alias must resolve exactly; never redirect a missing alias to another manuscript. */
+export function independentReviewSnapshotForEvidence(snapshots: IndependentReviewSnapshot[], evidence: ReviewEvidenceLocation) {
+  const matching = evidence.blindId ? snapshots.filter(item => item.blindId === evidence.blindId)
+    : evidence.documentRole ? snapshots.filter(item => item.role === evidence.documentRole) : snapshots;
+  if (matching.length !== 1) return undefined;
+  const snapshot = matching[0], chapter = snapshot.chapters.find(item => item.id === evidence.chapterId);
+  return chapter && Number.isSafeInteger(evidence.start) && evidence.start >= 0 && evidence.quote.length > 0
+    && chapter.body.slice(evidence.start, evidence.start + evidence.quote.length) === evidence.quote ? snapshot : undefined;
+}
+
+export function independentReviewView(report: unknown, mode: 'single' | 'compare', context?: IndependentReviewDisplayContext): IndependentReviewView {
   const source = record(report) ? report : {}, roles = new Map<string, ReviewManuscriptRole>(), completionRoles = new Map<string, ReviewManuscriptRole>(), snapshots: IndependentReviewSnapshot[] = [];
+  const partial = mode === 'compare' && isPartialBlindReport(source);
   collectRoleBindings(source, roles);
+  if (partial) collectRoleBindings(source.readerBindings, completionRoles);
   if (record(source.completionEvidence)) collectRoleBindings(source.completionEvidence, completionRoles);
   const goalLabels = frozenGoalLabels(source.completionEvidence);
-  collectSnapshots(source, roles, snapshots);
+  collectSnapshots(partial ? boundPartialSnapshots(source, context) : source, roles, snapshots);
   if (mode === 'single' && snapshots.length === 1 && snapshots[0].role === 'unknown') snapshots[0] = { ...snapshots[0], role: 'single', label: '本次冻结单稿' };
   snapshots.forEach(snapshot => { if (snapshot.blindId && snapshot.role !== 'unknown') roles.set(snapshot.blindId, snapshot.role); });
   const sections = recordEnvelopes(source).map(({ envelope, value }, index) => {
@@ -262,14 +324,14 @@ export function independentReviewView(report: unknown, mode: 'single' | 'compare
   const findings = sections.flatMap(section => section.findings.map(finding => finding.statement));
   const boundaryName: Record<string, string> = { preserve_original: '建议保留原稿并核对严重伤害', goals_not_achieved: '预定目标尚未落实', narrowed_recheck_required: '存在分歧或部分落实，需要缩小范围复核', eligible_for_editorial_consideration: '可进入编辑选择，仍需用户决定', no_change: '本轮没有质量增益主张' };
   const legacyAttribution = mode === 'compare' && source.schemaVersion === 'whole-quality-evaluation-result-1';
-  const attribution = source.schemaVersion === 'whole-quality-evaluation-result-2' && record(source.severeHarmAttribution) ? source.severeHarmAttribution : null;
+  const attribution = ['whole-quality-evaluation-result-2', 'whole-quality-evaluation-result-3'].includes(text(source.schemaVersion)) && record(source.severeHarmAttribution) ? source.severeHarmAttribution : null;
   const attributionLines = legacyAttribution ? ['旧版归属未区分：历史报告没有区分原稿问题与候选损伤，保留原始结论，请结合新评阅查看。'] : attribution ? [
     `原稿严重问题记录：${Array.isArray(attribution.baselineIssues) ? attribution.baselineIssues.length : 0} 条`,
     `候选严重损伤记录：${Array.isArray(attribution.candidateRisks) ? attribution.candidateRisks.length : 0} 条`,
     `问题归属待核对：${Array.isArray(attribution.unknown) ? attribution.unknown.length : 0} 条`,
     '以上按评阅记录计数，同一问题可能重复出现；两稿均有的问题分别列入两类。',
   ] : [];
-  const boundary = legacyAttribution && source.adoptionBoundary === 'preserve_original' ? '历史建议：保留原稿；严重问题的稿件归属未区分。' : boundaryName[text(source.adoptionBoundary)] || (mode === 'single' ? '单稿意见已经保存，不产生版本胜负。' : '比较结论只作为内部编辑证据。');
+  const boundary = partial ? '保留前六阶段的独立阅读与比较；目标核查仍失败，不代表目标落实、事实通过或文学质量通过。' : legacyAttribution && source.adoptionBoundary === 'preserve_original' ? '历史建议：保留原稿；严重问题的稿件归属未区分。' : boundaryName[text(source.adoptionBoundary)] || (mode === 'single' ? '单稿意见已经保存，不产生版本胜负。' : '比较结论只作为内部编辑证据。');
   const readerLines = Array.isArray(source.readerViews) ? source.readerViews.filter(record).map(item => {
     const nested = record(item.record) ? item.record : {}, id = text(item.readerId) || text(nested.readerId), preference = text(item.preference) || text(nested.preference);
     if (preference === 'first' || preference === 'second') {
@@ -282,6 +344,12 @@ export function independentReviewView(report: unknown, mode: 'single' | 'compare
     const verdict = (statusNames[preference] ?? preference) || text(item.overallImpression) || text(nested.overallImpression);
     return verdict ? `${readerLabel(id || undefined)}：${verdict}` : '';
   }).filter(Boolean) : [];
+  if (partial && Array.isArray(source.readerBindings)) source.readerBindings.filter(record).forEach(item => {
+    const preference = text(item.originalPreference), order = Array.isArray(item.order) ? item.order.filter(record) : [];
+    const selected = order[preference === 'first' ? 0 : preference === 'second' ? 1 : -1];
+    const label = selected ? preferenceRoleLabel(normalizeRole(selected.role)) : '';
+    readerLines.push(`${readerLabel(text(item.readerId) || undefined)}：${label ? `倾向${label}（匿名稿${text(selected.blindId)}；${preference === 'first' ? '先读' : '后读'}）` : statusNames[preference] || preference}（独立意见，不汇总投票）`);
+  });
   const limitations = [...texts(source.limitations).map(item => limitationNames[item] ?? item), ...(source.literaryPass === 'NOT_COMPUTED' ? ['本任务不计算文学质量通过。'] : []), ...(source.automaticAdoption === false ? ['评阅结果不会自动采用或改写正文。'] : [])];
-  return { headline: mode === 'single' ? '两路独立全文初读' : '原稿与候选的隔离盲评', boundary, readerLines, attributionLines, summaryFindings: findings.slice(0, 4), findings, sections, evidence, snapshots, limitations: [...new Set(limitations)] };
+  return { headline: partial ? '全文盲评已完成；目标核查未通过' : mode === 'single' ? '两路独立全文初读' : '原稿与候选的隔离盲评', boundary, readerLines, attributionLines, summaryFindings: findings.slice(0, 4), findings, sections, evidence, snapshots, limitations: [...new Set(limitations)] };
 }

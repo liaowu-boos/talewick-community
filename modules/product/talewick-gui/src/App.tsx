@@ -22,6 +22,7 @@ import { controlTask, findTask, getRuntime, getTask, makeWholeRevisionRequest, r
 import { cancelConversation, ConversationError, CONVERSATION_MESSAGE_LIMIT, conversationBusy, conversationPreflightError, getConversation, makeConversationSubmission, streamConversation, submitConversation } from '@/model/conversation';
 import { installLinkedProject, loadLinkedProject, readProjectLink, selectLinkedProject, type RecoveredProject } from '@/model/project-link';
 import type { AppState, ConversationTurn, InspirationKey, Mode, Project, RuntimeInfo, RuntimeTask } from '@/model/types';
+import type { WritingGoalsInput } from '@/model/writing-goal-input';
 import { cx } from '@/utils/cx';
 
 const modeNames: Record<Mode, string> = { auto: '一键成稿', light: '轻度参与', pro: '专业审稿' };
@@ -412,11 +413,12 @@ export default function App() {
     } catch (error) { recordError(p.id, binding.request.requestId, error); void checkConnection(); }
     finally { pendingRequests.current.delete(p.id); }
   };
-  const startWholeRevision = async (projectId: string, instruction: string) => {
+  const startWholeRevision = async (projectId: string, instruction: string, writingGoals?: WritingGoalsInput) => {
     const current = stateRef.current;
     const p = current.projects.find(item => item.id === projectId);
     if (!p || !p.chapters.length || runtimeBusy(p) || pendingEdits(p).length || pendingRequests.current.has(p.id)) return;
     const request = makeWholeRevisionRequest(p, current, createId('whole-revision-request'), instruction);
+    if(writingGoals)request.writingGoals=structuredClone(writingGoals);
     pendingRequests.current.add(p.id);
     update(s => {
       const target = s.projects.find(item => item.id === p.id);
@@ -441,7 +443,7 @@ export default function App() {
         <main className="workspace">
           {state.page === 'publication-feedback' ? <PublicationFeedback /> : state.page !== 'create' ? <SecondaryPage /> : !project ? <Home composer={<Composer onSend={() => { void send(); }} serviceMessage={serviceMessage} onCheck={() => { void checkConnection(); }} />} onContext={key => { setContextKey(key); setContextDraft(state.context[key]); }} /> : <div className={cx('creation-workspace', hasDoc && 'has-document', project.docExpanded && 'document-expanded')} style={{ '--chat-width': `${chatWidth}%` } as CSSProperties}>
             <Chat project={project} onStop={() => { void stopReply(); }} onSend={() => { void send(); }} onHistory={() => setHistoryOpen(true)} serviceMessage={[serviceMessage, toolsBlocked(project, state)].filter(Boolean).join(' · ')} onCheck={() => { void checkConnection(); }} onTaskAction={action => { void actOnTask(action); }} onResult={setInspectedTask} />
-            {hasDoc && <><div ref={splitterRef} className="workspace-splitter" role="separator" tabIndex={0} aria-label="调整对话和文稿宽度" aria-orientation="vertical" aria-valuemin={32} aria-valuemax={60} aria-valuenow={Math.round(chatWidth)} onKeyDown={e => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); setChatWidth(w => Math.max(32, Math.min(60, w + (e.key === 'ArrowRight' ? 2 : -2)))); } }} onPointerDown={e => { e.currentTarget.setPointerCapture(e.pointerId); resizeFromPointer(e.clientX); }} onPointerMove={e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) resizeFromPointer(e.clientX); }} onPointerUp={e => e.currentTarget.releasePointerCapture(e.pointerId)} /><ManuscriptPanel projectId={project.id} onWholeRevision={instruction => { void startWholeRevision(project.id, instruction); }} onQuote={(text, source) => update(s => { s.quote = text; s.quoteSource = source; const p = s.projects.find(p => p.id === project.id)!; p.docExpanded = false; if (window.matchMedia('(max-width: 900px)').matches) { p.docOpen = false; p.docClosedByUser = true; } })} /></>}
+            {hasDoc && <><div ref={splitterRef} className="workspace-splitter" role="separator" tabIndex={0} aria-label="调整对话和文稿宽度" aria-orientation="vertical" aria-valuemin={32} aria-valuemax={60} aria-valuenow={Math.round(chatWidth)} onKeyDown={e => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); setChatWidth(w => Math.max(32, Math.min(60, w + (e.key === 'ArrowRight' ? 2 : -2)))); } }} onPointerDown={e => { e.currentTarget.setPointerCapture(e.pointerId); resizeFromPointer(e.clientX); }} onPointerMove={e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) resizeFromPointer(e.clientX); }} onPointerUp={e => e.currentTarget.releasePointerCapture(e.pointerId)} /><ManuscriptPanel projectId={project.id} onWholeRevision={(instruction, goals) => { void startWholeRevision(project.id, instruction, goals); }} onQuote={(text, source) => update(s => { s.quote = text; s.quoteSource = source; const p = s.projects.find(p => p.id === project.id)!; p.docExpanded = false; if (window.matchMedia('(max-width: 900px)').matches) { p.docOpen = false; p.docClosedByUser = true; } })} /></>}
             {!hasDoc && project.chapters.length > 0 && <Button variant="secondary" leadingIcon={RiBookOpenLine} className="reopen-document" onClick={() => update(s => { const p = s.projects.find(p => p.id === project.id)!; p.docOpen = true; p.docClosedByUser = false; p.docUpdated = false; })}>{project.docUpdated ? '查看更新的文稿' : '打开文稿'}</Button>}
           </div>}
         </main><ProjectsDialog open={historyOpen} onClose={() => setHistoryOpen(false)} />

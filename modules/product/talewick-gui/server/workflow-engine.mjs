@@ -20,11 +20,13 @@ const loadAIController = async () => {
   return runtime.createAIController;
 };
 
-export function createWorkflowRouter({ config, agentModel, retrieveKnowledge, queryNarrativeObservations, wholeRevisionRunner, wholeQualityRunner }) {
+export function createWorkflowRouter({ config, agentModel, retrieveKnowledge, queryDeepReferences, queryNarrativeObservations, wholeRevisionRunner, wholeQualityRunner }) {
   return async args => {
     if (args.request?.kind === 'revise' && args.request.revisionMode === WHOLE_MANUSCRIPT_QUALITY_MODE) {
       const run = wholeQualityRunner ?? await loadWholeQualityRunner();
-      return run({ ...args, modelPolicy: WHOLE_QUALITY_MODEL_POLICY, retrieveKnowledge, ...(typeof queryNarrativeObservations === 'function' ? { queryNarrativeObservations } : {}) });
+      return run({ ...args, modelPolicy: WHOLE_QUALITY_MODEL_POLICY, retrieveKnowledge,
+        ...(typeof queryDeepReferences === 'function' ? { queryDeepReferences } : {}),
+        ...(typeof queryNarrativeObservations === 'function' ? { queryNarrativeObservations } : {}) });
     }
     if (args.request?.kind === 'revise' && args.request.revisionMode === WHOLE_MANUSCRIPT_REVISION_MODE) {
       const run = wholeRevisionRunner ?? await loadWholeRevisionRunner();
@@ -33,6 +35,7 @@ export function createWorkflowRouter({ config, agentModel, retrieveKnowledge, qu
     const { engine } = engineBinding(args.engine, args.engineVersion);
     const createAIController = engine === 'ai-sdk' ? await loadAIController() : undefined;
     const controller = createAIController?.({ config, agentModel, progress: args.progress });
-    return runWorkflow({ ...args, controller, retrieveKnowledge });
+    return runWorkflow({ ...args, controller, retrieveKnowledge,
+      ...(typeof queryDeepReferences === 'function' ? { queryDeepReferences } : {}) });
   };
 }
