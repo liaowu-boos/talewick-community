@@ -1,6 +1,6 @@
-import { createProject } from './seed';
-import { manuscriptRevision, readRuntimeBinding, readRuntimeTask } from './runtime';
-import type { AppState, Chapter, ImportedBaseline, Project, RuntimeRequest, RuntimeTask } from './types';
+import { createProject } from './seed.ts';
+import { manuscriptRevision, readRuntimeBinding, readRuntimeTask } from './runtime.ts';
+import type { AppState, Chapter, ImportedBaseline, Project, RuntimeRequest, RuntimeTask } from './types.ts';
 
 interface ImportSnapshot {
   schemaVersion: string; projectId: string; baseline: RuntimeTask | null; baselineRequest: RuntimeRequest | null;
@@ -51,6 +51,10 @@ export function projectFromImportSnapshot(value: unknown, expectedProjectId: str
       || !Array.isArray(source.chapters) || !source.chapters.length
       || !same(source.chapters, request.chapters) || !same(source.chapters, whole?.sourceChapters)
       || !same(request.writingGoals, spec.writingGoals)
+      || !same(request.goalImprovementPolicy, spec.goalImprovementPolicy)
+      || !same(request.deepReferenceAvailabilityPolicy, spec.deepReferenceAvailabilityPolicy)
+      || !same(request.revisionEvidencePolicy, spec.revisionEvidencePolicy)
+      || !same(request.adoptedMaterialContextPolicy, spec.adoptedMaterialContextPolicy)
       || whole?.schemaVersion !== 'whole-manuscript-quality-1' || !same(spec, whole?.requestSpec)
       || spec.sourceBaseRevision !== source.baseRevision || spec.sourceManuscriptSha256 !== source.sourceManuscriptSha256
       || !same(spec.sourceChapterIds, source.chapters.map(chapter => chapter.id))

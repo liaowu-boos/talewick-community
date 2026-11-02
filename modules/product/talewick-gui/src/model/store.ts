@@ -1,13 +1,14 @@
-import { createId, createInitialState, createProject, directions, emptyContext, makeChapters } from './seed';
-import { manuscriptRevision, readRuntimeBinding, readRuntimeTask, taskActive } from './runtime';
-import { getEditStart } from './revision-anchor';
-import { CANDIDATE_RECHECK_VERSION, type CandidateRecheckTask } from './candidate-recheck';
-import { readImportedBaseline } from './project-import';
+import { createId, createInitialState, createProject, directions, emptyContext, makeChapters } from './seed.ts';
+import { manuscriptRevision, readRuntimeBinding, readRuntimeTask, taskActive } from './runtime.ts';
+import { getEditStart } from './revision-anchor.ts';
+import { CANDIDATE_RECHECK_VERSION, type CandidateRecheckTask } from './candidate-recheck.ts';
+import { readImportedBaseline } from './project-import.ts';
+import { revisionEvidenceAllowsAdoption } from './revision-evidence-gate.mjs';
 import type {
   AppState, Attachment, Chapter, CompareMode, ConversationTurn, DocMode, EditResult, FlowResult,
   GenerationKind, InspirationContext, LibraryItem, Message, Mode, Page, PendingEdit,
   Phase, Project, QuoteSource, RuntimeRequest, RuntimeTask, SaveResult, StyleProfile, Version,
-} from './types';
+} from './types.ts';
 
 /** A new namespace: neither of the previous HTML prototypes is read or overwritten. */
 export const STORAGE_KEY = 'talewick.boardui.gui.v1';
@@ -454,7 +455,8 @@ export function wholeQualityAdoptionGroups(result?: RuntimeTask['result']): Whol
     groups.push({ id, label: text(value.label) || text(value.summary) || `修订组 ${seen.size}`, planItemIds,
       chapterIds, targetIds, linkedGroupIds,
       recommended: value.recommended === true || recommendation === 'recommended' || recommendation === 'eligible_for_user_choice',
-      eligible: recommendation ? recommendation === 'eligible_for_user_choice' : value.eligible === true && value.status !== 'blocked',
+      eligible: (recommendation ? recommendation === 'eligible_for_user_choice' : value.eligible === true && value.status !== 'blocked')
+        && revisionEvidenceAllowsAdoption({ whole, policy: record(whole.requestSpec) ? whole.requestSpec.revisionEvidencePolicy : undefined, planItemIds }),
       reasons: [...new Set([...strings(value.reasons), ...(text(value.reason) ? [text(value.reason)] : []), ...(text(value.rationale) ? [text(value.rationale)] : [])])],
       unusedReasons: [...new Set([...strings(value.notRecommendedReasons), ...strings(value.doNotAdoptReasons), ...strings(value.unusedReasons), ...(text(value.skipReason) ? [text(value.skipReason)] : [])])], });
   }
@@ -557,6 +559,7 @@ export function acceptCheckedWholeCandidate(project: Project, checked: Candidate
     || binding.resultDisposition !== 'whole-quality-groups' || text(adoption?.requiredBaseRevision) !== binding.request.baseRevision
     || checked.projectId !== project.id || checked.sourceTaskId !== task.id || checked.checkerVersion !== CANDIDATE_RECHECK_VERSION
     || checked.status !== 'reviewed_no_reported_conflict' || checked.gate.eligible !== true || checked.candidateSha256 !== candidateSha256
+    || !revisionEvidenceAllowsAdoption({ whole: result.wholeRevision, policy: binding.request.revisionEvidencePolicy })
     || JSON.stringify(result.chapters) !== frozenCandidateJSON || manuscriptRevision(project) !== binding.request.baseRevision
     || JSON.stringify({ title: project.title, chapters: project.chapters }) !== JSON.stringify(binding.baseManuscript)
     || result.chapters.length !== project.chapters.length || result.chapters.some((chapter, index) => chapter.id !== project.chapters[index]?.id)

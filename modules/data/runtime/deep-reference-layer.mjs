@@ -10,6 +10,11 @@ import {
 export const DEEP_REFERENCE_LAYER_VERSION = 'analysis99-deep-reference-layer-2';
 export const DEEP_REFERENCE_INSTALL_VERSION = 'analysis99-deep-reference-install-2';
 export const DEEP_REFERENCE_QUERY_VERSION = 'analysis99-problem-query-2';
+// Explicit opt-in lexical vocabulary, never a semantic-fit or source allowlist.
+export const DEEP_REFERENCE_CONCEPT_ALIAS_POLICIES = Object.freeze({
+  'recognition-v1': Object.freeze({conceptId: 'recognition',
+    aliases: Object.freeze(['认可', '承认', '看见', '确认'])}),
+});
 export const DEEP_REFERENCE_LIMITS = Object.freeze({
   maxResults: 8,
   maxSearchTerms: 20,
@@ -476,7 +481,45 @@ function validateProblem(problem) {
     && requiredTermGroups.every(group => Array.isArray(group) && group.length > 0 && group.length <= 12
       && group.every(term => terms.includes(term))),
   'DEEP_REF_QUERY_PROBLEM', 'requiredTermGroups must contain only declared searchTerms');
+  check(problem.conceptAliasPolicy === undefined || (typeof problem.conceptAliasPolicy === 'string'
+    && Object.hasOwn(DEEP_REFERENCE_CONCEPT_ALIAS_POLICIES, problem.conceptAliasPolicy)),
+  'DEEP_REF_QUERY_CONCEPT_POLICY', 'Unknown conceptAliasPolicy; omit to retain literal matching');
   return {...problem, searchTerms: terms, requiredTermGroups: requiredTermGroups.map(group => [...new Set(group)])};
+}
+
+function activeConceptFor(problem) {
+  if (problem.conceptAliasPolicy === undefined) return null;
+  const concept = DEEP_REFERENCE_CONCEPT_ALIAS_POLICIES[problem.conceptAliasPolicy];
+  const representativeTerm = problem.searchTerms.find(term => concept.aliases.includes(term));
+  return representativeTerm ? {...concept, representativeTerm} : null;
+}
+
+function positiveQueryProblem(problem) {
+  const positive = {...problem,
+    searchTerms: problem.searchTerms.filter(term => !POLICY_TERMS.has(term)),
+    requiredTermGroups: problem.requiredTermGroups.map(group => group.filter(term => !POLICY_TERMS.has(term)))};
+  const concept = activeConceptFor(positive);
+  if (!concept) return positive;
+  const collapse = terms => [...new Set(terms.map(term => concept.aliases.includes(term) ? concept.representativeTerm : term))];
+  return {...positive, searchTerms: collapse(positive.searchTerms), requiredTermGroups: positive.requiredTermGroups.map(collapse)};
+}
+
+function minimumPositiveTerms(problem) {
+  return Math.max(DEEP_REFERENCE_LIMITS.minimumMatchedTerms, Math.ceil(problem.searchTerms.length / 4));
+}
+
+// Pure contract description for component response/cache validation. No data reads.
+export function describeDeepReferenceConceptQuery(problem) {
+  const checked = validateProblem(problem);
+  if (checked.conceptAliasPolicy === undefined) return null;
+  const positive = positiveQueryProblem(checked);
+  return {version: 'analysis99-positive-concept-fields-1', conceptAliasPolicy: checked.conceptAliasPolicy,
+    declaredPositiveTermCount: checked.searchTerms.filter(term => !POLICY_TERMS.has(term)).length,
+    scoringUnitCount: positive.searchTerms.length,
+    thresholdBasis: 'max(2,ceil(distinct_positive_scoring_units/4)); aliases never add scoring units',
+    activeConcept: activeConceptFor(positive), ignoredSearchTerms: checked.searchTerms.filter(term => POLICY_TERMS.has(term)),
+    effectiveSearchTerms: positive.searchTerms, effectiveRequiredTermGroups: positive.requiredTermGroups,
+    minimumMatchedTerms: minimumPositiveTerms(positive)};
 }
 
 function functionCandidates(modelOutput, dimensions) {
@@ -530,7 +573,20 @@ function positiveFunctionText(items) {
 
 function matchedPositiveTerms(items, problem) {
   const text = positiveFunctionText(items);
-  return problem.searchTerms.filter(term => text.includes(term.toLocaleLowerCase('zh-CN')));
+  const concept = activeConceptFor(problem);
+  return problem.searchTerms.filter(term => concept && term === concept.representativeTerm
+    ? concept.aliases.some(alias => text.includes(alias.toLocaleLowerCase('zh-CN')))
+    : text.includes(term.toLocaleLowerCase('zh-CN')));
+}
+
+function matchedConcepts(items, problem) {
+  const concept = activeConceptFor(problem);
+  if (!concept) return [];
+  const functionMatches = items.map(item => ({functionId: item.functionId,
+    matchedAliases: concept.aliases.filter(alias => positiveFunctionText([item]).includes(alias.toLocaleLowerCase('zh-CN')))}))
+    .filter(item => item.matchedAliases.length);
+  return functionMatches.length ? [{conceptId: concept.conceptId, representativeTerm: concept.representativeTerm,
+    countedOnce: true, functionMatches}] : [];
 }
 
 function boundedFunctions(modelOutput, packet, dimensions, functionLimit, evidenceLimit, problem) {
@@ -588,9 +644,7 @@ export async function queryDeepReferences({installation, problem, dimensions, so
     'DEEP_REF_QUERY_INSTALLATION', 'installation must come from resolveDeepReferenceLayer');
   const checkedProblem = validateProblem(problem);
   const ignoredSearchTerms = checkedProblem.searchTerms.filter(term => POLICY_TERMS.has(term));
-  const positiveProblem = {...checkedProblem,
-    searchTerms: checkedProblem.searchTerms.filter(term => !POLICY_TERMS.has(term)),
-    requiredTermGroups: checkedProblem.requiredTermGroups.map(group => group.filter(term => !POLICY_TERMS.has(term)))};
+  const positiveProblem = positiveQueryProblem(checkedProblem);
   const positiveTermsSufficient = positiveProblem.searchTerms.length >= DEEP_REFERENCE_LIMITS.minimumFunctionMatchedTerms
     && positiveProblem.requiredTermGroups.every(group => group.length > 0);
   const requestedDimensions = dimensions ?? ['emotionalProgression','psychologicalChangeDrivers','observableCraftDecisionHypotheses'];
@@ -606,7 +660,9 @@ export async function queryDeepReferences({installation, problem, dimensions, so
     check(Array.isArray(sourceIds) && sourceIds.length > 0 && sourceIds.every(id => installedById.has(id)),
       'DEEP_REF_QUERY_SOURCES', 'sourceIds contains an unknown or invalid installed source');
   }
-  const queryText = positiveProblem.searchTerms.join(' ');
+  const concept = activeConceptFor(positiveProblem);
+  const queryText = positiveProblem.searchTerms.flatMap(term => concept && term === concept.representativeTerm
+    ? concept.aliases : [term]).join(' ');
   const candidateQuery = positiveTermsSufficient ? await queryDeepAnalysisCandidates({
     runRoot: installation.layerRoot,
     queuePath: join(installation.layerRoot, 'queue-99.json'),
@@ -615,8 +671,7 @@ export async function queryDeepReferences({installation, problem, dimensions, so
     dimensions: requestedDimensions,
     limit: 200,
   }) : {results: []};
-  const minimumMatchedTerms = Math.max(DEEP_REFERENCE_LIMITS.minimumMatchedTerms,
-    Math.ceil(positiveProblem.searchTerms.length / 4));
+  const minimumMatchedTerms = minimumPositiveTerms(positiveProblem);
   const groupsSatisfied = terms => positiveProblem.requiredTermGroups.every(group => group.some(term => terms.includes(term)));
   // The reused query's broad text index is only a candidate pool. Neither its
   // caveat-inflated score nor its order can determine the returned ranking.
@@ -654,7 +709,8 @@ export async function queryDeepReferences({installation, problem, dimensions, so
         caveats: reportCandidate.caveats ?? [], blockingDefects: [], approvalGranted: false, activeProductionChanged: false},
       match: {matchedTerms, matchedTermCount: matchedTerms.length, requiredMatchedTermCount: minimumMatchedTerms,
         requiredTermGroupsSatisfied: positiveProblem.requiredTermGroups.map(group => group.filter(term => matchedTerms.includes(term))),
-        lexicalScore: matchedTerms.length, semanticSimilarityClaimed: false},
+        lexicalScore: matchedTerms.length, semanticSimilarityClaimed: false,
+        ...(checkedProblem.conceptAliasPolicy === undefined ? {} : {conceptMatches: matchedConcepts(bounded.functions, positiveProblem)})},
       borrowableWritingFunctions: bounded.functions,
       exactReferences: bounded.references.map(reference => ({...reference, sourceId: entry.sourceId,
         sourceSha256: entry.source.sourceSha256, sourceTextSha256: entry.source.sourceTextSha256})),
@@ -682,7 +738,14 @@ export async function queryDeepReferences({installation, problem, dimensions, so
     queryId: `deepref-query-${hash(json({installId: installation.installId, request}))}`,
     installId: installation.installId,
     request,
-    matchingPolicy: {version: MATCHING_POLICY, positiveFields: ['observablePattern','borrowableFunction'],
+    matchingPolicy: {version: checkedProblem.conceptAliasPolicy === undefined ? MATCHING_POLICY : 'analysis99-positive-concept-fields-1',
+      ...(checkedProblem.conceptAliasPolicy === undefined ? {} : {
+        conceptAliasPolicy: checkedProblem.conceptAliasPolicy,
+        declaredPositiveTermCount: checkedProblem.searchTerms.filter(term => !POLICY_TERMS.has(term)).length,
+        scoringUnitCount: positiveProblem.searchTerms.length,
+        thresholdBasis: 'max(2,ceil(distinct_positive_scoring_units/4)); aliases never add scoring units',
+        activeConcept: concept}),
+      positiveFields: ['observablePattern','borrowableFunction'],
       excludedFields: ['alternatives','limitation','uncertainty','counterEvidenceOrGap','identifiers','context','reviewCaveats'],
       ignoredSearchTerms, effectiveSearchTerms: positiveProblem.searchTerms,
       effectiveRequiredTermGroups: positiveProblem.requiredTermGroups,

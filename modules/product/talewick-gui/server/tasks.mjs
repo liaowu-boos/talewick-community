@@ -12,6 +12,11 @@ import { FOLLOWUP_CONTINUITY_MODEL_POLICY, WHOLE_QUALITY_MODEL_POLICY, WHOLE_REV
 import { applyStoredFailurePolicy, cancelledFailure, classifyTaskFailure, interruptedFailure, isStoredWholeQualityReadingFailureCandidate, taskFailureRecoverable } from './task-failure.mjs';
 import { WHOLE_MANUSCRIPT_QUALITY_MODE, WHOLE_MANUSCRIPT_REVISION_MODE } from './workflow-engine.mjs';
 import { validateWritingGoals } from '../../../creation/runtime/writing-goals.mjs';
+import { validateGoalImprovementPolicy } from './goal-improvement-policy.mjs';
+import { validateDeepReferenceAvailabilityPolicy } from '../../../creation/runtime/deep-reference-availability.mjs';
+import { validateRevisionEvidencePolicy } from '../../../creation/runtime/revision-evidence-policy.mjs';
+import { validateAdoptedMaterialContextPolicy } from '../../../creation/runtime/adopted-material-context.mjs';
+import { projectRevisionEvidenceFailure } from './revision-evidence-failure.mjs';
 
 const active = new Set(['queued', 'running']);
 const recoverable = new Set(['failed', 'interrupted', 'cancelled']);
@@ -97,11 +102,35 @@ export function validateRequest(body) {
     if (body.kind !== 'revise') throw fail('整稿修订只能用于已有完整稿件。');
     if ((typeof body.quote === 'string' && body.quote.length) || body.quoteSource !== undefined || body.existingReviewMode !== undefined || body.createStateReviewMode !== undefined) throw fail('整稿修订不能与选段或旧审阅模式混用。');
   }
+  if (Object.hasOwn(body, 'adoptedMaterialContext'))
+    throw Object.assign(fail('已采用资料上下文只能由宿主从已验证的供应和方案构建，不能直接提交。'), { code: 'WHOLE_QUALITY_MATERIAL_CONTEXT' });
+  let adoptedMaterialContextPolicy;
+  if (body.adoptedMaterialContextPolicy !== undefined) {
+    if (body.kind !== 'revise' || body.revisionMode !== WHOLE_MANUSCRIPT_QUALITY_MODE)
+      throw Object.assign(fail('已采用资料上下文策略只支持整稿质量修订。'), { code: 'WHOLE_QUALITY_MATERIAL_CONTEXT' });
+    try { adoptedMaterialContextPolicy = validateAdoptedMaterialContextPolicy(body.adoptedMaterialContextPolicy); }
+    catch (error) { throw Object.assign(fail(error.message), { code: error.code }); }
+  }
   let writingGoals;
   if (body.writingGoals !== undefined) {
     if (body.kind !== 'revise' || body.revisionMode !== WHOLE_MANUSCRIPT_QUALITY_MODE) throw fail('写作目标目前只支持 whole-manuscript-v2 整稿修订。');
     try { writingGoals = validateWritingGoals(body.writingGoals, chapters); }
     catch (error) { throw fail(error?.message || '写作目标格式不正确。'); }
+  }
+  const goalImprovementPolicy = validateGoalImprovementPolicy(body.goalImprovementPolicy, { ...body, writingGoals });
+  let deepReferenceAvailabilityPolicy;
+  if (body.deepReferenceAvailabilityPolicy !== undefined) {
+    if (body.kind !== 'revise' || body.revisionMode !== WHOLE_MANUSCRIPT_QUALITY_MODE)
+      throw Object.assign(fail('参考资料就绪策略只支持整稿修订。'), { code: 'WHOLE_QUALITY_REFERENCE_POLICY' });
+    try { deepReferenceAvailabilityPolicy = validateDeepReferenceAvailabilityPolicy(body.deepReferenceAvailabilityPolicy); }
+    catch (error) { throw Object.assign(fail(error.message), { code: error.code }); }
+  }
+  let revisionEvidencePolicy;
+  if (body.revisionEvidencePolicy !== undefined) {
+    if (body.kind !== 'revise' || body.revisionMode !== WHOLE_MANUSCRIPT_QUALITY_MODE)
+      throw fail('修订依据核对只支持整稿修订。');
+    try { revisionEvidencePolicy = validateRevisionEvidencePolicy(body.revisionEvidencePolicy); }
+    catch (error) { throw Object.assign(fail(error.message), { code: error.code }); }
   }
   if ((body.instruction !== undefined && typeof body.instruction !== 'string') || (body.quote !== undefined && typeof body.quote !== 'string')) throw fail('修改要求和选段必须是文字。');
   if ((body.instruction?.length ?? 0) > 12000 || (body.quote?.length ?? 0) > 100000) throw fail('修改要求或选段过长。');
@@ -113,17 +142,19 @@ export function validateRequest(body) {
     if (!chapter || chapter.body.slice(source.start, source.start + body.quote.length) !== body.quote) throw fail('选段与本次稿件不一致，请重新选择原文后提交。');
     quoteSource = { chapterId: source.chapterId, start: source.start };
   }
-  return { projectId: body.projectId, requestId: body.requestId, kind: body.kind, idea: body.idea, context, materials, style, chapters, instruction: body.instruction ?? '', quote: body.quote ?? '', baseRevision: body.baseRevision, ...(body.projectTitle !== undefined ? { projectTitle: body.projectTitle } : {}), ...(body.revisionMode ? { revisionMode: body.revisionMode } : {}), ...(quoteSource ? { quoteSource } : {}), ...(writingGoals === undefined ? {} : { writingGoals }) };
+  return { projectId: body.projectId, requestId: body.requestId, kind: body.kind, idea: body.idea, context, materials, style, chapters, instruction: body.instruction ?? '', quote: body.quote ?? '', baseRevision: body.baseRevision, ...(body.projectTitle !== undefined ? { projectTitle: body.projectTitle } : {}), ...(body.revisionMode ? { revisionMode: body.revisionMode } : {}), ...(quoteSource ? { quoteSource } : {}), ...(writingGoals === undefined ? {} : { writingGoals }), ...(goalImprovementPolicy === undefined ? {} : { goalImprovementPolicy }), ...(deepReferenceAvailabilityPolicy === undefined ? {} : { deepReferenceAvailabilityPolicy }), ...(revisionEvidencePolicy === undefined ? {} : { revisionEvidencePolicy }), ...(adoptedMaterialContextPolicy === undefined ? {} : { adoptedMaterialContextPolicy }) };
 }
 
 /** File-backed sequential task runner; each successful stage is saved for recovery. */
 export class TaskService {
-  constructor({ runsDir, model, workflow, engine = 'fixed', onCompleted, newPlanningFollowupDecisionMode, wholeRevisionAssert, wholeQualityAssert, taskFileState = localTaskFileState, taskFileRead = readFile, inspectStoredWholeQualityReadingFailure }) {
+  constructor({ runsDir, model, workflow, engine = 'fixed', onCompleted, newPlanningFollowupDecisionMode, wholeRevisionAssert, wholeQualityAssert, taskFileState = localTaskFileState, taskFileRead = readFile, inspectStoredWholeQualityReadingFailure, inspectStoredWholeQualityPlanFactsFailure }) {
     if (newPlanningFollowupDecisionMode !== undefined && !supportedPlanningFollowupDecisionModes.has(newPlanningFollowupDecisionMode)) throw new TypeError('未知的新任务补查材料决策模式。');
     this.runsDir = runsDir; this.model = model; this.workflow = workflow;
     this.defaultEngine = engineBinding(engine); this.onCompleted = onCompleted; this.newPlanningFollowupDecisionMode = newPlanningFollowupDecisionMode; this.wholeRevisionAssert = wholeRevisionAssert; this.wholeQualityAssert = wholeQualityAssert; this.taskFileState = taskFileState; this.taskFileRead = taskFileRead; this.inspectStoredWholeQualityReadingFailure = inspectStoredWholeQualityReadingFailure;
     this.tasks = new Map(); this.requests = new Map(); this.artifacts = new Map(); this.localFileWaits = new Map(); this.controller = null; this.busy = false; this.closing = false;
     this.mutations = Promise.resolve(); this.writes = new Map();
+    this.inspectStoredWholeQualityPlanFactsFailure = inspectStoredWholeQualityPlanFactsFailure;
+    this.revisionEvidenceFailures = new Map();
   }
   validateStoredTaskMetadata(task, id) {
     if (!record(task) || task.id !== id || typeof task.projectId !== 'string' || typeof task.requestId !== 'string' || (typeof task.baseRevision !== 'string' && !(task.baseRevision === undefined && task.engine === undefined && task.engineVersion === undefined)) || !['create', 'revise'].includes(task.kind) || !storedTaskStatuses.has(task.status)) throw new Error('invalid task');
@@ -164,7 +195,16 @@ export class TaskService {
     if (!record(artifacts)) throw new Error('invalid artifacts');
     if (request.revisionMode === WHOLE_MANUSCRIPT_QUALITY_MODE && artifacts.requestSpec
       && !isDeepStrictEqual(request.writingGoals, artifacts.requestSpec.writingGoals)) throw new Error('invalid writing goals binding');
+    if (request.revisionMode === WHOLE_MANUSCRIPT_QUALITY_MODE && artifacts.requestSpec
+      && !isDeepStrictEqual(request.goalImprovementPolicy, artifacts.requestSpec.goalImprovementPolicy)) throw new Error('invalid goal improvement policy binding');
+    if (request.revisionMode === WHOLE_MANUSCRIPT_QUALITY_MODE && artifacts.requestSpec
+      && !isDeepStrictEqual(request.deepReferenceAvailabilityPolicy, artifacts.requestSpec.deepReferenceAvailabilityPolicy)) throw new Error('invalid deep reference availability policy binding');
+    if (request.revisionMode === WHOLE_MANUSCRIPT_QUALITY_MODE && artifacts.requestSpec
+      && !isDeepStrictEqual(request.revisionEvidencePolicy, artifacts.requestSpec.revisionEvidencePolicy)) throw new Error('invalid revision evidence policy binding');
+    if (request.revisionMode === WHOLE_MANUSCRIPT_QUALITY_MODE && artifacts.requestSpec
+      && !isDeepStrictEqual(request.adoptedMaterialContextPolicy, artifacts.requestSpec.adoptedMaterialContextPolicy)) throw new Error('invalid adopted material context policy binding');
     await this.applyStoredFailurePolicy(task, artifacts);
+    await this.refreshRevisionEvidenceFailure(task, request, artifacts);
     return { waiting: false, folder, task, request, artifacts };
   }
   installWaitingTask(id, loaded) {
@@ -195,6 +235,10 @@ export class TaskService {
   async init() {
     await mkdir(this.runsDir, { recursive: true, mode: 0o700 });
     await this.acquireOwnership();
+    if (this.inspectStoredWholeQualityPlanFactsFailure === undefined) {
+      const creation = await import('../../../creation/runtime/whole-manuscript-quality.mjs');
+      this.inspectStoredWholeQualityPlanFactsFailure = creation.inspectStoredWholeQualityPlanFactsFailure;
+    }
     for (const entry of await readdir(this.runsDir, { withFileTypes: true })) {
       if (!entry.isDirectory() || !/^[a-f0-9-]{36}$/.test(entry.name)) continue;
       try {
@@ -238,7 +282,21 @@ export class TaskService {
     try { await pending; } finally { if (this.writes.get(key) === pending) this.writes.delete(key); }
   }
   async save(task) { await this.write(task.id, 'task.json', task); }
-  get(id) { const task = this.tasks.get(id); if (!task) throw fail('找不到这次任务，原有浏览器稿件仍可编辑和导出。', 404); const projected = structuredClone(task); delete projected.partialDraft; delete projected.createStateReviewMode; delete projected.planningFollowupDecisionMode; delete projected.providerReceipts; const partialDraft = projectPartialDraft(task, this.artifacts.get(id)); if (partialDraft) projected.partialDraft = partialDraft; if (!wholeManuscriptModes.has(projected.revisionMode) && projected.result?.chapters && projected.result?.review) projected.result.reviewAdjudicationBinding = projectReviewAdjudication(projected.result); return projected; }
+  async refreshRevisionEvidenceFailure(task, request = this.requests.get(task.id), artifacts = this.artifacts.get(task.id)) {
+    this.revisionEvidenceFailures.delete(task.id);
+    const projection = await projectRevisionEvidenceFailure(task, request, artifacts, this.inspectStoredWholeQualityPlanFactsFailure);
+    if (projection) this.revisionEvidenceFailures.set(task.id, projection);
+  }
+  get(id) {
+    const task = this.tasks.get(id); if (!task) throw fail('找不到这次任务，原有浏览器稿件仍可编辑和导出。', 404);
+    const projected = structuredClone(task);
+    delete projected.partialDraft; delete projected.revisionEvidenceFailure; delete projected.createStateReviewMode; delete projected.planningFollowupDecisionMode; delete projected.providerReceipts;
+    const partialDraft = projectPartialDraft(task, this.artifacts.get(id)); if (partialDraft) projected.partialDraft = partialDraft;
+    const revisionEvidenceFailure = this.revisionEvidenceFailures.get(id);
+    if (task.status === 'failed' && !task.result && revisionEvidenceFailure) projected.revisionEvidenceFailure = structuredClone(revisionEvidenceFailure);
+    if (!wholeManuscriptModes.has(projected.revisionMode) && projected.result?.chapters && projected.result?.review) projected.result.reviewAdjudicationBinding = projectReviewAdjudication(projected.result);
+    return projected;
+  }
   list(projectId) { return [...this.tasks.values()].filter(t => !projectId || t.projectId === projectId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(t => this.get(t.id)); }
   ensureIdleProject(projectId, except) { if ([...this.tasks.values()].some(t => t.id !== except && t.projectId === projectId && active.has(t.status))) throw fail('这个项目已有任务正在运行，请等待或取消后再提交。', 409); }
   mutate(fn) { const next = this.mutations.then(fn); this.mutations = next.catch(() => {}); return next; }
@@ -270,6 +328,7 @@ export class TaskService {
     this.busy = true; this.controller = { id: task.id, abort: new AbortController() };
     const signal = this.controller.abort.signal;
     task.status = 'running'; task.stage = '整理需求'; task.updatedAt = now(); delete task.error; delete task.failure; delete task.question;
+    this.revisionEvidenceFailures.delete(task.id);
     try {
       await this.save(task);
       const checkpoint = async (key, value) => {
@@ -360,6 +419,7 @@ export class TaskService {
           task.error = task.failure.message;
         }
         task.updatedAt = now(); await this.save(task);
+        await this.refreshRevisionEvidenceFailure(task);
       }
     } finally { this.controller = null; this.busy = false; if (!this.closing) this.schedule(); }
   }

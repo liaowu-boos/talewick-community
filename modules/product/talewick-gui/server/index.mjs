@@ -1,3 +1,6 @@
+import { SEMANTIC_EVIDENCE_AUDIT_MODEL_POLICY, SEMANTIC_EVIDENCE_AUDIT_STAGE } from './model-policy.mjs';
+import { createReviewEvidenceAuditRouter, PRODUCT_EVIDENCE_AUDIT_VERSION } from './review-evidence-audits.mjs';
+import { createReviewEvidenceAuditFacade } from './review-evidence-audit-facade.mjs';
 import http from 'node:http';
 import {createPublicationFeedbackService,createPublicationFeedbackRouter} from './publication-feedback.mjs';
 import { WebSocketServer } from 'ws';
@@ -39,7 +42,17 @@ export async function createRuntime({ config, model = createModel(config), workf
   libraryBatchFileState,
   narrativeObservation: injectedNarrativeObservation, publicationFeedback: injectedFeedback, full15Adapter, full15Analyze,
   full15InputForManuscript, independentReviewAdapter, independentReviewAnalyze, independentReviewPositionRepairAnalyze, independentReviewZeroDispatchAuditForTask, independentReviewReadingFocus, independentReviewHandoff,
+  reviewEvidenceAuditAdapter, reviewEvidenceAuditAnalyze, reviewBoundEvidenceAuditAdapter, reviewBoundEvidenceAuditService, reviewBoundEvidenceAuditModel,
   distDir = path.join(appRoot, 'dist') }) {
+  const resolvedEvidenceAuditAdapter = reviewEvidenceAuditAdapter === undefined ? await import('../../../validation/runtime/review-evidence-audit.mjs').catch(() => null) : reviewEvidenceAuditAdapter;
+  const resolvedBoundEvidenceAuditAdapter = reviewBoundEvidenceAuditAdapter === undefined
+    ? await import('../../../validation/runtime/review-evidence-audit-bound-v3.mjs').catch(() => null) : reviewBoundEvidenceAuditAdapter;
+  const resolvedBoundEvidenceAuditService = reviewBoundEvidenceAuditService === undefined
+    ? (await import('../../../validation/runtime/bound-review-evidence-audit-service.mjs').catch(() => null))?.BoundReviewEvidenceAuditService
+    : reviewBoundEvidenceAuditService;
+  // An existing explicit deny/analyze override must not be bypassed by new model wiring.
+  const resolvedBoundEvidenceAuditModel = reviewBoundEvidenceAuditModel === undefined
+    ? (reviewEvidenceAuditAnalyze === undefined ? model : null) : reviewBoundEvidenceAuditModel;
   const resolvedFull15Adapter = full15Adapter === undefined ? await import('../../../validation/runtime/full15-task.mjs').catch(() => null) : full15Adapter;
   const resolvedIndependentReviewAdapter = independentReviewAdapter === undefined ? await import('../../../validation/runtime/independent-review-task.mjs').catch(() => null) : independentReviewAdapter;
   const resolvedIndependentReviewReadingFocus = independentReviewReadingFocus === undefined ? await import('../../../validation/runtime/focused-whole-quality-evaluation.mjs').catch(() => null) : independentReviewReadingFocus;
@@ -135,11 +148,16 @@ export async function createRuntime({ config, model = createModel(config), workf
   catch(error){await Promise.allSettled([conversations.close(),libraryBatches?.close(),tasks.close(),full15.close(),independentReviews.close(),library?.close()]);throw error;}
   const feedbackRouter=createPublicationFeedbackRouter({service:publicationFeedback,json,bodyJSON});
   const candidateRechecks = await new CandidateRecheckService({ rootDir: path.join(config.runsDir, 'candidate-rechecks'), tasks, model }).init();
+  const reviewEvidenceAudits = await createReviewEvidenceAuditFacade({ runsDir: config.runsDir,
+    reviews: independentReviews, adapter: resolvedEvidenceAuditAdapter, boundAdapter: resolvedBoundEvidenceAuditAdapter,
+    BoundService: resolvedBoundEvidenceAuditService, model: resolvedBoundEvidenceAuditModel,
+    runtimeDir: fileURLToPath(new URL('../../../validation/runtime/', import.meta.url)) });
+  const reviewEvidenceAuditRouter = createReviewEvidenceAuditRouter({ service: reviewEvidenceAudits, json, bodyJSON, canRun: () => publicConfig(config).configured });
   const candidateRecheckRouter = createCandidateRecheckRouter({ service: candidateRechecks, json, bodyJSON, canRun: () => publicConfig(config).configured });
   const full15Router=createFull15Router({service:full15,json,bodyJSON});
   const independentReviewRouter=createIndependentReviewRouter({service:independentReviews,json,bodyJSON});
   const sockets = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, perMessageDeflate: false });
-  const close = async () => { for (const socket of sockets.clients) socket.terminate(); sockets.close(); const results=await Promise.allSettled([candidateRechecks.close(),independentReviews.close(),full15.close(),publicationFeedback.close(),conversations.close(),libraryBatches?.close(),tasks.close(),library?.close()]); const failed=results.find(r=>r.status==='rejected');if(failed)throw failed.reason; };
+  const close = async () => { for (const socket of sockets.clients) socket.terminate(); sockets.close(); const results=await Promise.allSettled([reviewEvidenceAudits?.close(),candidateRechecks.close(),independentReviews.close(),full15.close(),publicationFeedback.close(),conversations.close(),libraryBatches?.close(),tasks.close(),library?.close()]); const failed=results.find(r=>r.status==='rejected');if(failed)throw failed.reason; };
   const allowedOrigins = new Set([`http://127.0.0.1:${config.port}`, `http://localhost:${config.port}`, 'http://127.0.0.1:4323', 'http://localhost:4323']);
   const server = http.createServer(async (req, res) => {
     try {
@@ -147,13 +165,14 @@ export async function createRuntime({ config, model = createModel(config), workf
       if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host)) throw fail('请通过本机地址访问创作服务。', 403);
       if (req.headers.origin && !allowedOrigins.has(req.headers.origin)) throw fail('当前页面不能访问这台电脑的创作服务。', 403);
       const url = new URL(req.url, `http://${host}`);
+      if (await reviewEvidenceAuditRouter(req,res,url)) return;
       if (await independentReviewRouter(req,res,url)) return;
       if (await candidateRecheckRouter(req,res,url)) return;
       if (await full15Router(req,res,url)) return;
       if (await feedbackRouter(req,res,url)) return;
       if (await batchRouter(req, res, url)) return;
       if (await libraryRouter(req, res, url)) return;
-      if (url.pathname === '/api/runtime' && req.method === 'GET') return json(res, 200, { ...publicConfig(config), library: { available: Boolean(library), batchesAvailable:Boolean(libraryBatches), ...(libraryBatchesUnavailableCode?{batchesUnavailableCode:libraryBatchesUnavailableCode}:{}), contractVersion: 'v04-contract-1', narrativeObservations: narrativeObservation.status }, deepReferences: deepReferenceStatus, full15: { available: full15.available(), contractVersion: 'full15-product-task-1' }, independentReviews: { available: independentReviews.available(), contractVersion: 'independent-review-product-task-1' }, candidateRechecks: { available: true, contractVersion: PRODUCT_RECHECK_VERSION } });
+      if (url.pathname === '/api/runtime' && req.method === 'GET') return json(res, 200, { ...publicConfig(config), library: { available: Boolean(library), batchesAvailable:Boolean(libraryBatches), ...(libraryBatchesUnavailableCode?{batchesUnavailableCode:libraryBatchesUnavailableCode}:{}), contractVersion: 'v04-contract-1', narrativeObservations: narrativeObservation.status }, deepReferences: deepReferenceStatus, full15: { available: full15.available(), contractVersion: 'full15-product-task-1' }, independentReviews: { available: independentReviews.available(), contractVersion: 'independent-review-product-task-1' }, reviewEvidenceAudits: { available: Boolean(reviewEvidenceAudits?.available()), contractVersion: PRODUCT_EVIDENCE_AUDIT_VERSION, execution: reviewEvidenceAudits.versions().execution, modelPolicy: SEMANTIC_EVIDENCE_AUDIT_MODEL_POLICY, modelStage: SEMANTIC_EVIDENCE_AUDIT_STAGE }, candidateRechecks: { available: true, contractVersion: PRODUCT_RECHECK_VERSION } });
       const chat = url.pathname.match(/^\/api\/conversations\/([\w-]{1,160})(?:\/turns(?:\/([\w-]{1,160})\/(stream|cancel))?)?$/);
       if (chat) {
         const [, projectId, turnId, action] = chat;
@@ -215,7 +234,7 @@ export async function createRuntime({ config, model = createModel(config), workf
       sockets.handleUpgrade(req, socket, head, client => conversations.socket(route[1], route[2], client));
     } catch (error) { reject(error.status || 400); }
   });
-  return { server, tasks, conversations, library, libraryBatches, publicationFeedback, full15, independentReviews, candidateRechecks, close };
+  return { server, tasks, conversations, library, libraryBatches, publicationFeedback, full15, independentReviews, candidateRechecks, reviewEvidenceAudits, close };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

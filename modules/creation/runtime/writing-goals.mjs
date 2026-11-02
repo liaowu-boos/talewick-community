@@ -1,4 +1,7 @@
 export const WRITING_GOALS_VERSION = 'creation-writing-goals-1';
+export const COMPONENT_FALLBACK_POLICY_VERSION = 'whole-quality-component-fallback-policy-1';
+// Browser-safe request validation. DATA independently revalidates at query time.
+export const COMPONENT_FALLBACK_CONCEPT_POLICY_VERSION = 'whole-quality-component-fallback-policy-2';
 export const WRITING_GOAL_DATA_OPTIONS = Object.freeze({
   dimensions: Object.freeze(['emotionalProgression', 'psychologicalChangeDrivers', 'observableCraftDecisionHypotheses']),
   maxFunctionsPerResult: 3, maxEvidenceRefsPerResult: 10,
@@ -16,6 +19,34 @@ function strings(value, max, itemMax, min = 0) {
     && value.every(item => text(item, itemMax)) && new Set(value).size === value.length, '写作目标列表无效或重复。');
 }
 
+export function validateComponentFallbackPolicy(value) {
+  if (value === undefined) return undefined;
+  exact(value, ['schemaVersion', 'enabled', 'components']);
+  const conceptPolicy = value.schemaVersion === COMPONENT_FALLBACK_CONCEPT_POLICY_VERSION;
+  requireThat((value.schemaVersion === COMPONENT_FALLBACK_POLICY_VERSION || conceptPolicy) && value.enabled === true
+    && Array.isArray(value.components) && value.components.length > 0 && value.components.length <= 3,
+  '子机制后备须显式启用已知版本，包含1–3条声明。');
+  const ids = new Set();
+  for (const component of value.components) {
+    exact(component, ['id', 'facet', 'statement', 'searchTerms', 'requiredTermGroups',
+      ...(conceptPolicy && Object.hasOwn(component ?? {}, 'conceptAliasPolicy') ? ['conceptAliasPolicy'] : [])]);
+    if (Object.hasOwn(component, 'conceptAliasPolicy')) requireThat(conceptPolicy
+      && component.conceptAliasPolicy === 'recognition-v1', '子机制v2的conceptAliasPolicy须为已知明确版本。');
+    requireThat(typeof component.id === 'string' && /^[a-z0-9][a-z0-9-]{0,63}$/.test(component.id)
+      && !ids.has(component.id), '子机制ID无效或重复。'); ids.add(component.id);
+    requireThat(['target_mechanism','cost_mechanism','recognition_mechanism','action_mechanism'].includes(component.facet)
+      && text(component.statement, 1900), '子机制类型或陈述无效。');
+    strings(component.searchTerms, 12, 80, 2);
+    requireThat(Array.isArray(component.requiredTermGroups) && component.requiredTermGroups.length > 0
+      && component.requiredTermGroups.length <= 4, '子机制必需词组须为1–4组。');
+    for (const group of component.requiredTermGroups) {
+      strings(group, 12, 80, 1);
+      requireThat(group.every(term => component.searchTerms.includes(term)), '子机制必需词组须来自显式检索词。');
+    }
+  }
+  return structuredClone(value);
+}
+
 /** Explicit user intent, not a diagnosis or a claim that a source is suitable. */
 export function validateWritingGoals(value, chapters) {
   if (value === undefined) return undefined;
@@ -24,7 +55,12 @@ export function validateWritingGoals(value, chapters) {
     && value.goals.length > 0 && value.goals.length <= 3, '写作目标须使用已知版本并包含1–3项。');
   const ids = new Set();
   for (const goal of value.goals) {
-    exact(goal, ['id', 'dimension', 'problem', 'chapterIds', 'preservationBoundaries']);
+    exact(goal, ['id', 'dimension', 'problem', 'chapterIds', 'preservationBoundaries',
+      ...(Object.hasOwn(goal ?? {}, 'componentFallback') ? ['componentFallback'] : [])]);
+    if (Object.hasOwn(goal, 'componentFallback')) {
+      requireThat(goal.componentFallback !== undefined, '显式子机制后备不能为undefined。');
+      validateComponentFallbackPolicy(goal.componentFallback);
+    }
     requireThat(text(goal.id, 120) && !ids.has(goal.id), '写作目标ID无效或重复。'); ids.add(goal.id);
     requireThat(['psychology', 'emotion', 'choice'].includes(goal.dimension), '写作目标维度无效。');
     const problem = goal.problem;

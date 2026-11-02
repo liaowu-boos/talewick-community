@@ -1,4 +1,4 @@
-import type { RuntimeRequest } from './types';
+import type { RuntimeRequest } from './types.ts';
 
 export type WritingGoalDimension = 'psychology' | 'emotion' | 'choice';
 export type WritingGoalsInput = NonNullable<RuntimeRequest['writingGoals']>;

@@ -4,6 +4,8 @@ export const FOLLOWUP_CONTINUITY_MODEL_POLICY = 'followup-continuity-json-1';
 export const WHOLE_REVISION_MODEL_POLICY = 'whole-manuscript-json-1';
 export const WHOLE_QUALITY_MODEL_POLICY = 'whole-manuscript-quality-json-1';
 export const INDEPENDENT_REVIEW_MODEL_POLICY = 'independent-review-json-1';
+export const SEMANTIC_EVIDENCE_AUDIT_MODEL_POLICY = 'semantic-evidence-audit-json-1';
+export const SEMANTIC_EVIDENCE_AUDIT_STAGE = 'independent-review:semantic-evidence-audit';
 const FOLLOWUP_CONTINUITY_STAGES = new Set([
   'planning:material-decisions',
   'continuity-chain-review',
@@ -18,7 +20,9 @@ const WHOLE_REVISION_STAGES = new Set([
   'whole-revision:reread', 'whole-revision:reread:format-repair', 'whole-revision:reread:repair',
 ]);
 export const isWholeRevisionStage = stage => WHOLE_REVISION_STAGES.has(stage);
-const WHOLE_QUALITY_STAGES = new Set(['reading', 'applicability', 'plan', 'feasibility', 'revision', 'reread', 'material-evidence'].flatMap(name => [`whole-quality:${name}`, `whole-quality:${name}:format-repair`]));
+const WHOLE_QUALITY_STAGES = new Set(['reading', 'applicability', 'plan', 'feasibility', 'revision', 'reread', 'material-evidence',
+  'component-applicability', 'plan-facts:initial', 'plan-correction', 'plan-facts:recheck', 'scene-check',
+].flatMap(name => [`whole-quality:${name}`, `whole-quality:${name}:format-repair`]));
 export const isWholeQualityStage = stage => WHOLE_QUALITY_STAGES.has(stage);
 const CROSS_CHAPTER_REVIEW_STAGES = new Set([
   'whole-quality:cross-chapter:extract',
@@ -36,7 +40,7 @@ const CROSS_CHAPTER_NO_THINKING_STAGES = new Set([
   'whole-quality:cross-chapter:adjudicate:format-repair',
 ]);
 export const crossChapterThinkingMode = stage => CROSS_CHAPTER_THINKING_STAGES.has(stage) ? 'enabled' : CROSS_CHAPTER_NO_THINKING_STAGES.has(stage) ? 'disabled' : undefined;
-const INDEPENDENT_REVIEW_STAGES = new Set(['independent-reading', 'blind-pair', 'goal-audit', 'position-repair'].map(name => `independent-review:${name}`));
+const INDEPENDENT_REVIEW_STAGES = new Set(['independent-reading', 'blind-pair', 'goal-audit', 'position-repair', 'semantic-evidence-audit'].map(name => `independent-review:${name}`));
 export const isIndependentReviewStage = stage => INDEPENDENT_REVIEW_STAGES.has(stage);
 export const agentProviderFor = config => config.agentProvider || (new URL(config.baseURL).hostname === 'api.deepseek.com' ? 'deepseek' : 'openai-compatible');
 
@@ -85,7 +89,8 @@ export function wholeQualityReasoningEffort(config, stage, modelPolicy) {
 }
 
 export function independentReviewReasoningEffort(config, stage, modelPolicy) {
-  return modelPolicy === INDEPENDENT_REVIEW_MODEL_POLICY && usesDeepSeekThinking(config) && isIndependentReviewStage(stage) ? 'low' : undefined;
+  const applicable = modelPolicy === INDEPENDENT_REVIEW_MODEL_POLICY || (modelPolicy === SEMANTIC_EVIDENCE_AUDIT_MODEL_POLICY && stage === SEMANTIC_EVIDENCE_AUDIT_STAGE);
+  return applicable && usesDeepSeekThinking(config) && isIndependentReviewStage(stage) ? 'low' : undefined;
 }
 
 /** A complete structured plan can exceed the legacy 6K text hint. This changes
@@ -113,6 +118,7 @@ export function outputTokenLimit(config, requestedTokens = 6000, stage, modelPol
   if (modelPolicy === WHOLE_REVISION_MODEL_POLICY && isWholeRevisionStage(stage)) return 65536;
   if (modelPolicy === WHOLE_QUALITY_MODEL_POLICY && isWholeQualityStage(stage)) return 65536;
   if (modelPolicy === INDEPENDENT_REVIEW_MODEL_POLICY && isIndependentReviewStage(stage)) return 65536;
+  if (modelPolicy === SEMANTIC_EVIDENCE_AUDIT_MODEL_POLICY && stage === SEMANTIC_EVIDENCE_AUDIT_STAGE) return 65536;
   // Explicit opt-in for large continuity JSON: shared thinking + text allowance,
   // not a guarantee of complete output. Recovery keeps the requested text cap.
   if (stage === 'continuity-review') return 65536;

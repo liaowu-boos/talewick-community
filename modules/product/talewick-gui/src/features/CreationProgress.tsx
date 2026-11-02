@@ -3,6 +3,7 @@ import { Button } from '@/components/base/buttons/button';
 import { AgentThinking } from '@/components/application/agent-thinking/agent-thinking';
 import { runtimeBusy, runtimeEngineLabel, runtimeProgressDetail, runtimeResumeLabel, runtimeResumeMessage, runtimeStage, taskActive, wholeRevisionRereadPresentation } from '@/model/runtime';
 import type { Project, RuntimeTask } from '@/model/types';
+import { RevisionEvidenceFailureDetails } from '@/features/RevisionEvidenceDetails';
 
 export interface CreationProgressProps {
   project: Project;
@@ -58,6 +59,7 @@ export function CreationProgress({ project, onTaskAction, onResult }: CreationPr
       {task && <p className="text-caption-1-regular text-text-secondary">本次任务：{runtimeEngineLabel(task.engine)}</p>}
       {task?.error && task.status !== 'needs_input' && task.error !== detail && <p className="text-caption-1-regular text-text-error-primary">{task.error}</p>}
       {binding?.connectionError && <p className="text-caption-1-regular text-text-error-primary">{binding.connectionError}</p>}
+      {task?.status === 'failed' && !task.result && task.revisionEvidenceFailure && <RevisionEvidenceFailureDetails value={task.revisionEvidenceFailure}/>}
     </div>
     <div className="creation-progress-actions">
       {taskActive(task) && <Button size="small" variant="secondary" disabled={binding?.submitting} onClick={() => onTaskAction('cancel')}>取消任务</Button>}

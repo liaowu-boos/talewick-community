@@ -1,3 +1,4 @@
+import { prepareModelModules } from './model-test-loader.mjs';
 /**
  * Targeted state compatibility and edit-position checks for the Paper Canvas merge.
  * Node 22.13+ transforms TypeScript syntax in the actual model modules;
@@ -15,12 +16,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const sourceRoot = fileURLToPath(new URL('../src/model/', import.meta.url));
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'talewick-paper-state-test-'));
 after(() => rm(temporary, { recursive: true, force: true }));
-for (const name of ['candidate-recheck', 'project-import', 'seed', 'runtime', 'revision-anchor', 'store', 'conversation', 'project-link']) {
-  const source = await readFile(path.join(sourceRoot, `${name}.ts`), 'utf8');
-  const javascript = stripTypeScriptTypes(source, { mode: 'transform' })
-    .replace(/(from\s+['"])(\.\/[^'"]+)(['"])/g, '$1$2.mjs$3');
-  await writeFile(path.join(temporary, `${name}.mjs`), javascript, { flag: 'wx' });
-}
+await prepareModelModules(temporary);
 const { createInitialState, createProject } = await import(pathToFileURL(path.join(temporary, 'seed.mjs')));
 const { manuscriptRevision, makeRuntimeRequest, makeWholeRevisionRequest, readRuntimeTask, runtimeBusy, runtimeStage, wholeRevisionDispositionLabel, wholeRevisionRereadPresentation, wholeRevisionRereadReport } = await import(pathToFileURL(path.join(temporary, 'runtime.mjs')));
 const { getEditStart } = await import(pathToFileURL(path.join(temporary, 'revision-anchor.mjs')));
@@ -41,6 +37,8 @@ function projectWith(body) {
 function makeV1WholeRevisionRequest(project, state, requestId, instruction) {
   const request = makeWholeRevisionRequest(project, state, requestId, instruction);
   request.revisionMode = 'whole-manuscript-v1';
+  delete request.revisionEvidencePolicy;
+  delete request.adoptedMaterialContextPolicy;
   return request;
 }
 

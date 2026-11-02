@@ -1,5 +1,5 @@
-import { makeRuntimeRequest, readRuntimeBinding } from './runtime';
-import type { AppState, ConversationSubmission, ConversationTurn, ConversationTurnStatus, Project, RuntimeRequest } from './types';
+import { makeRuntimeRequest, readRuntimeBinding } from './runtime.ts';
+import type { AppState, ConversationSubmission, ConversationTurn, ConversationTurnStatus, Project, RuntimeRequest } from './types.ts';
 
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const text = (value: unknown): value is string => typeof value === 'string';

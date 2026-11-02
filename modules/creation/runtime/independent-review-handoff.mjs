@@ -1,8 +1,14 @@
 import { createHash } from 'node:crypto';
 import { manuscriptFingerprint } from '../../validation/runtime/checks.mjs';
 import { buildRevisionAdjacencyEvidence } from './revision-adjacency-evidence.mjs';
-import { DEEP_REFERENCE_INTEGRATION_VERSION } from './v04/deep-reference.mjs';
+import { DEEP_REFERENCE_INTEGRATION_VERSION, COMPARABLE_DEEP_FIRST_COMPOSITION_VERSION } from './v04/deep-reference.mjs';
 import { validateWritingGoals } from './writing-goals.mjs';
+import { validateGoalImprovementPolicy } from './goal-opportunity.mjs';
+import { validateDeepReferenceAvailabilityPolicy } from './deep-reference-availability.mjs';
+import { validateRevisionEvidencePolicy } from './revision-evidence-policy.mjs';
+import { validateAdoptedMaterialContextPolicy } from './adopted-material-context.mjs';
+import { revisionSceneInput } from './revision-evidence.mjs';
+import { validateIndependentSceneCheck } from '../../validation/runtime/revision-evidence-checks.mjs';
 
 export const INDEPENDENT_REVIEW_HANDOFF_VERSION = 'independent-review-handoff-2';
 export const INDEPENDENT_REVIEW_PROVENANCE_VERSION = 'independent-review-handoff-provenance-2';
@@ -38,7 +44,7 @@ function validateCrossChapterBinding(binding) {
   return clone(binding);
 }
 
-function requestFingerprint(request, sourceChapters, runtimeCrossChapterReview, deepReferencePolicyVersion) {
+function requestFingerprint(request, sourceChapters, runtimeCrossChapterReview, deepReferencePolicyVersion, deepReferenceCompositionPolicyVersion) {
   ensure(object(request) && request.kind === 'revise' && request.revisionMode === 'whole-manuscript-v2',
     'HANDOFF_REQUEST_MODE', '只接受whole-manuscript-v2修订请求。');
   ensure(typeof request.baseRevision === 'string', 'HANDOFF_BASE_REVISION', '起点版本无效。');
@@ -58,12 +64,20 @@ function requestFingerprint(request, sourceChapters, runtimeCrossChapterReview, 
   const crossChapterReview = persistedCrossChapterReview ?? normalizedCrossChapterReview;
   ensure(deepReferencePolicyVersion === undefined || deepReferencePolicyVersion === DEEP_REFERENCE_INTEGRATION_VERSION,
     'HANDOFF_REQUEST_BINDING', '深层参考请求策略版本无效。');
+  ensure(deepReferenceCompositionPolicyVersion === undefined || deepReferenceCompositionPolicyVersion === COMPARABLE_DEEP_FIRST_COMPOSITION_VERSION
+    && deepReferencePolicyVersion === DEEP_REFERENCE_INTEGRATION_VERSION && request.goalImprovementPolicy !== undefined,
+  'HANDOFF_REQUEST_BINDING', '完整比较组合策略版本或绑定无效。');
   const core = { kind: 'revise', revisionMode: 'whole-manuscript-v2', sourceBaseRevision: request.baseRevision,
     objective, chapters: sourceChapters,
     ...(request.sourceIds !== undefined ? { sourceIds: [...new Set(request.sourceIds)] } : {}),
     ...(crossChapterReview !== undefined ? { crossChapterReview } : {}),
     ...(deepReferencePolicyVersion !== undefined ? { deepReferencePolicyVersion } : {}),
-    ...(request.writingGoals === undefined ? {} : { writingGoals: validateWritingGoals(request.writingGoals, sourceChapters) }) };
+    ...(request.writingGoals === undefined ? {} : { writingGoals: validateWritingGoals(request.writingGoals, sourceChapters) }),
+    ...(request.goalImprovementPolicy === undefined ? {} : { goalImprovementPolicy: validateGoalImprovementPolicy(request.goalImprovementPolicy, request.writingGoals) }),
+    ...(request.deepReferenceAvailabilityPolicy === undefined ? {} : { deepReferenceAvailabilityPolicy: validateDeepReferenceAvailabilityPolicy(request.deepReferenceAvailabilityPolicy) }),
+    ...(request.revisionEvidencePolicy === undefined ? {} : { revisionEvidencePolicy: validateRevisionEvidencePolicy(request.revisionEvidencePolicy) }),
+    ...(request.adoptedMaterialContextPolicy === undefined ? {} : { adoptedMaterialContextPolicy: validateAdoptedMaterialContextPolicy(request.adoptedMaterialContextPolicy) }),
+    ...(deepReferenceCompositionPolicyVersion === undefined ? {} : { deepReferenceCompositionPolicyVersion }) };
   return { objective, inputFingerprint: sha256(core),
     bindingMode: persistedCrossChapterReview !== undefined ? 'persisted_exact'
       : normalizedCrossChapterReview !== undefined ? 'runtime_normalized_cross_binding' : 'legacy_exact' };
@@ -165,11 +179,20 @@ export function buildIndependentReviewRequest({ caseId, request, result, selecti
   ensure(whole.requestSpec.writingGoals === undefined ? request?.writingGoals === undefined
     : request?.writingGoals !== undefined && sha256(validateWritingGoals(whole.requestSpec.writingGoals, sourceChapters))
       === sha256(validateWritingGoals(request.writingGoals, sourceChapters)), 'HANDOFF_REQUEST_BINDING', '写作目标与冻结请求不一致。');
+  ensure(sha256(validateDeepReferenceAvailabilityPolicy(whole.requestSpec.deepReferenceAvailabilityPolicy) ?? null)
+    === sha256(validateDeepReferenceAvailabilityPolicy(request?.deepReferenceAvailabilityPolicy) ?? null),
+  'HANDOFF_REQUEST_BINDING', '必需深层参考策略与冻结请求不一致。');
+  ensure(sha256(validateRevisionEvidencePolicy(whole.requestSpec.revisionEvidencePolicy) ?? null)
+    ===sha256(validateRevisionEvidencePolicy(request?.revisionEvidencePolicy) ?? null),
+  'HANDOFF_REQUEST_BINDING','独立修订证据策略与冻结请求不一致。');
+  ensure(sha256(validateAdoptedMaterialContextPolicy(whole.requestSpec.adoptedMaterialContextPolicy) ?? null)
+    === sha256(validateAdoptedMaterialContextPolicy(request?.adoptedMaterialContextPolicy) ?? null),
+  'HANDOFF_REQUEST_BINDING', '已采用资料上下文策略与冻结请求不一致。');
   const resultCrossChapterReview = whole.requestSpec.crossChapterReview === undefined
     ? undefined : validateCrossChapterBinding(whole.requestSpec.crossChapterReview);
   const persistedRequestHasCrossBinding = object(request) && request.crossChapterReview !== undefined;
   const requestBinding = requestFingerprint(request, sourceChapters,
-    persistedRequestHasCrossBinding ? undefined : resultCrossChapterReview, whole.requestSpec.deepReferencePolicyVersion);
+    persistedRequestHasCrossBinding ? undefined : resultCrossChapterReview, whole.requestSpec.deepReferencePolicyVersion, whole.requestSpec.deepReferenceCompositionPolicyVersion);
   ensure(whole.requestSpec.inputFingerprint === requestBinding.inputFingerprint
     && whole.requestSpec.objective === requestBinding.objective
     && whole.requestSpec.sourceBaseRevision === request.baseRevision
@@ -212,6 +235,17 @@ export function buildIndependentReviewRequest({ caseId, request, result, selecti
   ensure(JSON.stringify(rebuiltFullCandidate) === JSON.stringify(candidateChapters)
     && whole.diff?.candidateManuscriptSha256 === manuscriptFingerprint(candidateChapters),
   'HANDOFF_CANDIDATE_BINDING', '完整候选稿不能由已授权替换重建。');
+  let independentBlocked=[];
+  if(whole.requestSpec.revisionEvidencePolicy){
+    const evidence=whole.quality?.revisionEvidence;
+    ensure(evidence&&sha256(evidence.policy)===sha256(whole.requestSpec.revisionEvidencePolicy),
+      'HANDOFF_REVISION_EVIDENCE','缺少绑定策略的独立场景核查。');
+    const scene=validateIndependentSceneCheck(evidence.sceneDependencies,
+      revisionSceneInput(whole.requestSpec,sourceChapters,candidateChapters,whole.candidateRevision));
+    ensure(sha256(scene.blockedGroupIds)===sha256(evidence.blockedPlanItemIds),
+      'HANDOFF_REVISION_EVIDENCE','独立场景阻止组不能由完整候选重建。');
+    independentBlocked=scene.blockedGroupIds;
+  }
 
   const replacementGroupIds = new Set(replacements.map(item => item.appliedPlanItemIds[0]));
   const plannedGroupIds = whole.plan.items.filter(item => item.decision === 'revise').map(item => item.id);
@@ -225,7 +259,7 @@ export function buildIndependentReviewRequest({ caseId, request, result, selecti
   ensure(new Set(selectedGroupIds).size === selectedGroupIds.length
     && selectedGroupIds.every(id => explicitSelection ? appliedGroupIds.includes(id) : plannedGroupIds.includes(id)),
   'HANDOFF_SELECTION', 'selection含重复、未知或未执行修改组。');
-  if (explicitSelection) ensure(selectedGroupIds.every(id => groupById.get(id)?.recommendation === 'eligible_for_user_choice'),
+  if (explicitSelection) ensure(selectedGroupIds.every(id => groupById.get(id)?.recommendation === 'eligible_for_user_choice'&&!independentBlocked.includes(id)),
     'HANDOFF_SELECTION_NOT_ELIGIBLE', '实际采纳只能包含复读后可供用户选择的修改组。');
 
   const selected = new Set(selectedGroupIds);

@@ -1,4 +1,4 @@
-import type { PendingEdit } from './types';
+import type { PendingEdit } from './types.ts';
 
 /** An explicit UTF-16 anchor never falls back to another occurrence of the same text. */
 export function getEditStart(body: string, edit: Pick<PendingEdit, 'before' | 'start'>): number {

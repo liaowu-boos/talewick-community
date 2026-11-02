@@ -1,5 +1,6 @@
 import { ADJUDICATION_VERSION, ADJUDICATION_RELIABILITY_VERSION, ADJUDICATION_CONTINUITY_VERSION } from '../../../validation/runtime/review-adjudication.mjs';
 import { projectReviewAdjudication } from './service-public.mjs';
+import { isDeepStrictEqual } from 'node:util';
 import { WHOLE_MANUSCRIPT_QUALITY_MODE, WHOLE_MANUSCRIPT_REVISION_MODE } from './workflow-engine.mjs';
 
 const supportedPolicies = new Set([ADJUDICATION_VERSION, ADJUDICATION_RELIABILITY_VERSION, ADJUDICATION_CONTINUITY_VERSION]);
@@ -34,6 +35,11 @@ export function assertWorkflowResultReady(result, requestSpec, request, wholeRev
   const qualitySpec = requestSpec?.revisionMode === WHOLE_MANUSCRIPT_QUALITY_MODE;
   if (qualityRequest || qualitySpec) {
     if (!qualityRequest || !qualitySpec) throw rejection();
+    if (!isDeepStrictEqual(request.writingGoals, requestSpec.writingGoals)) throw rejection();
+    if (!isDeepStrictEqual(request.goalImprovementPolicy, requestSpec.goalImprovementPolicy)) throw rejection();
+    if (!isDeepStrictEqual(request.deepReferenceAvailabilityPolicy, requestSpec.deepReferenceAvailabilityPolicy)) throw rejection();
+    if (!isDeepStrictEqual(request.revisionEvidencePolicy, requestSpec.revisionEvidencePolicy)) throw rejection();
+    if (!isDeepStrictEqual(request.adoptedMaterialContextPolicy, requestSpec.adoptedMaterialContextPolicy)) throw rejection();
     return Promise.resolve(wholeQualityAssert ?? loadWholeQualityAssert()).then(assertResult => {
       assertResult(result, requestSpec);
     }).catch(() => { throw rejection(); });

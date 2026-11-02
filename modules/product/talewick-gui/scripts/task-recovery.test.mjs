@@ -1,3 +1,4 @@
+import { prepareModelModules } from './model-test-loader.mjs';
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -9,9 +10,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const source = fileURLToPath(new URL('../src/model/runtime.ts', import.meta.url));
 const temporary = await mkdtemp(path.join(tmpdir(), 'talewick-task-recovery-'));
 after(() => rm(temporary, { recursive: true, force: true }));
-const transformed = stripTypeScriptTypes(await readFile(source, 'utf8'), { mode: 'transform' });
+await prepareModelModules(temporary);
 const runtimeFile = path.join(temporary, 'runtime.mjs');
-await writeFile(runtimeFile, transformed);
 const { readRuntimeTask, runtimeResumeMessage } = await import(pathToFileURL(runtimeFile));
 
 const task = {

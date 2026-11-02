@@ -1,3 +1,5 @@
+import { makeGoalImprovementPolicy } from '@/model/goal-improvement-policy';
+import type { GoalImprovementPolicy } from '@/model/types';
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   RiArrowLeftLine, RiArrowRightLine, RiCheckLine, RiCloseLine, RiDownload2Line,
@@ -28,6 +30,7 @@ import { authorizeCandidateRecheck, candidateChapterSha256, type CandidateRechec
 import type { ReviewEvidenceLocation } from '@/model/independent-review-view';
 import { countercheckAssessment, countercheckName, crossChapterSummary, crossChapterBoundaryNote } from '@/model/cross-chapter-view';
 import { makeWritingGoalInput, writingGoalLabels, type WritingGoalDimension, type WritingGoalsInput } from '@/model/writing-goal-input';
+import { RevisionEvidenceDetails } from '@/features/RevisionEvidenceDetails';
 
 interface LocalDraft {
   key: string;
@@ -56,7 +59,7 @@ const makeDraft = (projectId: string, chapter: Chapter): LocalDraft => ({
 const differs = (left: Pick<Chapter, 'title' | 'body'>, right: Pick<Chapter, 'title' | 'body'>) =>
   left.title !== right.title || left.body !== right.body;
 
-export interface ManuscriptPanelProps { projectId: string; onQuote: (text: string, source?: QuoteSource) => void; onWholeRevision?: (instruction: string, writingGoals?: WritingGoalsInput) => void; savedLabel?: string; progress?: ReactNode }
+export interface ManuscriptPanelProps { projectId: string; onQuote: (text: string, source?: QuoteSource) => void; onWholeRevision?: (instruction: string, writingGoals?: WritingGoalsInput, goalImprovementPolicy?: GoalImprovementPolicy) => void; savedLabel?: string; progress?: ReactNode }
 
 export function ManuscriptPanel({ projectId, onQuote, onWholeRevision, savedLabel = '已保存到本机', progress }: ManuscriptPanelProps) {
   const { state } = useWorkspace();
@@ -71,7 +74,7 @@ export function ManuscriptPanel({ projectId, onQuote, onWholeRevision, savedLabe
   return <ManuscriptContent key={projectId} project={project} onQuote={onQuote} onWholeRevision={onWholeRevision} savedLabel={savedLabel} progress={progress} />;
 }
 
-function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, progress }: { project: Project; onQuote: (text: string, source?: QuoteSource) => void; onWholeRevision?: (instruction: string, writingGoals?: WritingGoalsInput) => void; savedLabel: string; progress?: ReactNode }) {
+function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, progress }: { project: Project; onQuote: (text: string, source?: QuoteSource) => void; onWholeRevision?: (instruction: string, writingGoals?: WritingGoalsInput, goalImprovementPolicy?: GoalImprovementPolicy) => void; savedLabel: string; progress?: ReactNode }) {
   const { state, update, notify } = useWorkspace();
   const chapter = project.chapters[project.selectedChapter] || project.chapters[0];
   const key = draftKey(project.id, chapter.id);
@@ -79,6 +82,7 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
   const [selection, setSelection] = useState<SelectionAnchor | null>(null);
   const [dialog, setDialog] = useState<'versions' | 'export' | 'unsaved' | 'conflict' | 'whole-request' | 'whole-candidate' | null>(null);
   const [wholeInstruction, setWholeInstruction] = useState('');
+  const [assessGoalIncrement, setAssessGoalIncrement] = useState(false);
   const [useWritingGoal, setUseWritingGoal] = useState(false);
   const [writingGoalDimension, setWritingGoalDimension] = useState<WritingGoalDimension>('emotion');
   const [writingGoalText, setWritingGoalText] = useState('');
@@ -442,7 +446,7 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
       <p className="font-story text-title-3-medium">{activeDraft.title}</p><p className="mt-2 text-body-regular text-text-secondary">{hanCharacterCount(activeDraft.body).toLocaleString()} 汉字 · 草稿尚未写入项目数据。</p>
     </DialogShell>
     <DialogShell title="当前稿件已经更新" description="这份草稿基于更早的正文。保存草稿时，会先保留当前稿件的版本副本。" open={dialog === 'conflict'} onClose={() => { setDialog(null); setDeferred(null); }} footer={<><Button variant="ghost" onClick={() => { setDialog(null); setDeferred(null); }}>继续编辑</Button><Button variant="secondary" leadingIcon={RiDownload2Line} onClick={() => downloadText(`${project.title}-未保存草稿.md`, `# ${activeDraft.title}\n\n${activeDraft.body}`)}>导出草稿</Button><Button variant="primary" onClick={() => saveAndContinue(true)}>保存草稿为当前稿</Button></>}><p className="text-body-regular text-text-secondary">你可以导出草稿留存，或保存为当前稿。已有版本不会被删除。</p></DialogShell>
-    <DialogShell title="发起整稿质量修订" description="系统会保存完整原稿，先独立阅读全文、核对主要问题，再形成有限候选。候选不会自动覆盖当前稿件。" open={dialog === 'whole-request'} onClose={() => setDialog(null)} footer={<><Button variant="secondary" onClick={() => setDialog(null)}>取消</Button><Button variant="primary" leadingIcon={RiSparklingLine} disabled={!wholeInstruction.trim() || (useWritingGoal && !writingGoalText.trim())} onClick={() => { const instruction = wholeInstruction.trim(); if (!instruction || !onWholeRevision) return; try { const goals = useWritingGoal ? makeWritingGoalInput(writingGoalDimension, writingGoalText, writingGoalBoundary) : undefined; setDialog(null); onWholeRevision(instruction, goals); } catch(error) { notify(error instanceof Error ? error.message : '写作目标无效。'); } }}>开始整稿修订</Button></>}>
+    <DialogShell title="发起整稿质量修订" description="系统会保存完整原稿，先独立阅读全文、核对主要问题，再形成有限候选。候选不会自动覆盖当前稿件。" open={dialog === 'whole-request'} onClose={() => setDialog(null)} footer={<><Button variant="secondary" onClick={() => setDialog(null)}>取消</Button><Button variant="primary" leadingIcon={RiSparklingLine} disabled={!wholeInstruction.trim() || (useWritingGoal && !writingGoalText.trim())} onClick={() => { const instruction = wholeInstruction.trim(); if (!instruction || !onWholeRevision) return; try { const goals = useWritingGoal ? makeWritingGoalInput(writingGoalDimension, writingGoalText, writingGoalBoundary) : undefined; setDialog(null); onWholeRevision(instruction, goals, makeGoalImprovementPolicy(useWritingGoal && assessGoalIncrement)); } catch(error) { notify(error instanceof Error ? error.message : '写作目标无效。'); } }}>开始整稿修订</Button></>}>
       <div className="flex flex-col gap-4"><TextAreaField label="本轮整稿修改目标" value={wholeInstruction} onChange={setWholeInstruction} rows={6} maxLength={12000} autoFocus placeholder="例如：检查人物情绪变化与结尾代价，只修改有多处原文证据支持的问题；保留有效回环、留白和克制。" /><p className="text-caption-1-regular text-text-secondary">修改按独立修订组提供；关联组必须一起选择。系统会保留不用理由、未解决项和原稿版本。</p></div>
       <div className="mt-5 rounded-2xl border border-border-button-default p-4">
         <label className="flex cursor-pointer items-center gap-3 text-body-medium"><input type="checkbox" checked={useWritingGoal} onChange={event=>setUseWritingGoal(event.target.checked)} />按写作目标查找参考（可选）</label>
@@ -452,6 +456,8 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
           </Select>
           <TextAreaField label="具体想加强什么" value={writingGoalText} onChange={setWritingGoalText} rows={3} maxLength={2000} placeholder="例如：让妹妹的无偿付出被真正看见，但保留她不愿和解的选择。" />
           <TextAreaField label="需要保留的内容（选填）" value={writingGoalBoundary} onChange={setWritingGoalBoundary} rows={2} maxLength={1000} placeholder="例如：仍按期关店，不改变原稿结尾。" />
+          <label className="flex cursor-pointer items-center gap-3 text-body-2-medium"><input type="checkbox" checked={assessGoalIncrement} onChange={event=>setAssessGoalIncrement(event.target.checked)} />评估目标的进一步改善空间（可选）</label>
+          {assessGoalIncrement && <p className="text-caption-1-regular text-text-secondary">先记录原稿已经做到什么，再评估有限的改善机会。没有适合的机会时可以保留原稿。</p>}
           <p className="text-caption-1-regular text-text-secondary">系统会先查找相关写法，再判断是否适合这篇稿件；结果中会记录实际采用或不用的原因。</p>
         </div>}
       </div>
@@ -501,6 +507,7 @@ export function WritingGoalDetails({ value }: { value: unknown }) {
         <p className="mt-2 whitespace-pre-wrap text-body-regular">{textValue(problem.statement)}</p>
         <p className="mt-2 text-caption-1-regular text-text-secondary">查询命中 {count(query.returnedCandidateCount)} 份 · 本次进入审查 {count(query.suppliedMaterialCount)} 份</p>
         <p className="mt-1 text-body-2-regular text-text-secondary">{disposition.decision==='attempt'?'方案：尝试修订':disposition.decision==='preserve'?'方案：保留原稿':'方案：尚未确认'}{textValue(disposition.reason)?`。${textValue(disposition.reason)}`:''}</p>
+        {objectValue(disposition.incrementalAssessment) && <GoalIncrementDetails value={disposition.incrementalAssessment} />}
         {materials.length>0&&<details className="mt-3"><summary className="cursor-pointer text-body-2-medium">查看采用或不用的原因</summary>{materials.map((item,i)=><div key={textValue(item.supplyId)||i} className="mt-3">
           <p className="text-body-2-regular">{item.status==='used_exact_text_located'?'已记录正文落点':item.status==='unused'?'未采用':'采用未证实'}：{textValue(item.reason)||'尚未提供理由。'}</p>
           {textValue(item.caveat)&&<p className="mt-1 text-caption-1-regular text-text-secondary">适用边界：{textValue(item.caveat)}</p>}
@@ -508,6 +515,19 @@ export function WritingGoalDetails({ value }: { value: unknown }) {
         </div>)}</details>}
       </section>;
     })}</div>
+  </details>;
+}
+
+export function GoalIncrementDetails({ value }: { value: unknown }) {
+  const row=objectValue(value); if(!row)return null;
+  const labels:Record<string,string>={present:'已有体现',partial:'部分体现',not_established:'尚未确立'};
+  const opportunity=objectValue(row.opportunity);
+  return <details className="mt-3"><summary className="cursor-pointer text-body-2-medium">目标改善空间</summary>
+    <p className="mt-2 text-body-2-regular">原稿：{labels[textValue(row.currentAchievement)]||'待核实'}。{textValue(row.currentAchievementReason)}</p>
+    <EvidenceList value={row.currentAchievementEvidence}/>
+    <p className="mt-2 text-body-2-regular">{row.opportunityAssessment==='attempt'?'尝试有限修订':row.opportunityAssessment==='preserve'?'保留原稿':'尚未形成决定'}：{textValue(row.opportunityReason)}</p>
+    {opportunity && <><p className="mt-2 text-body-2-regular">预期变化：{textValue(opportunity.expectedIncrement)}</p><EvidenceList value={opportunity.sourceEvidence}/></>}
+    <p className="mt-2 text-caption-1-regular text-text-secondary">这是修改方案的判断，是否改善仍需审阅；没有修订也是有效结果。</p>
   </details>;
 }
 
@@ -641,6 +661,7 @@ function WholeQualityDetails({ result, source, disposition, conflicted, groups, 
     </section>
 
     <WritingGoalDetails value={quality.writingGoals}/>
+    <RevisionEvidenceDetails value={quality.revisionEvidence}/>
 
     <section>
       <h3 className="mb-3 text-headline-medium">独立修订组</h3>

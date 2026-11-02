@@ -1,5 +1,5 @@
-import type { Project } from './types';
-import { manuscriptRevision } from './runtime';
+import type { Project } from './types.ts';
+import { manuscriptRevision } from './runtime.ts';
 
 export type Full15Status = 'queued' | 'running' | 'interrupted' | 'cancelled' | 'complete' | 'incomplete' | 'needs_attention' | 'stale';
 export interface Full15Task {

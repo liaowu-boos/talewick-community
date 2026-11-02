@@ -1,4 +1,4 @@
-import type { Chapter } from './types';
+import type { Chapter } from './types.ts';
 
 export type ReviewManuscriptRole = 'source' | 'candidate' | 'single' | 'unknown';
 export interface ReviewEvidenceLocation {
@@ -48,6 +48,7 @@ export interface IndependentReviewView {
   evidence: ReviewEvidenceLocation[];
   snapshots: IndependentReviewSnapshot[];
   limitations: string[];
+  malformedCitationCount?: number;
 }
 
 type UnknownRecord = Record<string, unknown>;
@@ -98,7 +99,8 @@ function readerLabel(readerId?: string) {
   return match ? `读者 ${match[1]}` : readerId;
 }
 
-function roleLabel(role: ReviewManuscriptRole, blindId: string) {
+function roleLabel(role: ReviewManuscriptRole, blindId: string, anonymous = false) {
+  if (anonymous) return blindId ? `匿名稿 ${blindId}` : '匿名稿件';
   if (role === 'source') return `冻结原稿${blindId ? ` · 匿名稿 ${blindId}` : ''}`;
   if (role === 'candidate') return `冻结候选稿${blindId ? ` · 匿名稿 ${blindId}` : ''}`;
   if (role === 'single') return '本次冻结单稿';
@@ -222,7 +224,7 @@ function recordEnvelopes(source: UnknownRecord) {
   return result;
 }
 
-function findingsForRecord(value: UnknownRecord, readerId: string | undefined, stage: string, roles: Map<string, ReviewManuscriptRole>, completionRoles: Map<string, ReviewManuscriptRole>, goalLabels: FrozenGoalLabels) {
+function findingsForRecord(value: UnknownRecord, readerId: string | undefined, stage: string, roles: Map<string, ReviewManuscriptRole>, completionRoles: Map<string, ReviewManuscriptRole>, goalLabels: FrozenGoalLabels, anonymous = false) {
   const result: IndependentReviewFinding[] = [], add = (id: string, statement: unknown, evidenceValue?: unknown, status?: unknown, detail?: unknown, uncertainty?: unknown, counterEvidence?: unknown) => {
     const line = text(statement); if (!line) return;
     const supporting = collectEvidence(evidenceValue, line, readerId, stage, roles), counter = collectEvidence(counterEvidence, line, readerId, stage, roles);
@@ -231,7 +233,7 @@ function findingsForRecord(value: UnknownRecord, readerId: string | undefined, s
       evidence: counterEvidence === undefined ? supporting : [...supporting.map(item => ({ ...item, evidenceKind: 'supporting' as const })), ...counter.map(item => ({ ...item, evidenceKind: 'counter' as const }))] });
   };
   if (Array.isArray(value.entries)) value.entries.filter(record).forEach((entry, entryIndex) => {
-    const blindId = text(entry.blindId), detail = roleLabel(blindId ? completionRoles.get(blindId) ?? 'unknown' : 'unknown', blindId);
+    const blindId = text(entry.blindId), detail = roleLabel(blindId ? completionRoles.get(blindId) ?? 'unknown' : 'unknown', blindId, anonymous);
     add(`entry-${entryIndex}-impression`, entry.overallImpression, undefined, undefined, detail);
     if (Array.isArray(entry.claims)) entry.claims.filter(record).forEach((claim, claimIndex) => add(`entry-${entryIndex}-claim-${text(claim.id) || claimIndex}`, claim.statement, claim.evidence, claim.claimType, detail));
     if (Array.isArray(entry.focusAssessments)) entry.focusAssessments.filter(record).forEach((assessment, index) => {
@@ -246,7 +248,7 @@ function findingsForRecord(value: UnknownRecord, readerId: string | undefined, s
     if (harm === true) status = '严重问题 · 旧版归属未区分';
     else if (record(harm) && harm.status === 'unknown') status = '严重问题 · 归属待核对';
     else if (record(harm) && harm.status === 'attributed') {
-      const labels = texts(harm.blindIds).map(id => roleLabel(completionRoles.get(id) ?? 'unknown', id));
+      const labels = texts(harm.blindIds).map(id => roleLabel(completionRoles.get(id) ?? 'unknown', id, anonymous));
       status = `严重问题 · ${labels.join('、')}`;
     }
     add(`comparison-${text(comparison.id) || index}`, comparison.statement, [comparison.evidence, record(harm) ? harm.evidence : []], status,
@@ -277,7 +279,7 @@ function findingsForRecord(value: UnknownRecord, readerId: string | undefined, s
   return result;
 }
 
-interface IndependentReviewDisplayContext { taskId: string; partialSnapshotProjection?: unknown }
+interface IndependentReviewDisplayContext { taskId: string; partialSnapshotProjection?: unknown; anonymous?: boolean }
 
 function boundPartialSnapshots(source: UnknownRecord, context?: IndependentReviewDisplayContext) {
   const projection = context?.partialSnapshotProjection;
@@ -308,6 +310,7 @@ export function independentReviewSnapshotForEvidence(snapshots: IndependentRevie
 export function independentReviewView(report: unknown, mode: 'single' | 'compare', context?: IndependentReviewDisplayContext): IndependentReviewView {
   const source = record(report) ? report : {}, roles = new Map<string, ReviewManuscriptRole>(), completionRoles = new Map<string, ReviewManuscriptRole>(), snapshots: IndependentReviewSnapshot[] = [];
   const partial = mode === 'compare' && isPartialBlindReport(source);
+  const anonymous = mode === 'compare' && context?.anonymous === true;
   collectRoleBindings(source, roles);
   if (partial) collectRoleBindings(source.readerBindings, completionRoles);
   if (record(source.completionEvidence)) collectRoleBindings(source.completionEvidence, completionRoles);
@@ -315,10 +318,11 @@ export function independentReviewView(report: unknown, mode: 'single' | 'compare
   collectSnapshots(partial ? boundPartialSnapshots(source, context) : source, roles, snapshots);
   if (mode === 'single' && snapshots.length === 1 && snapshots[0].role === 'unknown') snapshots[0] = { ...snapshots[0], role: 'single', label: '本次冻结单稿' };
   snapshots.forEach(snapshot => { if (snapshot.blindId && snapshot.role !== 'unknown') roles.set(snapshot.blindId, snapshot.role); });
+  if (anonymous) snapshots.forEach(snapshot => { snapshot.label = roleLabel(snapshot.role, snapshot.blindId, true); });
   const sections = recordEnvelopes(source).map(({ envelope, value }, index) => {
     const readerId = text(value.readerId ?? envelope.readerId) || undefined, stage = stageOf(value, envelope), preference = text(value.preference);
     return { id: text(envelope.stageId) || `${stage}-${readerId ?? 'controller'}-${index}`, ...(readerId ? { readerId } : {}), readerLabel: readerLabel(readerId), stage,
-      stageLabel: stageNames[stage] ?? stage, ...(preference ? { preference: statusNames[preference] ?? preference } : {}), findings: findingsForRecord(value, readerId, stage, roles, completionRoles, goalLabels) };
+      stageLabel: stageNames[stage] ?? stage, ...(preference ? { preference: statusNames[preference] ?? preference } : {}), findings: findingsForRecord(value, readerId, stage, roles, completionRoles, goalLabels, anonymous) };
   });
   const evidence = sections.flatMap(section => section.findings.flatMap(finding => finding.evidence));
   const findings = sections.flatMap(section => section.findings.map(finding => finding.statement));
@@ -331,6 +335,10 @@ export function independentReviewView(report: unknown, mode: 'single' | 'compare
     `问题归属待核对：${Array.isArray(attribution.unknown) ? attribution.unknown.length : 0} 条`,
     '以上按评阅记录计数，同一问题可能重复出现；两稿均有的问题分别列入两类。',
   ] : [];
+  const sourceAlias = snapshots.find(s => s.role === 'source')?.blindId, candidateAlias = snapshots.find(s => s.role === 'candidate')?.blindId;
+  if (anonymous) {
+    for (let i = 0; i < attributionLines.length; i++) attributionLines[i] = attributionLines[i].replace(/^原稿/, `匿名稿 ${sourceAlias || '待绑定'}`).replace(/^候选/, `匿名稿 ${candidateAlias || '待绑定'}`);
+  }
   const boundary = partial ? '保留前六阶段的独立阅读与比较；目标核查仍失败，不代表目标落实、事实通过或文学质量通过。' : legacyAttribution && source.adoptionBoundary === 'preserve_original' ? '历史建议：保留原稿；严重问题的稿件归属未区分。' : boundaryName[text(source.adoptionBoundary)] || (mode === 'single' ? '单稿意见已经保存，不产生版本胜负。' : '比较结论只作为内部编辑证据。');
   const readerLines = Array.isArray(source.readerViews) ? source.readerViews.filter(record).map(item => {
     const nested = record(item.record) ? item.record : {}, id = text(item.readerId) || text(nested.readerId), preference = text(item.preference) || text(nested.preference);
@@ -338,7 +346,7 @@ export function independentReviewView(report: unknown, mode: 'single' | 'compare
       const orderValue = Array.isArray(item.order) ? item.order : nested.order, order = texts(orderValue);
       const selectedBlindId = text(item.selectedBlindId) || text(nested.selectedBlindId), expectedBlindId = order[preference === 'first' ? 0 : 1];
       const selectedRole = selectedBlindId && selectedBlindId === expectedBlindId ? completionRoles.get(selectedBlindId) ?? 'unknown' : 'unknown';
-      const selectedLabel = preferenceRoleLabel(selectedRole);
+      const selectedLabel = anonymous && selectedBlindId ? `匿名稿 ${selectedBlindId}` : preferenceRoleLabel(selectedRole);
       if (selectedLabel) return `${readerLabel(id || undefined)}：倾向${selectedLabel}（匿名稿${selectedBlindId}；${preference === 'first' ? '先读' : '后读'}）`;
     }
     const verdict = (statusNames[preference] ?? preference) || text(item.overallImpression) || text(nested.overallImpression);
@@ -347,9 +355,19 @@ export function independentReviewView(report: unknown, mode: 'single' | 'compare
   if (partial && Array.isArray(source.readerBindings)) source.readerBindings.filter(record).forEach(item => {
     const preference = text(item.originalPreference), order = Array.isArray(item.order) ? item.order.filter(record) : [];
     const selected = order[preference === 'first' ? 0 : preference === 'second' ? 1 : -1];
-    const label = selected ? preferenceRoleLabel(normalizeRole(selected.role)) : '';
+    const label = selected ? anonymous ? `匿名稿 ${text(selected.blindId)}` : preferenceRoleLabel(normalizeRole(selected.role)) : '';
     readerLines.push(`${readerLabel(text(item.readerId) || undefined)}：${label ? `倾向${label}（匿名稿${text(selected.blindId)}；${preference === 'first' ? '先读' : '后读'}）` : statusNames[preference] || preference}（独立意见，不汇总投票）`);
   });
   const limitations = [...texts(source.limitations).map(item => limitationNames[item] ?? item), ...(source.literaryPass === 'NOT_COMPUTED' ? ['本任务不计算文学质量通过。'] : []), ...(source.automaticAdoption === false ? ['评阅结果不会自动采用或改写正文。'] : [])];
-  return { headline: partial ? '全文盲评已完成；目标核查未通过' : mode === 'single' ? '两路独立全文初读' : '原稿与候选的隔离盲评', boundary, readerLines, attributionLines, summaryFindings: findings.slice(0, 4), findings, sections, evidence, snapshots, limitations: [...new Set(limitations)] };
+  let malformedCitationCount = 0;
+  const inspectCitations = (value: unknown, depth = 0) => {
+    if (depth > 20) { malformedCitationCount++; return; }
+    if (Array.isArray(value)) { value.forEach(v => inspectCitations(v, depth + 1)); return; }
+    if (!record(value)) return;
+    if ((Object.hasOwn(value, 'quote') && Object.hasOwn(value, 'chapterId') || Object.hasOwn(value, 'chapterId') && Object.hasOwn(value, 'start'))
+      && !citation(value, '', undefined, '', roles)) malformedCitationCount++;
+    Object.values(value).forEach(v => inspectCitations(v, depth + 1));
+  };
+  recordEnvelopes(source).forEach(({ value }) => inspectCitations(value));
+  return { headline: partial ? '全文盲评已完成；目标核查未通过' : mode === 'single' ? '两路独立全文初读' : anonymous ? '匿名 A/B 的隔离盲评' : '原稿与候选的隔离盲评', boundary, readerLines, attributionLines, summaryFindings: findings.slice(0, 4), findings, sections, evidence, snapshots, malformedCitationCount, limitations: [...new Set(limitations)] };
 }

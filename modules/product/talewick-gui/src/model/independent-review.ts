@@ -1,5 +1,6 @@
-import type { Project } from './types';
-import { manuscriptRevision } from './runtime';
+import type { Project } from './types.ts';
+import type { AnonymousComparisonBinding, ReviewSourceBinding } from './review-result-state.ts';
+import { manuscriptRevision } from './runtime.ts';
 
 export type IndependentReviewStatus = 'queued' | 'running' | 'complete' | 'interrupted' | 'cancelled' | 'needs_attention' | 'stale';
 export const INDEPENDENT_READING_FOCUS_VERSION = 'literary-reading-six-1';
@@ -24,6 +25,8 @@ export interface IndependentReviewTask {
   partialReport?: unknown;
   partialSnapshotProjection?: unknown;
   partialSnapshotUnavailable?: { code: string; message: string };
+  reviewSourceBinding?: ReviewSourceBinding;
+  anonymousComparison?: AnonymousComparisonBinding;
   recoveryCapabilities?: { whitespace_only: boolean; position_repair: boolean };
   recoveries?: { requestId: string; stageId: string; mode: 'whitespace_only' | 'position_repair' | 'audited_nondispatch'; status: string; originalError?: { code: string; message: string } | null }[];
   invalidReadingRetry?: { available: boolean; eligible: boolean; remainingAttempts: number; stageId?: string; reason?: string };

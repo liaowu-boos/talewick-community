@@ -1,4 +1,4 @@
-import type { Chapter } from './types';
+import type { Chapter } from './types.ts';
 
 export const CANDIDATE_RECHECK_VERSION = 'candidate-recheck-cross-chapter-review-r08-1';
 export interface CandidateRecheckTask {

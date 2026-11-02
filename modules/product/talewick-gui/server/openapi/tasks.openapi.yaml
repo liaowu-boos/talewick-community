@@ -1,0 +1,265 @@
+openapi: 3.1.0
+info:
+  title: Talewick Manuscript Tasks API
+  version: 1.3.0
+  description: >-
+    Durable local manuscript requests. New GUI whole-manuscript requests with writingGoals
+    explicitly require available deep references. Omitted historical policy remains omitted.
+    Available queries with no matches are valid; this policy never requires adoption or revision.
+    New GUI whole-manuscript revisions also require revision-evidence checks. API clients
+    opt in explicitly; optional component fallback is declared by the structured caller only.
+    New GUI whole revisions explicitly pass the selected_complete_materials policy; only the
+    host derives material context from validated supplied packets and the final adopted plan.
+servers:
+  - url: http://127.0.0.1:4326
+paths:
+  /api/tasks:
+    get:
+      summary: List saved tasks and verified read-only failure projections
+      parameters:
+        - { in: query, name: projectId, schema: { type: string } }
+      responses:
+        '200':
+          description: Original tasks; no dispatch or automatic retry
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks: { type: array, items: { $ref: '#/components/schemas/PublicTaskProjection' } }
+    post:
+      summary: Save and queue a manuscript request
+      description: >-
+        Same projectId/requestId is idempotent only for an identical validated request;
+        changing or adding request policies or goal components to an existing request is a conflict.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskRequest' }
+      responses:
+        '202': { description: Saved task queued (or original identical task returned) }
+        '400': { description: Invalid request, policy version, shape, or task mode }
+        '409': { description: Request identity conflict or project already running }
+        '503': { description: Model configuration unavailable; no dispatch }
+  /api/tasks/{taskId}:
+    parameters:
+      - { in: path, name: taskId, required: true, schema: { type: string } }
+    get:
+      summary: Read the saved task without dispatch
+      description: >-
+        A failed whole-manuscript task may include revisionEvidenceFailure only after
+        CREATION strictly replays the bound frozen request, source and saved plan-check
+        history. The field is a read-only auxiliary projection, not a completed result.
+        Missing or invalid evidence is omitted. Original task status, raw and receipts
+        are unchanged; prompts, configuration and general artifact access are not exposed.
+      responses:
+        '200':
+          description: Task with original result or failure; no new model call
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task: { $ref: '#/components/schemas/PublicTaskProjection' }
+        '404': { description: Unknown task }
+  /api/tasks/{taskId}/resume:
+    parameters:
+      - { in: path, name: taskId, required: true, schema: { type: string } }
+    post:
+      summary: Resume the same task using its saved request
+      description: >-
+        Does not accept a replacement request or upgrade historical policy. For
+        WHOLE_QUALITY_REFERENCE_UNAVAILABLE the public failure kind is reference_unavailable,
+        retryScope unfinished_step. The UI says 资料未就绪 / 重试资料. A retry rechecks only
+        missing successful retrievals, preserving saved reading/cross-check evidence and
+        failed availability attempts. Completed tasks cannot be resumed.
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, maxProperties: 0 }
+      responses:
+        '200': { description: Same task queued with unchanged saved request }
+        '409': { description: Task is not resumable or its engine is incompatible }
+        '404': { description: Unknown task }
+        '503': { description: Model configuration unavailable; no dispatch }
+components:
+  schemas:
+    PublicTaskProjection:
+      type: object
+      properties:
+        revisionEvidenceFailure: { $ref: '#/components/schemas/RevisionEvidenceFailure' }
+      description: Existing public task fields plus an optional strictly replayed failed-plan detail; never persisted into the original task record.
+    RevisionEvidenceFailure:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, sourceTaskId, requestId, requestInputFingerprint, sourceManuscriptSha256, status, revisionDispatched, automaticAdoption, planFacts, planHistory]
+      properties:
+        schemaVersion: { const: whole-quality-plan-facts-failure-1 }
+        sourceTaskId: { type: string }
+        requestId: { type: string }
+        requestInputFingerprint: { type: string, pattern: '^[a-f0-9]{64}$' }
+        sourceManuscriptSha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        status: { enum: [blocked, incomplete] }
+        revisionDispatched: { const: false }
+        automaticAdoption: { const: false }
+        planFacts: { $ref: '#/components/schemas/FailedPlanCheckProjection' }
+        planHistory:
+          type: object
+          additionalProperties: false
+          required: [initialCheck, correction]
+          properties:
+            initialCheck: { $ref: '#/components/schemas/FailedPlanCheckProjection' }
+            correction:
+              type: object
+              additionalProperties: false
+              required: [check]
+              properties:
+                check: { $ref: '#/components/schemas/FailedPlanCheckProjection' }
+    FailedPlanCheckProjection:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, status, clearForExecution, semanticAccuracyEstablished, automaticAdoption, literaryPass, assessments]
+      properties:
+        schemaVersion: { const: revision-plan-fact-result-1 }
+        status: { enum: [blocked, incomplete] }
+        clearForExecution: { const: false }
+        semanticAccuracyEstablished: { const: false }
+        automaticAdoption: { const: false }
+        literaryPass: { const: NOT_ASSESSED }
+        assessments:
+          type: array
+          minItems: 1
+          items: { type: object }
+          description: >-
+            Safe projection of canonical assertionId, JSONPointer/JSONPointers, original
+            statement, coverage, reason, five premiseChecks and facts with exact bound
+            source/reference evidence. No raw response, input, prompt or configuration.
+    AdoptedMaterialContextPolicy:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, mode]
+      properties:
+        schemaVersion: { const: whole-quality-adopted-material-context-policy-1 }
+        mode: { const: selected_complete_materials }
+      description: >-
+        Exact CREATION validateAdoptedMaterialContextPolicy opt-in. Selected, complete,
+        already supplied materials only; host checks applicability, plan ownership, SHA,
+        evidence and the existing 6-unit/12000-character budget. No browser material
+        payload, extra sources or instructions are accepted through this field. Omission
+        stays omitted on historical GET/import/resume. Inclusion does not prove actual
+        adoption, literary improvement or permission to use a candidate.
+    RevisionEvidencePolicy:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, mode]
+      properties:
+        schemaVersion: { const: whole-quality-revision-evidence-policy-1 }
+        mode: { const: required }
+      description: >-
+        Strict CREATION validateRevisionEvidencePolicy opt-in. Frozen into requestSpec and
+        checkpoint inputs, never inserted on GET, import, or resume. Plan facts and independent
+        scene dependencies are checked; incomplete checks do not authorize adoption or certify quality.
+    ComponentFallbackPolicy:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, enabled, components]
+      properties:
+        schemaVersion: { const: whole-quality-component-fallback-policy-1 }
+        enabled: { const: true }
+        components:
+          type: array
+          minItems: 1
+          maxItems: 3
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, facet, statement, searchTerms, requiredTermGroups]
+            properties:
+              id: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,63}$' }
+              facet: { enum: [target_mechanism, cost_mechanism, recognition_mechanism, action_mechanism] }
+              statement: { type: string, minLength: 1, maxLength: 1900 }
+              searchTerms: { type: array, minItems: 2, maxItems: 12, uniqueItems: true, items: { type: string, minLength: 1, maxLength: 80 } }
+              requiredTermGroups: { type: array, minItems: 1, maxItems: 4, items: { type: array, minItems: 1, maxItems: 12, uniqueItems: true, items: { type: string, minLength: 1, maxLength: 80 } } }
+      description: >-
+        Explicit caller-declared components; never inferred from prose or source names.
+        CREATION validateWritingGoals checks exact component limits, trimmed unique terms and
+        required-term membership. Partial matches do not establish whole-goal suitability.
+    DeepReferenceAvailabilityPolicy:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, mode]
+      properties:
+        schemaVersion: { const: whole-quality-deep-reference-availability-policy-1 }
+        mode: { const: require_available }
+      description: >-
+        Strictly validated by CREATION validateDeepReferenceAvailabilityPolicy. Bound into
+        saved request, requestSpec/input fingerprint, checkpoints and handoff. A failed read
+        (for example safe causeCode INPUT_DATALESS) stops before applicability and is recoverable;
+        a successful uncovered query is not a failure. No forced material use or quality claim.
+    TaskRequest:
+      type: object
+      required: [projectId, requestId, kind, idea, baseRevision]
+      properties:
+        projectId: { type: string, pattern: '^[\w-]{1,160}$' }
+        requestId: { type: string, pattern: '^[\w-]{1,160}$' }
+        projectTitle: { type: string }
+        kind: { enum: [create, revise] }
+        revisionMode: { enum: [whole-manuscript-v1, whole-manuscript-v2] }
+        idea: { type: string, minLength: 1, maxLength: 12000 }
+        baseRevision: { type: string }
+        context: { type: object }
+        materials: { type: array, items: { type: object } }
+        style: { type: [object, 'null'] }
+        chapters:
+          type: array
+          items:
+            type: object
+            required: [id, title, body]
+            properties:
+              id: { type: string }
+              title: { type: string }
+              body: { type: string }
+        instruction: { type: string, maxLength: 12000 }
+        quote: { type: string, maxLength: 100000 }
+        quoteSource: { type: object }
+        writingGoals:
+          type: object
+          description: CREATION creation-writing-goals-1, strictly validated against source chapters
+          properties:
+            schemaVersion: { const: creation-writing-goals-1 }
+            goals:
+              type: array
+              minItems: 1
+              maxItems: 3
+              items:
+                type: object
+                required: [id, dimension, problem, chapterIds, preservationBoundaries]
+                properties:
+                  componentFallback: { $ref: '#/components/schemas/ComponentFallbackPolicy' }
+        goalImprovementPolicy: { type: object, description: Existing opt-in whole-quality-goal-opportunity-policy-1 }
+        deepReferenceAvailabilityPolicy: { $ref: '#/components/schemas/DeepReferenceAvailabilityPolicy' }
+        revisionEvidencePolicy: { $ref: '#/components/schemas/RevisionEvidencePolicy' }
+        adoptedMaterialContextPolicy: { $ref: '#/components/schemas/AdoptedMaterialContextPolicy' }
+        adoptedMaterialContext: false
+      allOf:
+        - if: { required: [deepReferenceAvailabilityPolicy] }
+          then:
+            required: [revisionMode, chapters, instruction]
+            properties:
+              kind: { const: revise }
+              revisionMode: { const: whole-manuscript-v2 }
+              chapters: { minItems: 1 }
+              instruction: { minLength: 1 }
+        - if:
+            anyOf:
+              - { required: [revisionEvidencePolicy] }
+              - { required: [adoptedMaterialContextPolicy] }
+              - { required: [writingGoals] }
+          then:
+            required: [revisionMode, chapters, instruction]
+            properties:
+              kind: { const: revise }
+              revisionMode: { const: whole-manuscript-v2 }
+              chapters: { minItems: 1 }
+              instruction: { minLength: 1 }

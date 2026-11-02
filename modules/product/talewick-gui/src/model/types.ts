@@ -29,12 +29,24 @@ export interface WritingGoalProblem {
   requiredTermGroups: string[][];
   context: Record<string, unknown>;
 }
+export interface ComponentFallbackPolicy {
+  schemaVersion: 'whole-quality-component-fallback-policy-1';
+  enabled: true;
+  components: Array<{
+    id: string;
+    facet: 'target_mechanism' | 'cost_mechanism' | 'recognition_mechanism' | 'action_mechanism';
+    statement: string;
+    searchTerms: string[];
+    requiredTermGroups: string[][];
+  }>;
+}
 export interface WritingGoal {
   id: string;
   dimension: 'psychology' | 'emotion' | 'choice';
   problem: WritingGoalProblem;
   chapterIds: string[];
   preservationBoundaries: string[];
+  componentFallback?: ComponentFallbackPolicy;
 }
 export interface WritingGoals {
   schemaVersion: 'creation-writing-goals-1';
@@ -138,7 +150,7 @@ export interface RuntimeInfo {
   engineLabel: string;
 }
 export type RuntimeTaskStatus = 'queued' | 'running' | 'needs_input' | 'completed' | 'failed' | 'interrupted' | 'cancelled';
-export type RuntimeFailureKind = 'review_output' | 'delivery_check' | 'network' | 'configuration' | 'writing' | 'unknown' | 'interrupted' | 'cancelled';
+export type RuntimeFailureKind = 'review_output' | 'delivery_check' | 'network' | 'configuration' | 'reference_unavailable' | 'writing' | 'unknown' | 'interrupted' | 'cancelled';
 export type RuntimeRetryScope = 'unfinished_review' | 'unfinished_check' | 'unfinished_writing' | 'unfinished_step';
 export interface RuntimeTaskFailure {
   kind: RuntimeFailureKind;
@@ -146,6 +158,23 @@ export interface RuntimeTaskFailure {
   retryScope: RuntimeRetryScope;
   message: string;
   recoverable?: boolean;
+}
+export interface GoalImprovementPolicy {
+  schemaVersion: 'whole-quality-goal-opportunity-policy-1';
+  mode: 'assess_incremental';
+  maxOpportunitiesPerGoal: 1;
+}
+export interface DeepReferenceAvailabilityPolicy {
+  schemaVersion: 'whole-quality-deep-reference-availability-policy-1';
+  mode: 'require_available';
+}
+export interface RevisionEvidencePolicy {
+  schemaVersion: 'whole-quality-revision-evidence-policy-1';
+  mode: 'required';
+}
+export interface AdoptedMaterialContextPolicy {
+  schemaVersion: 'whole-quality-adopted-material-context-policy-1';
+  mode: 'selected_complete_materials';
 }
 export interface RuntimeRequest {
   projectTitle?: string;
@@ -162,6 +191,10 @@ export interface RuntimeRequest {
   quote: string;
   quoteSource?: QuoteSource;
   writingGoals?: WritingGoals;
+  goalImprovementPolicy?: GoalImprovementPolicy;
+  deepReferenceAvailabilityPolicy?: DeepReferenceAvailabilityPolicy;
+  revisionEvidencePolicy?: RevisionEvidencePolicy;
+  adoptedMaterialContextPolicy?: AdoptedMaterialContextPolicy;
   baseRevision: string;
 }
 /** Public action summaries supplied by the runtime, never private model reasoning. */
@@ -238,6 +271,18 @@ export interface PartialDraft {
   availableChapterCount: number;
   expectedChapterCount: number;
 }
+export interface RevisionEvidenceFailure {
+  schemaVersion: 'whole-quality-plan-facts-failure-1';
+  sourceTaskId: string;
+  requestId: string;
+  requestInputFingerprint: string;
+  sourceManuscriptSha256: string;
+  status: 'blocked' | 'incomplete';
+  revisionDispatched: false;
+  automaticAdoption: false;
+  planFacts: Record<string, unknown>;
+  planHistory: { initialCheck: Record<string, unknown>; correction: { check: Record<string, unknown> } };
+}
 export interface RuntimeTask {
   id: string;
   projectId: string;
@@ -257,6 +302,7 @@ export interface RuntimeTask {
   question?: string;
   result?: RuntimeResult;
   partialDraft?: PartialDraft;
+  revisionEvidenceFailure?: RevisionEvidenceFailure;
 }
 export interface RuntimeBinding {
   request: RuntimeRequest;

@@ -1,4 +1,4 @@
-import type { RuntimeResult } from './types';
+import type { RuntimeResult } from './types.ts';
 export const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 export const text = (v: unknown): string => typeof v === 'string' ? v : '';
 export const records = (v: unknown): Record<string, unknown>[] => Array.isArray(v) ? v.filter(record) : [];

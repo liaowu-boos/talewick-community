@@ -62,3 +62,64 @@ test('stage and attempt count alone never block historical recovery', () => {
   assert.deepEqual(task.failure, failure);
   assert.equal(isStoredWholeQualityReadingFailureCandidate({ ...task, stage: 'whole-quality:plan:repair-response' }), false);
 });
+
+const normalizedInspection = (source = 'repair') => ({
+  schemaVersion: 'whole-quality-reading-failure-inspection-1', stage: 'whole-quality:reading',
+  exhausted: false, reason: `${source}_valid`,
+  ...(source === 'repair' ? { primaryResponseSha256: 'a'.repeat(64), repairResponseSha256: 'b'.repeat(64) } : {}),
+  representationNormalization: {
+    schemaVersion: 'whole-quality-reading-limits-echo-normalization-1', stage: 'whole-quality:reading',
+    inputHash: '1'.repeat(64), sourceResponseKey: `whole-quality:reading:${source}-response`,
+    sourceResponseSha256: 'b'.repeat(64), removedFields: ['limits'], limitsSha256: '2'.repeat(64),
+    projectedResponseSha256: '3'.repeat(64), validatedResultSha256: '4'.repeat(64),
+  },
+});
+const exhaustedTask = () => ({ id: 'saved-task', status: 'failed', revisionMode: 'whole-manuscript-v2',
+  stage: 'whole-quality:reading:repair-response', updatedAt: '2026-10-26T07:27:19.812Z',
+  error: 'original saved failure', failure: classifyTaskFailure({ code: 'WHOLE_QUALITY_FORMAT_FAILED' }),
+});
+
+test('bound valid normalization permits same-task continuation and preserves original failure once', () => {
+  for (const source of ['primary', 'repair']) {
+    const task = exhaustedTask(), original = structuredClone(task), inspection = normalizedInspection(source);
+    applyStoredFailurePolicy(task, inspection);
+    assert.equal(taskFailureRecoverable(task), true);
+    assert.equal(task.status, 'failed');
+    assert.equal(task.id, original.id);
+    assert.deepEqual(task.failureHistory, [{ status: original.status, stage: original.stage,
+      updatedAt: original.updatedAt, error: original.error, failure: original.failure,
+      representationNormalization: inspection.representationNormalization }]);
+    const once = structuredClone(task);
+    applyStoredFailurePolicy(task, inspection);
+    assert.deepEqual(task, once, 'repeated inspection must not duplicate history');
+    inspection.representationNormalization.inputHash = 'changed';
+    assert.equal(task.failureHistory[0].representationNormalization.inputHash, '1'.repeat(64));
+  }
+});
+
+test('incomplete, unbound or unsupported normalization never clears a persisted exhausted gate', () => {
+  const cases = [
+    p => { p.reason = 'invalid_or_incomplete_checkpoint'; },
+    p => { p.exhausted = true; },
+    p => { delete p.representationNormalization; },
+    p => { p.representationNormalization.schemaVersion = 'unknown'; },
+    p => { p.representationNormalization.stage = 'whole-quality:plan'; },
+    p => { p.representationNormalization.sourceResponseKey = 'whole-quality:reading:primary-response'; },
+    p => { p.representationNormalization.sourceResponseSha256 = 'c'.repeat(64); },
+    p => { p.representationNormalization.removedFields.push('issues'); },
+    p => { delete p.representationNormalization.validatedResultSha256; },
+    p => { p.representationNormalization.inputHash = ''; },
+    p => { delete p.primaryResponseSha256; },
+  ];
+  for (const change of cases) {
+    const task = exhaustedTask(), inspection = normalizedInspection(); change(inspection);
+    applyStoredFailurePolicy(task, inspection);
+    assert.equal(taskFailureRecoverable(task), false);
+    assert.equal(task.failureHistory, undefined);
+  }
+  for (const change of [t => { t.stage = 'whole-quality:plan:repair-response'; },
+    t => { t.status = 'completed'; }, t => { t.failureHistory = {}; }]) {
+    const task = exhaustedTask(); change(task); const original = structuredClone(task);
+    applyStoredFailurePolicy(task, normalizedInspection()); assert.deepEqual(task, original);
+  }
+});

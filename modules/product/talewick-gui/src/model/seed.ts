@@ -1,4 +1,4 @@
-import type { AppState, Chapter, InspirationContext, LibraryItem, Mode, Project, StoryDirection } from './types';
+import type { AppState, Chapter, InspirationContext, LibraryItem, Mode, Project, StoryDirection } from './types.ts';
 
 /** All text below is the existing small frontend demo fixture, not production novel data. */
 const clone = <T>(value: T): T => structuredClone(value);

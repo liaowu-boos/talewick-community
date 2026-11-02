@@ -307,6 +307,7 @@ test('secondary-only reading is retained by a bound host plan without dispatchin
 
 test('result gate remains compatible with the immediately previous model-plan result shape',async()=>{const j=journal(),current=await runWholeManuscriptQualityRevision({request:request(),model:modelFor({preserve:true}),checkpoint:j.checkpoint}),legacy=structuredClone(current);
   const legacyPlanInput=structuredClone(j.artifacts['whole-quality:plan:host-input'].input),contract=legacyPlanInput.responseContract;
+  delete legacyPlanInput.planProtocolVersion; delete contract.planProtocolVersion; contract.globalConstraints=contract.globalConstraints.slice(0,-5);
   legacyPlanInput.schemaVersion='whole-quality-plan-input-1';delete legacyPlanInput.applicability;delete legacyPlanInput.eligibleIssueIds;contract.schemaVersion='whole-quality-plan-response-contract-2';delete contract.inputBoundary;delete contract.optional;delete contract.properties.origin;
   contract.itemSchema.properties.issueIds.items.enumFrom='input.reading.issues[].id';contract.globalConstraints=contract.globalConstraints.slice(0,-1);
   const planInputHash=stableFingerprint(legacyPlanInput);delete legacy.wholeRevision.plan.origin;legacy.wholeRevision.plan.inputHash=planInputHash;delete legacy.wholeRevision.planProvenance;

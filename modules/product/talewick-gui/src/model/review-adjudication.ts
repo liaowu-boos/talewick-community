@@ -1,4 +1,4 @@
-import type { Chapter, RuntimeResult } from './types';
+import type { Chapter, RuntimeResult } from './types.ts';
 
 export const reviewRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 export const reviewText = (value: unknown): string => typeof value === 'string' ? value : '';

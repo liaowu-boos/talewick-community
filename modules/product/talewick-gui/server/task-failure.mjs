@@ -5,7 +5,7 @@ const networkCodes = new Set(['ETIMEDOUT', 'ESOCKETTIMEDOUT', 'UND_ERR_CONNECT_T
 
 export const EXHAUSTED_WHOLE_QUALITY_MESSAGE = '整稿质量诊断的主响应和唯一格式纠正都未通过校验。原稿、诊断输入和已保存现场仍保留；这个旧任务不能继续，请从当前原稿重新发起整稿修订。';
 
-export const failureKinds = Object.freeze(['review_output', 'delivery_check', 'network', 'configuration', 'writing', 'unknown', 'interrupted', 'cancelled']);
+export const failureKinds = Object.freeze(['review_output', 'delivery_check', 'network', 'configuration', 'reference_unavailable', 'writing', 'unknown', 'interrupted', 'cancelled']);
 export const retryScopes = Object.freeze(['unfinished_review', 'unfinished_check', 'unfinished_writing', 'unfinished_step']);
 
 export function taskPhase(stage = '') {
@@ -24,6 +24,16 @@ const publicDetail = error => typeof error?.message === 'string' && error.messag
 export function classifyTaskFailure(error, stage = '') {
   const phase = taskPhase(stage);
   const retryScope = scopeFor(phase);
+  if (error?.code === 'WHOLE_QUALITY_PLAN_FACTS_UNVERIFIED') return {
+    kind: 'review_output', phase: 'review', retryScope: 'unfinished_review', recoverable: false,
+    message: '方案事实核对仍有问题或未核实项，本次修订已停止。原稿、原方案和一次修正后的核对记录均保留；不会再次抽取判断。',
+  };
+  if (error?.code === 'WHOLE_QUALITY_REFERENCE_UNAVAILABLE') return {
+    kind: 'reference_unavailable', phase: 'step', retryScope: 'unfinished_step', recoverable: error.recoverable !== false,
+    message: error.recoverable === false
+      ? '参考资料尚未就绪，后续创作已暂停。当前保存点不能直接重试；原稿和已有记录仍保留。'
+      : '参考资料尚未就绪，后续创作已暂停。资料恢复可用后，请点击“重试资料”；已完成的阅读与检查会保留。',
+  };
   if (exhaustedWholeQualityCodes.has(error?.code)) return {
     kind: 'review_output', phase: 'review', retryScope: 'unfinished_review', recoverable: false,
     message: EXHAUSTED_WHOLE_QUALITY_MESSAGE,
@@ -73,10 +83,39 @@ export function isStoredWholeQualityReadingFailureCandidate(task) {
 
 export function applyStoredFailurePolicy(task, inspection) {
   if (!isStoredWholeQualityReadingFailureCandidate(task) || inspection?.schemaVersion !== 'whole-quality-reading-failure-inspection-1'
-    || inspection.stage !== 'whole-quality:reading' || inspection.exhausted !== true) return task;
+    || inspection.stage !== 'whole-quality:reading') return task;
+  // Only the server-owned inspector performs the full bound response validation.
+  // An incomplete checkpoint also reports exhausted:false; that is not permission.
+  if (task.failure?.recoverable === false && validReadingNormalization(inspection)) {
+    if (task.failureHistory !== undefined && !Array.isArray(task.failureHistory)) return task;
+    task.failureHistory = [...(task.failureHistory ?? []), {
+      status: task.status, stage: task.stage, updatedAt: task.updatedAt,
+      error: task.error, failure: structuredClone(task.failure),
+      representationNormalization: structuredClone(inspection.representationNormalization),
+    }];
+    task.failure = { ...task.failure, recoverable: true,
+      message: '已保存的诊断响应经格式归一后通过完整校验，可以继续后续未完成步骤。原错误和原始响应仍保留。' };
+    task.error = task.failure.message;
+    return task;
+  }
+  if (inspection.exhausted !== true) return task;
   task.failure = { kind: 'review_output', phase: 'review', retryScope: 'unfinished_review', recoverable: false, message: EXHAUSTED_WHOLE_QUALITY_MESSAGE };
   task.error = EXHAUSTED_WHOLE_QUALITY_MESSAGE;
   return task;
+}
+
+function validReadingNormalization(inspection) {
+  const prefix = 'whole-quality:reading';
+  const source = { primary_valid: 'primary', repair_valid: 'repair' }[inspection.reason];
+  const proof = inspection.representationNormalization;
+  const sha = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+  return inspection.exhausted === false && source !== undefined && proof
+    && proof.schemaVersion === 'whole-quality-reading-limits-echo-normalization-1'
+    && proof.stage === prefix && proof.sourceResponseKey === `${prefix}:${source}-response`
+    && Array.isArray(proof.removedFields) && proof.removedFields.length === 1 && proof.removedFields[0] === 'limits'
+    && ['inputHash', 'sourceResponseSha256', 'limitsSha256', 'projectedResponseSha256', 'validatedResultSha256'].every(key => sha(proof[key]))
+    && (source !== 'repair' || (sha(inspection.primaryResponseSha256) && proof.sourceResponseSha256 === inspection.repairResponseSha256))
+    && (inspection.primaryResponseSha256 === undefined || source !== 'primary' || proof.sourceResponseSha256 === inspection.primaryResponseSha256);
 }
 
 export function taskFailureRecoverable(task) {

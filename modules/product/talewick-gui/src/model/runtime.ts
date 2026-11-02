@@ -1,11 +1,15 @@
-import type { AgentDecisionTrace, AppState, Chapter, Project, PartialDraft, QuoteSource, RuntimeBinding, RuntimeEngine, RuntimeInfo, RuntimeRequest, ReadingObservation, RuntimeResult, RuntimeTask, RuntimeTaskFailure, RuntimeTaskStatus, WritingGoals } from './types';
+import type { AgentDecisionTrace, AppState, Chapter, Project, PartialDraft, QuoteSource, RevisionEvidenceFailure, RuntimeBinding, RuntimeEngine, RuntimeInfo, RuntimeRequest, ReadingObservation, RuntimeResult, RuntimeTask, RuntimeTaskFailure, RuntimeTaskStatus, WritingGoals, GoalImprovementPolicy } from './types.ts';
+import { readGoalImprovementPolicy } from './goal-improvement-policy.ts';
+import { makeDeepReferenceAvailabilityPolicy, readDeepReferenceAvailabilityPolicy } from './deep-reference-availability.mjs';
+import { makeAdoptedMaterialContextPolicy, readAdoptedMaterialContextPolicy } from './adopted-material-context-policy.mjs';
+import { makeRevisionEvidencePolicy, readRevisionEvidencePolicy, readWritingGoals } from './whole-quality-request-options.mjs';
 
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const string = (value: unknown): value is string => typeof value === 'string';
 const statuses: RuntimeTaskStatus[] = ['queued', 'running', 'needs_input', 'completed', 'failed', 'interrupted', 'cancelled'];
 const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter(string) : [];
 const supportedEngine = (value: unknown): boolean => value === undefined || value === 'ai-sdk' || value === 'fixed';
-const failureKinds: RuntimeTaskFailure['kind'][] = ['review_output', 'delivery_check', 'network', 'configuration', 'writing', 'unknown', 'interrupted', 'cancelled'];
+const failureKinds: RuntimeTaskFailure['kind'][] = ['review_output', 'delivery_check', 'network', 'configuration', 'reference_unavailable', 'writing', 'unknown', 'interrupted', 'cancelled'];
 const retryScopes: RuntimeTaskFailure['retryScope'][] = ['unfinished_review', 'unfinished_check', 'unfinished_writing', 'unfinished_step'];
 
 function readTaskFailure(value: unknown): RuntimeTaskFailure | undefined {
@@ -80,12 +84,6 @@ function readQuoteSource(value: unknown): QuoteSource | undefined {
   return { chapterId: value.chapterId, start: value.start };
 }
 
-function readWritingGoals(value: unknown): WritingGoals | undefined {
-  if (!record(value) || value.schemaVersion !== 'creation-writing-goals-1' || !Array.isArray(value.goals)
-    || value.goals.length < 1 || value.goals.length > 3) return undefined;
-  return structuredClone(value) as unknown as WritingGoals;
-}
-
 function chapters(value: unknown): Chapter[] | null {
   if (!Array.isArray(value)) return null;
   const ids = new Set<string>();
@@ -153,9 +151,24 @@ function readPartialDraft(value: unknown): PartialDraft | undefined {
   return { status: 'unreviewed_partial', chapters: content, availableChapterCount: content.length, expectedChapterCount: value.expectedChapterCount };
 }
 
+function readRevisionEvidenceFailure(value: unknown, task: Record<string, unknown>): RevisionEvidenceFailure | undefined {
+  if (task.status !== 'failed' || task.result || task.kind !== 'revise' || task.revisionMode !== 'whole-manuscript-v2'
+    || !record(value) || value.schemaVersion !== 'whole-quality-plan-facts-failure-1'
+    || value.sourceTaskId !== task.id || value.requestId !== task.requestId || !['blocked','incomplete'].includes(String(value.status))
+    || value.revisionDispatched !== false || value.automaticAdoption !== false
+    || ![value.requestInputFingerprint,value.sourceManuscriptSha256].every(item => string(item) && /^[a-f0-9]{64}$/.test(item))
+    || !record(value.planFacts) || !record(value.planHistory) || !record(value.planHistory.initialCheck)
+    || !record(value.planHistory.correction) || !record(value.planHistory.correction.check)) return undefined;
+  return { schemaVersion: 'whole-quality-plan-facts-failure-1', sourceTaskId: value.sourceTaskId as string, requestId: value.requestId as string,
+    requestInputFingerprint: value.requestInputFingerprint as string, sourceManuscriptSha256: value.sourceManuscriptSha256 as string,
+    status: value.status as 'blocked' | 'incomplete', revisionDispatched: false, automaticAdoption: false,
+    planFacts: structuredClone(value.planFacts), planHistory: { initialCheck: structuredClone(value.planHistory.initialCheck), correction: { check: structuredClone(value.planHistory.correction.check) } } };
+}
+
 export function readRuntimeTask(value: unknown): RuntimeTask | undefined {
   if (!record(value) || !string(value.id) || !value.id || !string(value.projectId) || !string(value.requestId) || !string(value.baseRevision) || !['create', 'revise'].includes(String(value.kind)) || !statuses.includes(value.status as RuntimeTaskStatus)) return undefined;
   if (!supportedEngine(value.engine)) return undefined;
+  const revisionEvidenceFailure = readRevisionEvidenceFailure(value.revisionEvidenceFailure, value);
   return { id: value.id, projectId: value.projectId, requestId: value.requestId, baseRevision: value.baseRevision,
     engine: value.engine === 'ai-sdk' ? 'ai-sdk' : 'fixed', engineVersion: string(value.engineVersion) ? value.engineVersion : '',
     kind: value.kind as RuntimeTask['kind'], ...(['whole-manuscript-v1', 'whole-manuscript-v2'].includes(String(value.revisionMode)) ? { revisionMode: value.revisionMode as RuntimeTask['revisionMode'] } : {}), status: value.status as RuntimeTaskStatus, stage: string(value.stage) ? value.stage : '',
@@ -164,6 +177,7 @@ export function readRuntimeTask(value: unknown): RuntimeTask | undefined {
     failure: value.status !== 'needs_input' ? readTaskFailure(value.failure) : undefined,
     question: string(value.question) ? value.question : undefined,
     partialDraft: value.kind === 'create' && ['failed', 'interrupted', 'cancelled'].includes(String(value.status)) && !value.result ? readPartialDraft(value.partialDraft) : undefined,
+    ...(revisionEvidenceFailure ? { revisionEvidenceFailure } : {}),
     result: value.status === 'needs_input' ? undefined : readResult(value.result) };
 }
 
@@ -177,8 +191,17 @@ export function readRuntimeBinding(value: unknown, projectId: string): RuntimeBi
   const context = record(request.context) ? request.context : {};
   const quoteSource = readQuoteSource(request.quoteSource);
   if (request.quoteSource !== undefined && !quoteSource) return undefined;
-  const writingGoals = readWritingGoals(request.writingGoals);
+  const writingGoals = readWritingGoals(request.writingGoals, inputChapters);
   if (request.writingGoals !== undefined && (!writingGoals || request.kind !== 'revise' || request.revisionMode !== 'whole-manuscript-v2')) return undefined;
+  const goalImprovementPolicy = readGoalImprovementPolicy(request.goalImprovementPolicy);
+  if (request.goalImprovementPolicy !== undefined && (!goalImprovementPolicy || !writingGoals || request.kind !== 'revise' || request.revisionMode !== 'whole-manuscript-v2')) return undefined;
+  const deepReferenceAvailabilityPolicy = readDeepReferenceAvailabilityPolicy(request.deepReferenceAvailabilityPolicy);
+  if (request.deepReferenceAvailabilityPolicy !== undefined && (!deepReferenceAvailabilityPolicy || request.kind !== 'revise' || request.revisionMode !== 'whole-manuscript-v2')) return undefined;
+  const adoptedMaterialContextPolicy = readAdoptedMaterialContextPolicy(request.adoptedMaterialContextPolicy);
+  if (request.adoptedMaterialContextPolicy !== undefined && (!adoptedMaterialContextPolicy || request.kind !== 'revise' || request.revisionMode !== 'whole-manuscript-v2')) return undefined;
+  if (Object.hasOwn(request, 'adoptedMaterialContext')) return undefined;
+  const revisionEvidencePolicy = readRevisionEvidencePolicy(request.revisionEvidencePolicy);
+  if (request.revisionEvidencePolicy !== undefined && (!revisionEvidencePolicy || request.kind !== 'revise' || request.revisionMode !== 'whole-manuscript-v2')) return undefined;
   const style = record(request.style) ? request.style : null;
   const task = readRuntimeTask(value.task);
   if (task && (task.projectId !== projectId || task.requestId !== request.requestId || task.baseRevision !== request.baseRevision || task.kind !== request.kind || task.revisionMode !== request.revisionMode)) return undefined;
@@ -188,7 +211,7 @@ export function readRuntimeBinding(value: unknown, projectId: string): RuntimeBi
     context: { character: string(context.character) ? context.character : '', world: string(context.world) ? context.world : '', plot: string(context.plot) ? context.plot : '', theme: string(context.theme) ? context.theme : '' },
     materials: Array.isArray(request.materials) ? request.materials.filter(record).filter(item => string(item.id) && string(item.title) && string(item.content)).map(item => ({ id: item.id as string, title: item.title as string, content: item.content as string })) : [],
     style: style ? { name: string(style.name) ? style.name : '', description: string(style.description) ? style.description : '', rules: string(style.rules) ? style.rules : '', traits: strings(style.traits) } : null,
-    chapters: inputChapters, instruction: string(request.instruction) ? request.instruction : '', quote: string(request.quote) ? request.quote : '', ...(['whole-manuscript-v1', 'whole-manuscript-v2'].includes(String(request.revisionMode)) ? { revisionMode: request.revisionMode as RuntimeRequest['revisionMode'] } : {}), ...(quoteSource ? { quoteSource } : {}), ...(writingGoals ? { writingGoals } : {}) },
+    chapters: inputChapters, instruction: string(request.instruction) ? request.instruction : '', quote: string(request.quote) ? request.quote : '', ...(['whole-manuscript-v1', 'whole-manuscript-v2'].includes(String(request.revisionMode)) ? { revisionMode: request.revisionMode as RuntimeRequest['revisionMode'] } : {}), ...(quoteSource ? { quoteSource } : {}), ...(writingGoals ? { writingGoals } : {}), ...(goalImprovementPolicy ? { goalImprovementPolicy } : {}), ...(deepReferenceAvailabilityPolicy ? { deepReferenceAvailabilityPolicy } : {}), ...(revisionEvidencePolicy ? { revisionEvidencePolicy } : {}), ...(adoptedMaterialContextPolicy ? { adoptedMaterialContextPolicy } : {}) },
     baseManuscript: { title: value.baseManuscript.title, chapters: baseChapters }, task,
     submitting: false,
     connectionError: string(value.connectionError) ? value.connectionError : undefined,
@@ -229,12 +252,21 @@ export function makeRuntimeRequest(project: Project, state: AppState, requestId:
     chapters: structuredClone(project.chapters), instruction, quote, ...(quote && state.quoteSource ? { quoteSource: structuredClone(state.quoteSource) } : {}), baseRevision: manuscriptRevision(project) };
 }
 
-export function makeWholeRevisionRequest(project: Project, state: AppState, requestId: string, instruction: string): RuntimeRequest {
+export function makeWholeRevisionRequest(project: Project, state: AppState, requestId: string, instruction: string,
+  writingGoals?: WritingGoals, goalImprovementPolicy?: GoalImprovementPolicy): RuntimeRequest {
   const request = makeRuntimeRequest(project, state, requestId, instruction, '');
   if (request.kind !== 'revise') throw new Error('整稿修订需要已有完整稿件。');
   delete request.quoteSource;
   request.quote = '';
   request.revisionMode = 'whole-manuscript-v2';
+  request.revisionEvidencePolicy = makeRevisionEvidencePolicy();
+  request.adoptedMaterialContextPolicy = makeAdoptedMaterialContextPolicy();
+  // Only this new-request builder opts in; loading/retrying old requests never does.
+  if (writingGoals) {
+    request.writingGoals = structuredClone(writingGoals);
+    request.deepReferenceAvailabilityPolicy = makeDeepReferenceAvailabilityPolicy();
+  }
+  if (goalImprovementPolicy) request.goalImprovementPolicy = structuredClone(goalImprovementPolicy);
   return request;
 }
 
@@ -265,6 +297,7 @@ export function runtimeProgressDetail(task?: RuntimeTask): string {
 }
 
 export function runtimeResumeLabel(task?: RuntimeTask): string {
+  if (task?.failure?.kind === 'reference_unavailable') return '重试资料';
   switch (task?.failure?.retryScope) {
     case 'unfinished_review': return '继续未完成审阅';
     case 'unfinished_check': return '继续未完成检查';
@@ -289,6 +322,7 @@ stageNames['agent:review'] = 'Agent 正在判断修订方案';
 stageNames['requirements:repair'] = '正在校正创作规格';
 stageNames.needs_input = '补充创作要求';
 export function runtimeStage(task: RuntimeTask): string {
+  if (task.status === 'failed' && task.failure?.kind === 'reference_unavailable') return '资料未就绪';
   if (task.status === 'completed' && task.stage === '稿件已生成，部分检查未完成') return task.stage;
   if (!taskActive(task)) return stageNames[task.status] || '任务状态待确认';
   if (task.stage === 'review-adjudication' || task.stage.startsWith('review-adjudication:') || task.stage === 'reviewAdjudication' || task.stage.startsWith('reviewAdjudication:')) return '核对审稿证据与争议';
@@ -299,6 +333,10 @@ export function runtimeStage(task: RuntimeTask): string {
   if (task.stage === 'whole-quality:cross-chapter:adjudicate') return '正在裁定跨章冲突与待澄清项';
   if (task.stage === 'whole-quality:cross-chapter:extract:format-repair') return '正在校正跨章事实报告格式';
   if (task.stage === 'whole-quality:cross-chapter:adjudicate:format-repair') return '正在校正跨章裁定报告格式';
+  if (task.stage.startsWith('whole-quality:plan-facts:')) return '正在核对方案事实依据';
+  if (task.stage.startsWith('whole-quality:plan-correction')) return '正在按事实核对修正一次方案';
+  if (task.stage.startsWith('whole-quality:scene-check')) return '正在独立复读场景衔接';
+  if (task.stage.startsWith('whole-quality:component-applicability')) return '正在判断补充参考是否适合本稿';
   if (task.stage.startsWith('whole-quality:')) return task.stage.includes('reread') || task.stage.includes('check') ? '正在复核修改目标与风险' : task.stage.includes('reading') ? '正在独立阅读全文' : task.stage.includes('retrieval') || task.stage.includes('material') ? '正在核对问题所需材料' : task.stage.includes('plan') ? '正在形成场景联动方案' : task.stage.includes('revision') ? '正在执行有限改写' : '正在处理整稿质量步骤';
   const chapter = task.stage.match(/^(draft|revision):ch-(\d+)$/);
   if (chapter) return `${chapter[1] === 'draft' ? '正在撰写' : '正在修改'}第 ${chapter[2]} 章`;

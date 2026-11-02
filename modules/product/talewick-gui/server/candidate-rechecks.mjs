@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import path from 'node:path';
 import { manuscriptFingerprint } from '../../../validation/runtime/checks.mjs';
 import { CANDIDATE_RECHECK_VERSION, prepareCandidateRecheck, runCandidateRecheck, checkCandidateRecheckAdoption } from '../../../validation/runtime/candidate-recheck.mjs';
+import { revisionEvidenceAllowsAdoption } from '../src/model/revision-evidence-gate.mjs';
 
 export const PRODUCT_RECHECK_VERSION = CANDIDATE_RECHECK_VERSION;
 const idPattern = /^[\w-]{1,160}$/;
@@ -68,10 +69,13 @@ export class CandidateRecheckService {
     const bindingValid = source && record.candidateSha256 === manuscriptFingerprint(source.result.chapters)
       && record.checkerVersion === PRODUCT_RECHECK_VERSION && record.result?.binding?.sourceTaskId === record.sourceTaskId
       && record.result?.binding?.candidateSHA === record.candidateSha256;
+    const evidenceEligible = source && revisionEvidenceAllowsAdoption({ whole: source.result.wholeRevision,
+      policy: this.tasks.requests.get(record.sourceTaskId)?.revisionEvidencePolicy });
     return { id: record.id, projectId: record.projectId, sourceTaskId: record.sourceTaskId,
       candidateSha256: record.candidateSha256, checkerVersion: record.checkerVersion,
       createdAt: record.createdAt, updatedAt: record.updatedAt, status: record.status,
-      stage: record.stage, gate: { eligible: Boolean(bindingValid && record.status === 'reviewed_no_reported_conflict'), reason: bindingValid ? 'replay_required_on_selection' : 'stale_or_invalid_binding' },
+      stage: record.stage, gate: { eligible: Boolean(bindingValid && evidenceEligible && record.status === 'reviewed_no_reported_conflict'),
+        reason: !bindingValid ? 'stale_or_invalid_binding' : !evidenceEligible ? 'revision_evidence_blocked' : 'replay_required_on_selection' },
       report: record.result?.crossChapterResult ?? null, error: record.error ?? null };
   }
   list(projectId) {
@@ -129,7 +133,14 @@ export class CandidateRecheckService {
     const record = this.records.get(id);
     if (!record || record.projectId !== projectId || record.sourceTaskId !== sourceTaskId)
       throw fail('RECHECK_NOT_FOUND', '找不到与本项目和来源任务绑定的复查。', 404);
-    const { task } = this.source(projectId, sourceTaskId);
+    const { task, request } = this.source(projectId, sourceTaskId);
+    if (!revisionEvidenceAllowsAdoption({ whole: task.result.wholeRevision, policy: request.revisionEvidencePolicy }))
+      throw fail('REVISION_EVIDENCE_BLOCKED', '方案事实或场景核对仍有问题、缺失或未核实项；跨章复查不能覆盖这些限制。');
+    if (request.revisionEvidencePolicy !== undefined) {
+      const { assertWholeQualityResult } = await import('../../../creation/runtime/whole-manuscript-quality.mjs');
+      try { assertWholeQualityResult(task.result, task.result.wholeRevision.requestSpec); }
+      catch { throw fail('REVISION_EVIDENCE_REPLAY_FAILED', '修订依据与原稿、方案或完整候选的绑定未通过重放，不能采纳。'); }
+    }
     if (record.checkerVersion !== PRODUCT_RECHECK_VERSION || record.candidateSha256 !== manuscriptFingerprint(task.result.chapters)
       || record.status !== 'reviewed_no_reported_conflict' || !record.result)
       throw fail('RECHECK_NOT_ELIGIBLE', '复查版本、候选哈希或事实状态不满足采纳条件。');

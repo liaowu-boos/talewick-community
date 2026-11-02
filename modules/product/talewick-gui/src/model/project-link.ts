@@ -1,8 +1,8 @@
-import { getConversation } from './conversation';
-import { createId, createProject } from './seed';
-import { manuscriptRevision } from './runtime';
-import { applyConversationTurn } from './store';
-import type { AppState, ConversationTurn, Project, StyleProfile } from './types';
+import { getConversation } from './conversation.ts';
+import { createId, createProject } from './seed.ts';
+import { manuscriptRevision } from './runtime.ts';
+import { applyConversationTurn } from './store.ts';
+import type { AppState, ConversationTurn, Project, StyleProfile } from './types.ts';
 
 export interface ProjectLink { projectId?: string; error?: string }
 export interface RecoveredProject { project: Project; style?: StyleProfile }

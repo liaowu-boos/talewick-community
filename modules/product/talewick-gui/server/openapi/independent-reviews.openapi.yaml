@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Talewick Independent Reviews API
-  version: 1.2.0
+  version: 1.4.0
   description: >-
     Local-only durable tasks for isolated whole-manuscript reading and trusted
     baseline/candidate comparison. Completion means records were saved; it is
@@ -133,6 +133,67 @@ paths:
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/Error' }
+  /api/independent-reviews/{id}/evidence-audits:
+    get:
+      summary: Read separate evidence audits and server-verified source eligibility
+      description: >-
+        Read-only strict replay of each saved input and normalization proof, bound
+        to the current frozen source snapshot. Legacy inputs retain their original
+        version and omission. Original seven-stage opinions and statuses are unchanged. The endpoint merges the legacy store with the separate bound-review-evidence-audit-product-1 store. Server-only proof, full transport packets and raw responses are never returned.
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      responses:
+        '200':
+          description: Capability, eligibility and independently replayed audit history
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [available, eligible, tasks]
+                properties:
+                  available: { type: boolean }
+                  eligible: { type: boolean }
+                  reason: { type: [string, 'null'] }
+                  versions: { type: [object, 'null'], description: Server-selected canonical policy plus execution service/bound protocol. New execution uses bound-review-evidence-audit-product-1 and review-evidence-audit-claim-bound-3. Historical task policies remain in their saved records. }
+                  tasks: { type: array, items: { $ref: '#/components/schemas/EvidenceAuditTask' } }
+        '404': { $ref: '#/components/responses/Error' }
+    post:
+      summary: Explicitly submit one isolated evidence audit of a saved complete review
+      description: >-
+        Only complete seven-stage six-focus paragraph-reference comparisons qualify.
+        Server derives all text, hashes, paths and targets. New sources use the fixed
+        bound3 complete-audit registration with event2 and complete-premise-coverage
+        guards. Every registered batch has at most two targets, a fresh context,
+        allowRecovery:false, separately retained raw/receipt/seal and no retry.
+        Complete evidence review requires canonical, event and coverage gates.
+        Existing records in either namespace are returned even with a new requestId;
+        legacy successes, failures and unknown outcomes are never upgraded by a click.
+        Unavailable legacy files block new dispatch. No fallback to single-dispatch.
+        The browser cannot select policy, batches, sources or submit proof/results.
+        No model format repair, blind vote, automatic adoption or source-task mutation.
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [requestId]
+              properties:
+                requestId: { type: string, pattern: '^[\w-]{1,160}$' }
+      responses:
+        '202':
+          description: Separate queued audit or existing identical frozen-input audit
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [task]
+                properties: { task: { $ref: '#/components/schemas/EvidenceAuditTask' } }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
 components:
   parameters:
     TaskId:
@@ -150,6 +211,58 @@ components:
             required: [error]
             properties: { error: { type: string } }
   schemas:
+    ReviewSourceBinding:
+      type: object
+      readOnly: true
+      additionalProperties: false
+      required: [schemaVersion, reviewTaskId, requestHash, sourceReportSha256]
+      properties:
+        schemaVersion: { const: product-review-source-binding-1 }
+        reviewTaskId: { type: string }
+        requestHash: { type: string, pattern: '^[a-f0-9]{64}$' }
+        sourceReportSha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+      description: Read-only identity derived from the saved source report before public redaction. It is not a check result or a writable request option.
+    EvidenceAuditTask:
+      type: object
+      required: [id, projectId, sourceReviewTaskId, status, automaticAdoption, literaryPass, originalReviewUnchanged]
+      properties:
+        id: { type: string, pattern: '^[a-f0-9]{64}$' }
+        projectId: { type: string }
+        sourceReviewTaskId: { type: string }
+        status: { type: string, enum: [queued, running, complete, needs_attention, interrupted, cancelled] }
+        executionVersion: { type: string, readOnly: true, description: Native bound transport used for this record; omitted in historical single-dispatch records. }
+        progress: { type: object, readOnly: true, description: "Total registered batches, settled batches and batches needing review; settlement is not semantic accuracy." }
+        batches: { type: array, readOnly: true, items: { type: object }, description: "Public batch status/error only; no decoded packets, raw responses or proof." }
+        createdAt: { type: string }
+        updatedAt: { type: string }
+        formatNormalizationVersion: { const: citation-check-reason-alias-1, description: Server-frozen option; omitted in legacy records. }
+        auditPolicyVersion: { type: string, enum: [original-citation-and-whole-text-1, fact-subclaims-and-two-axes-2, fact-premise-decomposition-and-two-axes-3], description: Server-frozen audit method; omission in legacy records means v1. Never a browser request selector. }
+        report: { type: [object, 'null'], description: Strict runner replay; v3 includes premiseChecks for five fact-premise dimensions. not_applicable is not factual verification. Evidence classification is not literary approval. }
+        canonicalAuditComplete: { type: boolean, readOnly: true, description: All registered batches passed canonical replay; does not mean the event gate passed. }
+        completeEvidenceReview: { type: boolean, readOnly: true, description: "Exact assembled flag; false when any canonical, event or premise-coverage gate is incomplete or needs review. Never literary approval." }
+        semanticAccuracyProven: { const: false, readOnly: true }
+        eventGroundingPolicyVersion: { type: string, enum: [event-state-and-time-grounding-1, event-state-and-time-grounding-2], readOnly: true }
+        eventGrounding:
+          type: object
+          readOnly: true
+          description: >-
+            Optional product-event-grounding-projection-1 (legacy) or -2 from the explicitly opted-in
+            host integration helper, replaying every original batch through
+            assembleBoundReviewEvidenceAudit. Includes registrationHash, complete coverage,
+            canonicalAuditComplete, eventGroundingPassed, completeEvidenceReview, unchanged
+            target and assessment proof hashes from event-state-and-time-grounding-1. Bound to ReviewSourceBinding.
+            needs_review is not completed evidence verification. structurally_consistent
+            is not semantic truth or literary approval. Projection -2 declares premiseCoverageRequired,
+            premiseCoverageGates, premiseCoveragePassed and premiseCoverageBinding (policy/tool,
+            audit request and whole coverage input hashes); required missing coverage remains
+            needs_attention. Full completion requires canonical, event and coverage gates.
+            Legacy bound2 does not require coverage. Legacy event absence means not checked.
+            This field is derived only from server-verified proof and cannot be supplied
+            by a browser. Original review and audit records remain unchanged.
+        error: { type: [object, 'null'] }
+        automaticAdoption: { const: false }
+        literaryPass: { const: NOT_COMPUTED }
+        originalReviewUnchanged: { const: true }
     Chapter:
       type: object
       additionalProperties: false
@@ -214,6 +327,11 @@ components:
         sourceTaskId: { type: string }
         readingFocusVersion: { type: string }
         modelCitationMode: { type: string, enum: [paragraph_refs_v1] }
+        reviewSourceBinding: { $ref: '#/components/schemas/ReviewSourceBinding' }
+        anonymousComparison:
+          type: object
+          readOnly: true
+          description: Optional product-anonymous-comparison-1 display binding from trusted import/preview assembly. Contains only source identity, registration/shared-input SHA and A/B manuscript SHA; never model names or a writer map. Not accepted by CreateReview.
         linkedAttemptId: { type: string, format: uuid }
         status: { type: string, enum: [queued, running, complete, interrupted, cancelled, needs_attention, stale] }
         manuscriptRevision: { type: string }

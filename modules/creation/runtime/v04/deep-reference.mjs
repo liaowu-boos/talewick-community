@@ -1,8 +1,15 @@
 import { createHash } from 'node:crypto';
 import { buildFinalTextMaterialEvidence } from './final-text-material-evidence.mjs';
 import { DEEP_REFERENCE_QUERY_VERSION, DEEP_REFERENCE_LIMITS } from '../../../data/runtime/deep-reference-layer.mjs';
+import { buildDeepReferenceComparison, selectComparableDeepReferenceFunctions,
+  DEEP_REFERENCE_COMPARABLE_SUPPLY_VERSION } from '../../../data/runtime/deep-reference-comparison.mjs';
+import { DEEP_REFERENCE_FAILURE_DIAGNOSTIC_VERSION, safeDeepReferenceFailure,
+  validateDeepReferenceFailure } from '../deep-reference-availability.mjs';
+import { validateComponentFallbackCheckpoint } from '../../../data/runtime/component-query-fallback.mjs';
 
 export const DEEP_REFERENCE_INTEGRATION_VERSION = 'creation-deep-reference-integration-1';
+export const COMPARABLE_DEEP_FIRST_COMPOSITION_VERSION = 'creation-comparable-deep-first-composition-1';
+export const COMPONENT_SUPPLY_VERSION = 'creation-component-complete-supply-1';
 export const CREATE_FINAL_TEXT_EVIDENCE_STAGE_VERSION = 'creation-final-text-material-evidence-stage-1';
 
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -15,27 +22,63 @@ const text = (value, max = 2000) => typeof value === 'string' && value === value
 const exactText = (value, max = 2000) => typeof value === 'string' && value.trim().length > 0 && value.length <= max && !value.includes('\0');
 const clone = value => structuredClone(value);
 
-export function resolveDeepReferenceCallback(queryDeepReferences, retrieveKnowledge) {
+function validateCompositionOptions(options) {
+  ensure(object(options) && Object.keys(options).every(key => ['compositionPolicyVersion','failureDiagnosticVersion','requireDeepAvailable'].includes(key))
+    && (options.requireDeepAvailable === undefined || options.requireDeepAvailable === true
+      && options.failureDiagnosticVersion === DEEP_REFERENCE_FAILURE_DIAGNOSTIC_VERSION)
+    && (options.failureDiagnosticVersion === undefined || options.failureDiagnosticVersion === DEEP_REFERENCE_FAILURE_DIAGNOSTIC_VERSION)
+    && (options.compositionPolicyVersion === undefined || options.compositionPolicyVersion === COMPARABLE_DEEP_FIRST_COMPOSITION_VERSION),
+  '未知完整比较包组合策略');
+  return options.compositionPolicyVersion;
+}
+
+export function resolveDeepReferenceCallback(queryDeepReferences, retrieveKnowledge, compositionOptions = {}) {
+  validateCompositionOptions(compositionOptions);
   ensure(queryDeepReferences === undefined || typeof queryDeepReferences === 'function', 'queryDeepReferences 必须是函数');
   ensure(retrieveKnowledge === undefined || typeof retrieveKnowledge === 'function', 'retrieveKnowledge 必须是函数');
   if (!queryDeepReferences || !retrieveKnowledge) return queryDeepReferences ?? retrieveKnowledge;
   return async (query, options = {}) => {
-    const settled = await Promise.allSettled([
-      Promise.resolve().then(() => queryDeepReferences(clone(query), options)),
-      Promise.resolve().then(() => retrieveKnowledge(clone(query), options)),
-    ]);
-    if (options.signal?.aborted) throw options.signal.reason instanceof Error ? options.signal.reason : new DOMException('Task cancelled', 'AbortError');
-    for (const item of settled) if (item.status === 'rejected'
-      && (item.reason?.name === 'AbortError' || ['ABORT_ERR','CANCELLED','cancelled'].includes(item.reason?.code))) throw item.reason;
+    const checkCancellation = items => {
+      if (options.signal?.aborted) throw options.signal.reason instanceof Error ? options.signal.reason : new DOMException('Task cancelled', 'AbortError');
+      for (const item of items) if (item.status === 'rejected'
+        && (item.reason?.name === 'AbortError' || ['ABORT_ERR','CANCELLED','cancelled'].includes(item.reason?.code))) throw item.reason;
+    };
     const packet = (item, source) => item.status === 'fulfilled' ? item.value : {
       contractVersion: 'v04-contract-1', packetId: `${source}-unavailable-${fingerprint(query).slice(0,24)}`, query: clone(query),
       status: 'unavailable', materials: [], candidates: [], usedChars: 0,
       limits: [`${source === 'deep' ? '深层参考' : '既有资料库'}查询不可用；失败不表示没有相关材料。`],
       ...(source === 'deep' ? { deepReference: { contractVersion: DEEP_REFERENCE_INTEGRATION_VERSION,
         path: 'composed', problem: null, dataRequest: null, response: null,
-        error: { code: 'DEEP_REFERENCE_UNAVAILABLE', message: '查询失败或合同不兼容。' } } } : {}),
+        error: { code: 'DEEP_REFERENCE_UNAVAILABLE', message: '查询失败或合同不兼容。',
+          ...(compositionOptions.failureDiagnosticVersion ? { diagnostic: safeDeepReferenceFailure(item.reason, 'callback') } : {}) } } } : {}),
     };
-    return composeRetrievalPackets(query, packet(settled[0], 'deep'), packet(settled[1], 'legacy'));
+    let settled;
+    if (compositionOptions.requireDeepAvailable) {
+      const [deep] = await Promise.allSettled([Promise.resolve().then(() => queryDeepReferences(clone(query), options))]);
+      checkCancellation([deep]);
+      let deepPacket = packet(deep, 'deep');
+      if (deepPacket.deepReference?.response != null) {
+        try {
+          ensure(usablePacket(deepPacket, query), '必需深层参考包与查询不一致');
+          validateDataResponse(deepPacket.deepReference.response, deepPacket.deepReference.dataRequest);
+        } catch (error) {
+          deepPacket = { ...clone(deepPacket), status: 'unavailable', materials: [], candidates: [], usedChars: 0,
+            deepReference: { ...clone(deepPacket.deepReference), response: null,
+              error: { code: 'DEEP_REFERENCE_UNAVAILABLE', message: '查询失败或合同不兼容。', diagnostic: safeDeepReferenceFailure(error, 'response_validation') } } };
+        }
+      }
+      if (deepPacket.deepReference?.response == null) return { ...deepPacket,
+        limits: [...deepPacket.limits, '必需深层参考不可用，未调用既有136资料库；未进入适用性判断。'] };
+      const [legacy] = await Promise.allSettled([Promise.resolve().then(() => retrieveKnowledge(clone(query), options))]);
+      checkCancellation([legacy]);
+      return composeRetrievalPackets(query, deepPacket, packet(legacy, 'legacy'), compositionOptions);
+    }
+    settled = await Promise.allSettled([
+      Promise.resolve().then(() => queryDeepReferences(clone(query), options)),
+      Promise.resolve().then(() => retrieveKnowledge(clone(query), options)),
+    ]);
+    checkCancellation(settled);
+    return composeRetrievalPackets(query, packet(settled[0], 'deep'), packet(settled[1], 'legacy'), compositionOptions);
   };
 }
 
@@ -46,6 +89,38 @@ function unitKeys(material) {
     else for (const unitId of reference.unitIds ?? []) keys.push(JSON.stringify([reference.sourceId, reference.textVersion, reference.analysisVersion, unitId]));
   }
   return [...new Set(keys)];
+}
+
+function composedSupplyRow(material, side, functionSelection) {
+  return { side, materialId: material.id, sourceIds: [...new Set(material.references.map(reference => reference.sourceId))],
+    functionIds: side === 'deep' ? clone(functionSelection.selections.find(row => row.materialId === material.id).selectedFunctionIds) : [],
+    contentSha256: material.sha256 };
+}
+
+function assertFinalSupplySelection(packet, projected) {
+  const composition = packet.deepReference.composition, ledger = composition.finalSupplySelection;
+  ensure(object(ledger) && Object.keys(ledger).length === 7 && ledger.schemaVersion === 'creation-composed-supply-selection-1'
+    && ledger.stage === 'after_deep_legacy_composition' && fingerprint(ledger.budget) === fingerprint(packet.query.budget), '组合后供应台账版本或预算不一致');
+  const deepIds = new Set(projected.materials.map(material => material.id));
+  const supplied = packet.materials.map(material => composedSupplyRow(material, deepIds.has(material.id) ? 'deep' : 'legacy', projected.functionSelection));
+  ensure(fingerprint(ledger.supplied) === fingerprint(supplied)
+    && ledger.usedChars === packet.materials.reduce((sum, material) => sum + material.content.length, 0)
+    && ledger.usedUnits === new Set(packet.materials.flatMap(unitKeys)).size
+    && ledger.usedChars <= packet.query.budget.maxChars && ledger.usedUnits <= packet.query.budget.maxUnits
+    && fingerprint(composition.selectedDeepMaterialIds) === fingerprint(supplied.filter(row => row.side === 'deep').map(row => row.materialId))
+    && fingerprint(composition.selectedLegacyMaterialIds) === fingerprint(supplied.filter(row => row.side === 'legacy').map(row => row.materialId)),
+  '组合后实际供应、完整功能或预算账本不一致');
+  ensure(Array.isArray(ledger.excluded) && new Set(ledger.excluded.map(row => row.materialId)).size === ledger.excluded.length, '组合排除台账身份无效');
+  for (const row of ledger.excluded) {
+    ensure(object(row) && Object.keys(row).length === 7 && row.side === 'legacy' && text(row.materialId, 1000)
+      && Array.isArray(row.sourceIds) && row.sourceIds.length > 0 && row.sourceIds.every(id => text(id, 1000))
+      && Array.isArray(row.functionIds) && row.functionIds.length === 0 && /^[a-f0-9]{64}$/.test(row.contentSha256)
+      && ['shared_composition_budget','duplicate_material','identity_hash_conflict'].includes(row.reason)
+      && row.applicability === 'not_assessed', '组合预算排除不能变成不适用或伪造deep排除');
+    const actual = packet.materials.find(material => material.id === row.materialId);
+    ensure(row.reason === 'shared_composition_budget' ? !actual : actual && (row.reason === 'duplicate_material'
+      ? actual.sha256 === row.contentSha256 : actual.sha256 !== row.contentSha256), '组合排除原因与最终集合不符');
+  }
 }
 
 function usablePacket(packet, query) {
@@ -64,7 +139,8 @@ function invalidPacket(source, query, deepReference) {
       error: { code: 'DEEP_REFERENCE_UNAVAILABLE', message: '查询失败或合同不兼容。' } } } : {}) };
 }
 
-export function composeRetrievalPackets(query, deepPacket, legacyPacket) {
+export function composeRetrievalPackets(query, deepPacket, legacyPacket, options = {}) {
+  const compositionPolicyVersion = validateCompositionOptions(options);
   const deep = usablePacket(deepPacket, query) ? clone(deepPacket) : invalidPacket('deep', query, deepPacket?.deepReference);
   const legacy = usablePacket(legacyPacket, query) ? clone(legacyPacket) : invalidPacket('legacy', query);
   const budget = query.budget, selected = [], selectedIds = new Map(), selectedUnits = new Set(), limits = [];
@@ -85,6 +161,16 @@ export function composeRetrievalPackets(query, deepPacket, legacyPacket) {
     unitKeys(material).forEach(key => selectedUnits.add(key)); usedChars += material.content.length; return true;
   };
   const deepMaterials = deep.status === 'matched' ? deep.materials : [], legacyMaterials = legacy.status === 'matched' ? legacy.materials : [];
+  if (compositionPolicyVersion === COMPARABLE_DEEP_FIRST_COMPOSITION_VERSION) {
+    ensure(Number.isSafeInteger(budget.maxUnits) && budget.maxUnits >= 0 && budget.maxUnits <= 6
+      && Number.isSafeInteger(budget.maxChars) && budget.maxChars >= 0 && budget.maxChars <= 12000, '完整比较组合不得扩大共同预算');
+    if (deepMaterials.length) {
+      ensure(deep.deepReference?.functionPackingPolicy === DEEP_REFERENCE_COMPARABLE_SUPPLY_VERSION,
+        '完整比较包优先组合必须来自已绑定的完整功能供应');
+      for (const material of deepMaterials) ensure(add(material, 'deep'), '已选完整deep包超出共同预算或材料身份重复；不得静默丢弃比较来源');
+    }
+    for (const material of legacyMaterials) add(material, 'legacy');
+  } else {
   const paired = { deep: new Set(), legacy: new Set() };
   if (deepMaterials.length && legacyMaterials.length) {
     outer: for (let legacyIndex = 0; legacyIndex < legacyMaterials.length; legacyIndex += 1) {
@@ -105,6 +191,7 @@ export function composeRetrievalPackets(query, deepPacket, legacyPacket) {
     if (index < legacyMaterials.length && !paired.legacy.has(index)) add(legacyMaterials[index], 'legacy');
     if (index < deepMaterials.length && !paired.deep.has(index)) add(deepMaterials[index], 'deep');
   }
+  }
   if (deepMaterials.length && !selected.some(material => deepMaterials.some(item => item.id === material.id && item.sha256 === material.sha256)))
     limits.push('深层参考虽命中，但完整材料无法与既有资料供应同时装入六单元/12000字符预算；本轮未截断其跨场证据。');
   if (legacyMaterials.length && !selected.some(material => legacyMaterials.some(item => item.id === material.id && item.sha256 === material.sha256)))
@@ -114,11 +201,24 @@ export function composeRetrievalPackets(query, deepPacket, legacyPacket) {
     candidates.push(clone(candidate)); candidateIds.add(candidate.id);
   }
   const status = selected.length ? 'matched' : deep.status === 'unavailable' || legacy.status === 'unavailable' ? 'unavailable' : 'uncovered';
-  const composition = { policyVersion: 'creation-deep-plus-legacy-composition-1', deepStatus: deep.status, legacyStatus: legacy.status,
+  const composition = { policyVersion: compositionPolicyVersion ?? 'creation-deep-plus-legacy-composition-1', deepStatus: deep.status, legacyStatus: legacy.status,
     deepPacketId: deep.packetId, legacyPacketId: legacy.packetId,
     selectedDeepMaterialIds: selected.filter(material => deepMaterials.some(item => item.id === material.id && item.sha256 === material.sha256)).map(item => item.id),
     selectedLegacyMaterialIds: selected.filter(material => legacyMaterials.some(item => item.id === material.id && item.sha256 === material.sha256)).map(item => item.id),
-    boundary: '两侧完整材料按共同六单元/12000字符预算组合；不截断单份证据，不把任一侧失败改写为未命中。' };
+    boundary: compositionPolicyVersion
+      ? '共同六单元/12000字符预算内先保留全部已选完整deep比较包，再以余量补完整legacy材料；预算排除不表示不适用，失败不表示未命中。'
+      : '两侧完整材料按共同六单元/12000字符预算组合；不截断单份证据，不把任一侧失败改写为未命中。' };
+  if (compositionPolicyVersion) {
+    const supplied = selected.map(material => composedSupplyRow(material, selectedIds.get(material.id).source, deep.deepReference?.functionSelection));
+    composition.selectedDeepMaterialIds = supplied.filter(row => row.side === 'deep').map(row => row.materialId);
+    composition.selectedLegacyMaterialIds = supplied.filter(row => row.side === 'legacy').map(row => row.materialId);
+    composition.finalSupplySelection = { schemaVersion: 'creation-composed-supply-selection-1', stage: 'after_deep_legacy_composition',
+      budget: clone(budget), usedUnits: selectedUnits.size, usedChars, supplied,
+      excluded: legacyMaterials.filter(material => selectedIds.get(material.id)?.source !== 'legacy').map(material => ({
+        ...composedSupplyRow(material, 'legacy'), reason: selectedIds.has(material.id)
+          ? selectedIds.get(material.id).sha256 === material.sha256 ? 'duplicate_material' : 'identity_hash_conflict'
+          : 'shared_composition_budget', applicability: 'not_assessed' })) };
+  }
   const deepReference = deep.deepReference ? { ...clone(deep.deepReference), composition } : { contractVersion: DEEP_REFERENCE_INTEGRATION_VERSION,
     path: 'composed', problem: null, dataRequest: null, response: null,
     error: { code: 'DEEP_REFERENCE_UNAVAILABLE', message: '深层参考没有可保留的查询元数据。' }, composition };
@@ -305,9 +405,24 @@ function goalFunctionSupply(response, query) {
     budget: clone(query.budget), selections, boundary: 'DATA order, complete functions and all their exact references only; budget selection does not establish applicability or use.' } };
 }
 
+function completeFunctionProjection(response, query, functionPackingPolicy) {
+  if (functionPackingPolicy === undefined) return goalFunctionSupply(response, query);
+  ensure(functionPackingPolicy === DEEP_REFERENCE_COMPARABLE_SUPPLY_VERSION, '未知完整功能供应策略');
+  const comparison = buildDeepReferenceComparison({ response });
+  const selected = selectComparableDeepReferenceFunctions({ response, comparison, budget: query.budget });
+  ensure(selected.schemaVersion === DEEP_REFERENCE_COMPARABLE_SUPPLY_VERSION && selected.queryId === response.queryId,
+    'DATA完整功能供应版本或查询绑定错误');
+  return { ...selected, comparison };
+}
+
 export function createDeepReferenceRetrievalAdapter(queryDeepReferences, { path = 'create', problem: explicitProblem,
-  dimensions = ['emotionalProgression','psychologicalChangeDrivers'], maxFunctionsPerResult = 2, maxEvidenceRefsPerResult = 6 } = {}) {
+  dimensions = ['emotionalProgression','psychologicalChangeDrivers'], maxFunctionsPerResult = 2, maxEvidenceRefsPerResult = 6,
+  functionPackingPolicy, failureDiagnosticVersion } = {}) {
   ensure(typeof queryDeepReferences === 'function', '缺少 DATA queryDeepReferences 回调');
+  ensure(failureDiagnosticVersion === undefined || failureDiagnosticVersion === DEEP_REFERENCE_FAILURE_DIAGNOSTIC_VERSION,
+    '未知深层参考错误诊断版本');
+  ensure(functionPackingPolicy === undefined || functionPackingPolicy === DEEP_REFERENCE_COMPARABLE_SUPPLY_VERSION
+    && path === 'whole_manuscript_writing_goal', '完整比较供应只允许在显式写作目标新策略中启用');
   return async (query, { signal } = {}) => {
     signal?.throwIfAborted?.();
     const problem = explicitProblem === undefined ? buildDeepReferenceProblem(query, { path }) : clone(explicitProblem);
@@ -315,18 +430,23 @@ export function createDeepReferenceRetrievalAdapter(queryDeepReferences, { path 
       ...(query.sourceIds === undefined ? {} : { sourceIds: clone(query.sourceIds) }),
       limit: Math.min(query.budget.maxUnits, DEEP_REFERENCE_LIMITS.maxResults), maxFunctionsPerResult,
       maxEvidenceRefsPerResult: Math.min(maxEvidenceRefsPerResult, DEEP_REFERENCE_LIMITS.maxEvidenceRefsPerResult) };
-    let response;
-    try { response = validateDataResponse(await queryDeepReferences(clone(dataRequest), { signal }), dataRequest); }
+    let response, failurePhase = 'callback';
+    try {
+      const raw = await queryDeepReferences(clone(dataRequest), { signal });
+      failurePhase = 'response_validation'; response = validateDataResponse(raw, dataRequest);
+    }
     catch (error) {
       if (signal?.aborted || error?.name === 'AbortError' || ['ABORT_ERR','CANCELLED','cancelled'].includes(error?.code)) throw error;
       return { contractVersion: 'v04-contract-1', packetId: `deepref-unavailable-${fingerprint({ path, problem }).slice(0,24)}`,
         query: clone(query), status: 'unavailable', materials: [], candidates: [], usedChars: 0,
         limits: ['深层参考查询失败或返回合同不兼容；失败不表示资料库没有相关材料。'],
         deepReference: { contractVersion: DEEP_REFERENCE_INTEGRATION_VERSION, path, problem, dataRequest: clone(dataRequest),
-          response: null, error: { code: 'DEEP_REFERENCE_UNAVAILABLE', message: '查询失败或合同不兼容。' } } };
+          ...(functionPackingPolicy ? { functionPackingPolicy } : {}),
+          response: null, error: { code: 'DEEP_REFERENCE_UNAVAILABLE', message: '查询失败或合同不兼容。',
+            ...(failureDiagnosticVersion ? { diagnostic: safeDeepReferenceFailure(error, failurePhase) } : {}) } } };
     }
     signal?.throwIfAborted?.();
-    const allMaterials = response.results.map(materialFromDataResult), projected = path === 'whole_manuscript_writing_goal' ? goalFunctionSupply(response, query) : null;
+    const allMaterials = response.results.map(materialFromDataResult), projected = path === 'whole_manuscript_writing_goal' ? completeFunctionProjection(response, query, functionPackingPolicy) : null;
     const materials = projected?.materials ?? [];
     let usedChars = 0, usedUnits = 0;
     for (const material of projected ? [] : allMaterials) {
@@ -343,13 +463,25 @@ export function createDeepReferenceRetrievalAdapter(queryDeepReferences, { path 
       limits: [response.boundary, ...(materials.length < allMaterials.length ? ['部分命中因创作查询的材料单元或字符预算未进入供应；完整 DATA 响应仍保留。'] : []),
         ...(projected ? ['目标查询按完整功能及其全部精确证据装入预算；预算排除不表示不适用，所有原始命中仍在DATA响应中。'] : [])],
       deepReference: { contractVersion: DEEP_REFERENCE_INTEGRATION_VERSION, path, problem, dataRequest: clone(dataRequest), response,
-        ...(projected ? { functionSelection: projected.functionSelection } : {}) } };
+        ...(projected ? { functionSelection: projected.functionSelection } : {}),
+        ...(functionPackingPolicy ? { functionPackingPolicy, comparison: projected.comparison } : {}) } };
   };
 }
 
 /** Recheck saved goal receipts without querying DATA or trusting a detached problem attachment. */
 export function assertGoalDeepReferencePacket(packet, problem, options) {
   const metadata = packet.deepReference;
+  if (metadata?.componentFallback !== undefined) {
+    const sidecar = metadata.componentFallback;
+    ensure(options.componentFallbackPolicy && sidecar.schemaVersion === COMPONENT_SUPPLY_VERSION
+      && sidecar.originalPacket?.deepReference?.componentFallback === undefined,
+    '子机制供应缺少显式策略或嵌套替换了原查询');
+    assertGoalDeepReferencePacket(sidecar.originalPacket, problem, options);
+    const rebuilt = buildComponentFallbackSupply({ originalPacket: sidecar.originalPacket,
+      fallback: sidecar.checkpoint, policy: options.componentFallbackPolicy });
+    ensure(fingerprint(rebuilt.packet) === fingerprint(packet), '子机制完整功能供应不能从原查询、后备响应和共同预算重建');
+    return packet;
+  }
   const expected = { problem: clone(problem), dimensions: clone(options.dimensions),
     ...(packet.query.sourceIds === undefined ? {} : { sourceIds: clone(packet.query.sourceIds) }),
     limit: Math.min(packet.query.budget.maxUnits, DEEP_REFERENCE_LIMITS.maxResults),
@@ -358,18 +490,179 @@ export function assertGoalDeepReferencePacket(packet, problem, options) {
   ensure(object(metadata) && metadata.contractVersion === DEEP_REFERENCE_INTEGRATION_VERSION
     && metadata.path === 'whole_manuscript_writing_goal' && fingerprint(metadata.problem) === fingerprint(problem)
     && fingerprint(metadata.dataRequest) === fingerprint(expected), '写作目标保存的DATA请求不匹配冻结目标');
+  ensure(metadata.functionPackingPolicy === options.functionPackingPolicy, '保存的完整功能打包策略与请求不符');
+  validateCompositionOptions({ compositionPolicyVersion: options.compositionPolicyVersion });
+  if (metadata.composition !== undefined) ensure(metadata.composition.policyVersion
+    === (options.compositionPolicyVersion ?? 'creation-deep-plus-legacy-composition-1'), '保存的组合策略与请求不符');
   if (metadata.response === null) {
-    ensure(metadata.error?.code === 'DEEP_REFERENCE_UNAVAILABLE', '缺失目标查询响应须保留不可用状态');
+    ensure(metadata.error?.code === 'DEEP_REFERENCE_UNAVAILABLE' && metadata.comparison === undefined, '缺失目标查询响应须保留不可用状态');
+    if (metadata.error.diagnostic !== undefined) {
+      ensure(options.failureDiagnosticVersion === DEEP_REFERENCE_FAILURE_DIAGNOSTIC_VERSION, '安全错误诊断未绑定请求策略');
+      validateDeepReferenceFailure(metadata.error.diagnostic);
+    }
+    if (options.compositionPolicyVersion && metadata.composition) assertFinalSupplySelection(packet, { materials: [], functionSelection: { selections: [] } });
     return packet;
   }
   const response = validateDataResponse(metadata.response, expected);
-  const projected = goalFunctionSupply(response, packet.query);
+  const projected = completeFunctionProjection(response, packet.query, options.functionPackingPolicy);
+  if (options.functionPackingPolicy) ensure(fingerprint(metadata.comparison) === fingerprint(projected.comparison), '功能比较说明不能由原始DATA响应重建');
+  else ensure(metadata.comparison === undefined, '旧目标查询不能附加未绑定的比较说明');
   ensure(fingerprint(metadata.functionSelection) === fingerprint(projected.functionSelection), '写作目标功能预算选择不能从原始响应重建');
+  if (options.compositionPolicyVersion === COMPARABLE_DEEP_FIRST_COMPOSITION_VERSION) {
+    ensure(options.functionPackingPolicy === DEEP_REFERENCE_COMPARABLE_SUPPLY_VERSION, '完整比较组合缺少功能打包策略');
+    ensure(metadata.composition === undefined ? packet.packetId === response.queryId
+      : fingerprint(metadata.composition.selectedDeepMaterialIds) === fingerprint(projected.materials.map(material => material.id)),
+    '完整比较包的实际deep供应集合与预选集合不一致');
+    for (const expectedMaterial of projected.materials) {
+      const supplied = packet.materials.find(material => material.id === expectedMaterial.id);
+      ensure(supplied && fingerprint(supplied) === fingerprint(expectedMaterial), '已选完整deep比较材料缺失或字节改变');
+    }
+    if (metadata.composition) assertFinalSupplySelection(packet, projected);
+  }
   for (const result of response.results) {
     const supplied = packet.materials.find(material => material.id === result.referenceId), expectedMaterial = projected.materials.find(material => material.id === result.referenceId);
     if (supplied) ensure(expectedMaterial && fingerprint(supplied) === fingerprint(expectedMaterial), '写作目标供应不能由保存的DATA原始响应重建');
   }
   return packet;
+}
+
+/** Project complete functions from real, separately bound responses. Never invent a merged DATA response. */
+export function buildComponentFallbackSupply({ originalPacket, fallback, policy }) {
+  const original = originalPacket.deepReference;
+  ensure(original && original.componentFallback === undefined && original.response,
+    '子机制后备需要原完整目标的有效响应');
+  const checked = validateComponentFallbackCheckpoint({ checkpoint: fallback, policy,
+    originalRequest: original.dataRequest, originalResponse: original.response,
+    assessment: fallback.original.assessment });
+  const query = originalPacket.query, budget = query.budget;
+  ensure(budget.maxUnits <= 6 && budget.maxChars <= 12000, '子机制后备不得扩大原共同预算');
+  const rows = [], seenFunctions = new Set();
+  const comparisons = new Map();
+  for (const candidate of checked.candidatePool) {
+    const provenance = candidate.retrievedBy[0], run = checked.runs.find(item => item.response.queryId === provenance.queryId);
+    const result = run?.response.results.find(item => item.referenceId === candidate.referenceId);
+    const fn = result?.borrowableWritingFunctions.find(item => item.functionId === candidate.function.functionId);
+    ensure(result && fn, '子机制候选缺少原始查询中的完整功能');
+    validateDataResponse(run.response, run.request);
+    const evidenceIds = new Set(fn.evidenceIds);
+    const material = materialFromDataResult({ ...result, borrowableWritingFunctions: [fn],
+      exactReferences: result.exactReferences.filter(ref => evidenceIds.has(ref.evidenceId)) });
+    if (!comparisons.has(run.response.queryId)) comparisons.set(run.response.queryId, buildDeepReferenceComparison({ response: run.response }));
+    const card = comparisons.get(run.response.queryId).cards.find(item => item.source.sourceId === result.source.sourceId && item.functionId === fn.functionId);
+    ensure(card, '子机制完整功能缺少绑定原响应的四轴比较卡');
+    const content = `${JSON.stringify({ matchScope: 'only_component', semanticFit: 'unknown', wholeGoalCoverage: 'unknown',
+      sameActorChain: 'unknown', componentIds: candidate.retrievedBy.map(item => item.componentId),
+      comparison: card, boundary: candidate.boundary })}\n${material.content}`;
+    material.id = candidate.candidateId; material.content = content;
+    material.sha256 = createHash('sha256').update(content).digest('hex');
+    material.selectionReason = '明确声明的子机制候选，完整功能及全部引用；必须重新审查，不推断完整目标或同一演员已获支持。';
+    rows.push({ material, side: 'component', sourceIds: [result.source.sourceId], functionIds: [fn.functionId],
+      referenceId: result.referenceId, candidateId: candidate.candidateId, retrievedBy: clone(candidate.retrievedBy) });
+  }
+  // A bounded deterministic source round robin, followed by intact original supplies.
+  // This chooses no semantic fit and does not create a separate budget per query.
+  const bySource = new Map();
+  for (const row of rows) { const id = row.sourceIds[0]; if (!bySource.has(id)) bySource.set(id, []); bySource.get(id).push(row); }
+  const ordered = [];
+  for (let round = 0; [...bySource.values()].some(items => items.length > round); round++)
+    for (const items of bySource.values()) if (items[round]) ordered.push(items[round]);
+  const originalResults = new Map(original.response.results.map(result => [result.referenceId, result]));
+  for (const material of originalPacket.materials) {
+    const result = originalResults.get(material.id), selected = original.functionSelection?.selections.find(row => row.materialId === material.id);
+    ordered.push({ material: clone(material), side: result ? 'original_deep' : 'legacy',
+      sourceIds: [...new Set(material.references.map(ref => ref.sourceId))],
+      functionIds: result ? clone(selected?.selectedFunctionIds ?? result.borrowableWritingFunctions.map(fn => fn.functionId)) : [],
+      referenceId: result?.referenceId ?? null, candidateId: null, retrievedBy: [] });
+  }
+  const priorDecisions = new Map((checked.original.assessment?.decisions ?? []).map(item => [item.materialId, item]));
+  const materials = [], supplied = [], excluded = [], units = new Set(), ids = new Set(); let usedChars = 0;
+  for (const row of ordered) {
+    const functionKeys = row.functionIds.map(id => `${row.sourceIds[0]}:${id}`), nextUnits = unitKeys(row.material).filter(id => !units.has(id));
+    const reason = row.side !== 'component' && priorDecisions.get(row.material.id)?.fit === 'inapplicable' ? 'previously_inapplicable'
+      : ids.has(row.material.id) ? 'duplicate_material'
+      : functionKeys.some(id => seenFunctions.has(id)) ? 'duplicate_complete_function'
+      : materials.length >= budget.maxUnits || units.size + nextUnits.length > budget.maxUnits
+        || usedChars + row.material.content.length > budget.maxChars ? 'shared_complete_function_budget' : null;
+    const record = { side: row.side, materialId: row.material.id, sourceIds: row.sourceIds, functionIds: row.functionIds,
+      referenceId: row.referenceId, candidateId: row.candidateId, contentSha256: row.material.sha256,
+      retrievedBy: row.retrievedBy, applicability: 'not_assessed' };
+    if (reason) { excluded.push({ ...record, reason }); continue; }
+    materials.push(row.material); supplied.push(record); usedChars += row.material.content.length;
+    ids.add(row.material.id); nextUnits.forEach(id => units.add(id)); functionKeys.forEach(id => seenFunctions.add(id));
+  }
+  const selection = { schemaVersion: COMPONENT_SUPPLY_VERSION, policy: 'complete_component_functions_then_original_supplies',
+    budget: clone(budget), usedChars, usedUnits: units.size, supplied, excluded,
+    boundary: '原查询及原适用判断保留；旧已拒用材料不占有效供应预算。按声明组件及DATA返回顺序作来源轮转；组件只表示局部候选。所有实际供应共用原6单元/12000字符，预算排除不等于不适用。' };
+  // With no candidate pool there was no new supply decision. Preserve the exact
+  // old packet and its already completed applicability, rather than relabel it.
+  if (!checked.candidatePool.length) return { packet: clone(originalPacket), selection: {
+    ...selection, policy: 'unchanged_original_supply_no_new_candidate', usedChars: originalPacket.usedChars,
+    usedUnits: new Set(originalPacket.materials.flatMap(unitKeys)).size,
+    supplied: ordered.map(row => ({ side: row.side, materialId: row.material.id, sourceIds: row.sourceIds,
+      functionIds: row.functionIds, referenceId: row.referenceId, candidateId: null,
+      contentSha256: row.material.sha256, retrievedBy: [], applicability: priorDecisions.get(row.material.id)?.fit ?? 'not_assessed' })), excluded: [],
+  } };
+  const candidates = [], candidateIds = new Set();
+  for (const row of [...supplied, ...excluded]) {
+    if (candidates.length >= budget.maxCandidates || candidateIds.has(row.materialId)) continue;
+    candidates.push({ id: row.materialId, sourceId: row.sourceIds[0], reason: row.side === 'component'
+      ? '仅子机制候选；完整目标、同一行动者及语义适用仍未知。' : '原完整目标查询的实际供应；原适用判断另行完整保存。' });
+    candidateIds.add(row.materialId);
+  }
+  const sidecar = { schemaVersion: COMPONENT_SUPPLY_VERSION, policy: clone(policy), originalPacket: clone(originalPacket),
+    checkpoint: clone(checked), finalSupplySelection: selection };
+  const packet = { contractVersion: 'v04-contract-1', packetId: `component-composed-${fingerprint(sidecar).slice(0,32)}`,
+    query: clone(query), status: materials.length ? 'matched' : 'uncovered', materials, candidates, usedChars,
+    limits: [...originalPacket.limits, selection.boundary],
+    deepReference: { ...clone(original), componentFallback: sidecar } };
+  return { packet, selection };
+}
+
+/** Query completion is distinct from a hit, suitability, supply, or adoption. */
+export function inspectDeepReferenceAvailability(packet, { path, problem,
+  dimensions = ['emotionalProgression','psychologicalChangeDrivers'], maxFunctionsPerResult = 2, maxEvidenceRefsPerResult = 6 } = {}) {
+  const metadata = packet?.deepReference;
+  if (!metadata || metadata.response == null) {
+    const diagnostic = metadata?.error?.diagnostic;
+    return { available: false, causeCode: diagnostic === undefined ? 'CALLBACK_ERROR'
+      : validateDeepReferenceFailure(diagnostic).causeCode };
+  }
+  const expected = { problem: problem === undefined ? buildDeepReferenceProblem(packet.query, { path }) : clone(problem),
+    dimensions: clone(dimensions), ...(packet.query.sourceIds === undefined ? {} : { sourceIds: clone(packet.query.sourceIds) }),
+    limit: Math.min(packet.query.budget.maxUnits, DEEP_REFERENCE_LIMITS.maxResults), maxFunctionsPerResult,
+    maxEvidenceRefsPerResult: Math.min(maxEvidenceRefsPerResult, DEEP_REFERENCE_LIMITS.maxEvidenceRefsPerResult) };
+  ensure(metadata.path === path && fingerprint(metadata.dataRequest) === fingerprint(expected), '可用性回放请求绑定不一致');
+  validateDataResponse(metadata.response, expected);
+  return { available: true };
+}
+
+/** Keep raw receipts for host replay, but do not give budget-excluded quotes to the model. */
+export function projectOpportunityModelInput(input) {
+  if ((!input.requestSpec?.goalImprovementPolicy && !input.requestSpec?.writingGoals?.goals?.some(goal => goal.componentFallback)) || !input.retrieval) return input;
+  const projected = clone(input);
+  for (const entry of [...(projected.retrieval.byIssue ?? []), ...(projected.retrieval.byGoal ?? [])]) {
+    const metadata = entry.result?.packet?.deepReference;
+    if (!metadata) continue;
+    if (metadata.componentFallback) {
+      const sidecar = metadata.componentFallback;
+      metadata.componentFallbackSummary = { schemaVersion: sidecar.schemaVersion, checkpointSha256: sidecar.checkpoint.checkpointSha256,
+        status: sidecar.checkpoint.status, queryCalls: sidecar.checkpoint.queryCalls,
+        finalSupplySelection: clone(sidecar.finalSupplySelection), matchScope: 'only_component', wholeGoalCoverage: 'unknown', sameActorChain: 'unknown' };
+      delete metadata.componentFallback;
+    }
+    if (metadata.response) {
+      metadata.dataResponseSummary = { schemaVersion: metadata.response.schemaVersion, queryId: metadata.response.queryId,
+        status: metadata.response.status, resultCount: metadata.response.resultCount, responseSha256: fingerprint(metadata.response),
+        boundary: '完整原始响应仅供宿主重放；模型材料只取当前预算内packet.materials和对应evidenceBundle。预算排除不等于不适用。' };
+      delete metadata.response;
+    }
+    if (metadata.comparison) {
+      metadata.comparisonSummary = { schemaVersion: metadata.comparison.schemaVersion, comparisonSha256: fingerprint(metadata.comparison),
+        boundary: '进入材料正文的比较说明与完整引文计入预算；未供应card不得从宿主侧附送给模型。' };
+      delete metadata.comparison;
+    }
+  }
+  return projected;
 }
 
 function sourceBindings(material) {
@@ -494,8 +787,21 @@ export function buildWholeQualityDeepReferenceBundle({ retrieval, applicability,
   const planDecisionBySupply = new Map(plan.materialDecisions.map(item => [item.supplyId, item]));
   const finalByIssue = new Map(finalTextMaterialEvidence.byIssue.map(item => [item.issueId, item]));
   const queryEntries = [...retrieval.byIssue, ...(retrieval.byGoal ?? [])];
+  for(const entry of queryEntries){
+    const packet=entry.result?.packet, composite=packet?.deepReference?.componentFallback;
+    if(composite){
+      const rebuilt=buildComponentFallbackSupply({originalPacket:composite.originalPacket,fallback:composite.checkpoint,policy:composite.policy});
+      ensure(fingerprint(rebuilt.packet)===fingerprint(packet),'后备深层参考包不能由真实原/子响应及共同预算重新派生');
+      for(const material of packet.materials){
+        const supply=retrieval.supplies.find(row=>row.issueId===entry.issueId&&row.materialId===material.id);
+        ensure(supply?.contentSha256===material.sha256,'后备最终供应与资料正文绑定不一致');
+      }
+    }
+  }
   const deepIdsByIssue = new Map(queryEntries.map(item => [item.issueId,
-    new Set((item.result?.packet?.deepReference?.response?.results ?? []).map(result => result.referenceId))]));
+    new Set([...(item.result?.packet?.deepReference?.response?.results ?? []).map(result => result.referenceId),
+      ...(item.result?.packet?.deepReference?.componentFallback?.finalSupplySelection?.supplied ?? [])
+        .filter(row => row.side === 'component').map(row => row.materialId)])]));
   const candidates = retrieval.supplies.filter(supply => deepIdsByIssue.get(supply.issueId)?.has(supply.materialId)).map(supply => {
     const fit = fitBySupply.get(supply.supplyId), decision = planDecisionBySupply.get(supply.supplyId);
     ensure(fit && decision, `供应 ${supply.supplyId} 缺少适用性或用材决定`);
@@ -505,6 +811,8 @@ export function buildWholeQualityDeepReferenceBundle({ retrieval, applicability,
     return { supplyId: supply.supplyId, issueId: supply.issueId, materialId: supply.materialId,
       ...(supply.goalId ? {goalId:supply.goalId,origin:'writing_goal'} : {}),
       contentSha256: supply.contentSha256, evidenceIds: clone(supply.evidenceIds), reviewBoundary: supply.reviewBoundary,
+      ...(queryEntries.find(item => item.issueId === supply.issueId)?.result?.packet?.deepReference?.componentFallback?.finalSupplySelection?.supplied
+        ?.some(row => row.materialId === supply.materialId && row.side === 'component') ? { matchScope: 'only_component' } : {}),
       fit: fit.fit, decision: decision.decision, resolution: status === 'unused' ? 'reject' : status === 'not_proven' ? 'unverifiable' : 'adopt',
       status, functionalChoice: decision.appliedAs ?? `不采用：${decision.reason}`,
       intendedChapters: [...new Set(planItems.flatMap(item => item.affectedChapterIds))],
@@ -514,7 +822,9 @@ export function buildWholeQualityDeepReferenceBundle({ retrieval, applicability,
       caveat: decision.applicabilityBoundary, limitations: clone(decision.limitations), reason: decision.reason,
       manuscriptEvidence: clone(record?.findings ?? []), ...(record?.reason === undefined ? {} : { notProvenReason: record.reason }) };
   });
-  const deepStatuses = queryEntries.map(item => item.result?.packet?.deepReference?.composition?.deepStatus ?? item.status);
+  const deepStatus = item => item.result?.packet?.deepReference?.componentFallback?.finalSupplySelection?.supplied.some(row => row.side === 'component')
+    ? 'matched' : item.result?.packet?.deepReference?.composition?.deepStatus ?? item.status;
+  const deepStatuses = queryEntries.map(deepStatus);
   const body = { schemaVersion: DEEP_REFERENCE_INTEGRATION_VERSION, path: 'whole_manuscript_quality',
     callbackStatus: deepStatuses.some(status => status === 'unavailable') ? 'unavailable'
       : deepStatuses.some(status => status === 'not_connected') ? 'not_connected'
@@ -522,7 +832,7 @@ export function buildWholeQualityDeepReferenceBundle({ retrieval, applicability,
     sourceManuscriptSha256: manuscriptSha256(sourceChapters), candidateManuscriptSha256: manuscriptSha256(candidateChapters),
     dataQueries: queryEntries.map(item => ({ issueId: item.issueId,
       ...(item.goalId ? {goalId:item.goalId,origin:'writing_goal'} : {}),
-      callbackStatus: item.result?.packet?.deepReference?.composition?.deepStatus ?? item.status,
+      callbackStatus: deepStatus(item),
       query: clone(item.result?.packet?.deepReference ?? null) })), candidates,
     unusedMaterialIds: candidates.filter(item => item.status === 'unused').map(item => item.materialId),
     notProvenMaterialIds: candidates.filter(item => item.status === 'not_proven').map(item => item.materialId),

@@ -12,16 +12,15 @@ The project separates the writing interface, source material management, writing
 
 ![Talewick workspace](examples/workspace.png)
 
-## Latest update · 2026-10-29
+## Latest update · 2026-11-02
 
-- **Explicit writing goals**: specify psychological, emotional, or choice-related goals and preservation boundaries for whole-manuscript revision. Track material suitability and textual adoption evidence; retrieval does not imply use.
-- **Candidate rechecking and recovery**: recover manuscripts and candidates from local tasks, independently recheck them, and verify version and evidence bindings before author-controlled adoption. Failures and unresolved findings never count as passes.
-- **Independent review**: add an optional protocol focused on six reading dimensions, paragraph references, position-only recovery, and partial reports that retain failures and incomplete stages.
-- **Material and runtime reliability**: add optional deep-reference integration, guards for unavailable local files, and an explicit low-reasoning default for native DeepSeek requests. Stage-specific settings still take precedence.
+- **Review evidence audits**: bind review fragments to exact passages in the correct manuscript, audit factual premises and event order in batches, and show progress, unresolved evidence, and source navigation.
+- **Scene and revision safeguards**: check actor presence, dialogue attribution, actions, and object transfers. Plan fact checks and independent candidate scene checks retain failures and block unverified adoption.
+- **Material adoption**: preserve adopted material context, distinguish complete references from limited component applicability, and report retrieval failures. Saved tasks retain their original request policies.
 
-This sync includes the delivered r11 functionality. The later material-scene candidate remains outside this release pending acceptance. Tests establish protocol and program behavior, not improved literary quality; development acceptance did not meet all writing goals for either manuscript. The separate Full15 entry still covers only C01–C06. Authors always decide whether to adopt changes.
+This sync uses the integrated and built r10 candidate, with separate public-edition validation. Completed workflows, exact quotations, and passing tests do not establish semantic correctness or whole-manuscript literary quality. The separate Full15 entry remains C01–C06; adoption remains author-controlled.
 
-Private texts, analysis samples, historical tasks, and captured provider responses are excluded. The six existing [reading examples](examples/README.md) are unchanged. Built-in materials remain empty; deep references require an explicitly configured, verified user-owned installation and are not bundled data. See the [verification record](VERIFICATION.md).
+Private manuscripts, analysis samples, historical tasks, and captured model responses are excluded. The six existing [reading examples](examples/README.md) remain unchanged and the built-in library stays empty. Private replay tests are excluded; scene-dependency controls use original synthetic input. See [verification](VERIFICATION.md) for the tested scope.
 
 ## What you can do
 

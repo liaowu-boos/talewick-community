@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { reviewSourceBinding } from './review-display-binding.mjs';
 import { mkdir, readFile, readdir, realpath, rename, writeFile, lstat } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -172,6 +173,10 @@ function publicTask(task, recoveryCapabilities) {
   if (copy.recoveries) copy.recoveries = copy.recoveries.map(({ requestHash, runDir, inputHash, trustedAudit, ...entry }) => entry);
   if (copy.invalidReadingRetries) copy.invalidReadingRetries = copy.invalidReadingRetries.map(({ requestHash, runDir, inputHash, inspectionHash, inspection, ...entry }) => entry);
   if (recoveryCapabilities) copy.recoveryCapabilities = recoveryCapabilities;
+  // Read-only source identity for separately verified evidence projections.
+  // Stored reports/checkpoints are never changed and this field is not a POST option.
+  const binding = reviewSourceBinding(task);
+  if (binding) copy.reviewSourceBinding = binding;
   if (copy.report) copy.report = publicReport(copy.report);
   return copy;
 }
@@ -434,6 +439,20 @@ export class IndependentReviewService {
       value.partialReportUnavailable = { code: error?.code || 'PARTIAL_REPORT_UNAVAILABLE', message: '部分盲评记录尚未通过完整回放，原失败记录保留。' };
     }
     return value;
+  }
+  /** Read-only trust boundary for a separate semantic audit; never accepts browser paths. */
+  async evidenceAuditSource(id) {
+    this.get(id);
+    const task = this.tasks.get(id);
+    await this.boundStoredTask(task);
+    const loaded = await this.readTask(id);
+    const source = loaded.task;
+    if (source.status !== 'complete' || source.mode !== 'compare'
+      || source.readingFocusVersion !== PRODUCT_READING_FOCUS_VERSION
+      || source.modelCitationMode !== PRODUCT_PARAGRAPH_CITATION_MODE || !source.runDir)
+      throw fail('EVIDENCE_AUDIT_SOURCE_INELIGIBLE', '语义依据复核需要已完成全部七阶段、使用段落证据定位的六项维度比较。已有评阅保持原样。', 409);
+    return { sourceReviewTaskId: source.id, projectId: source.projectId,
+      sourceRunDir: source.runDir, sourceRequestHash: source.requestHash };
   }
   async readList(projectId) { return Promise.all(this.list(projectId).map(task => this.read(task.id))); }
   retryInvalidReading(id, input) { return this.mutate(() => this.retryInvalidReadingTask(id, input)); }
