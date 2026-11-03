@@ -12,7 +12,15 @@ The project separates the writing interface, source material management, writing
 
 ![Talewick workspace](examples/workspace.png)
 
-## Latest update · 2026-11-02
+## Latest update · 2026-11-03
+
+- **Opt-in review evidence tools** distinguish dialogue from established facts, clarify example references, and hash the actual delivered prompt independently of the frozen protocol.
+- **Literal full-text comparison** preserves title, whitespace and Unicode differences. A separate difference supplement belongs only in the post-blind goal audit; a change is not evidence of improvement.
+- **Short quotation verification** freezes complete texts into short anchors and derives exact offsets locally. Wrong anchors, ambiguous quotations and cross-anchor quotes remain failures.
+
+These utilities require explicit integration and do not change the default GUI review flow. New regression fixtures are synthetic. Passing checks does not establish semantic correctness or literary quality. See the [utility guide](modules/validation/runtime/independent-review-evidence-policy.md) and [verification](VERIFICATION.md).
+
+## Previous update · 2026-11-02
 
 - **Review evidence audits**: bind review fragments to exact passages in the correct manuscript, audit factual premises and event order in batches, and show progress, unresolved evidence, and source navigation.
 - **Scene and revision safeguards**: check actor presence, dialogue attribution, actions, and object transfers. Plan fact checks and independent candidate scene checks retain failures and block unverified adoption.
