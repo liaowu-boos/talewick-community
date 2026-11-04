@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import {createRequire} from 'node:module';
+import path from 'node:path';
+import {fixture} from './fixture.mjs';
+import {adaptResult,labels} from '../src/result-adapter.mjs';
+const require=createRequire(import.meta.url),{render}=require(path.resolve(process.argv[2]));
+const f=await fixture();f.manifest.title='<script>alert(1)</script>';f.manifest.sources[0].label='<img src=x onerror=alert(1)>';
+const v=adaptResult(await f.open()),html=render(v,labels);
+assert(!html.includes('<script>'));assert(!html.includes('<img'));
+assert(html.includes('&lt;script&gt;'));
+assert(html.includes('引用检查未通过'));assert(html.includes('精确 1 / 共 2 · 失败 1'));
+assert(html.includes('未通过整稿验收'));assert(html.includes('实际采纳：未执行'));
+assert(!html.includes('http://'));assert(!html.includes('https://'));
+for(const m of html.matchAll(/href="([^"]+)"/g))assert(/^\/evidence\/[a-z0-9_-]+\/[a-f0-9]{64}$/.test(m[1]));
+const pending=structuredClone(v); pending.conclusion.literaryQuality.status='pending';
+const pendingHTML=render(pending,labels); assert(pendingHTML.includes('全文质量：待判断')); assert(!pendingHTML.includes('未通过整稿验收'));
+console.log(JSON.stringify({renderedSyntheticOnly:true,xssEscaped:true,sourceFailureVisible:true,qualityNotElevated:true,linksAllowlisted:true,externalResources:0,pendingNotMislabelledAsFailed:true}));

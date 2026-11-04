@@ -762,3 +762,16 @@ test('v3 structurally skipped premise checks fail terminally with original raw p
   assert.equal(calls, 1); assert.equal(await readFile(join(failed.runDir, 'raw-response.txt'), 'utf8'), rawResponse);
   assert.deepEqual(await hashes(failed.runDir), before);
 });
+
+
+test('audit rejects unrecognized source tuples and enhanced policy snapshots on replay', async () => {
+  const { prepared } = await sourceFixture();
+  for (const field of ['protocolVersion', 'rulesVersion', 'toolVersion']) {
+    const changed = copy(prepared);
+    changed.sourceSnapshot.task.versions[field] = '0'.repeat(64);
+    expectCode(() => validate(changed, uncertainResponse(changed)), 'AUDIT_SOURCE_VERSION');
+  }
+  const changed = copy(prepared);
+  changed.sourceSnapshot.task.evidencePolicy = 'unknown-enhanced-policy';
+  expectCode(() => validate(changed, uncertainResponse(changed)), 'AUDIT_SOURCE_EVIDENCE_POLICY_UNSUPPORTED');
+});

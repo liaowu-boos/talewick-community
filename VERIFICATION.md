@@ -1,5 +1,14 @@
 # Verification / 验证记录
 
+## 2026-11-04 · Review delivery and compatibility
+
+The public checkout passed the production build and 1,751 tests (1,548 runtime, 123 UI, 53 Python and 27 preview tests). The preview suite includes a synthetic SSR build, HTML escaping and loopback HTTP checks. Publication verification used local synthetic inputs and made zero model requests.
+
+The compatibility tests run the pinned e68f56d writer against a synthetic input to generate retry and recovery records in a temporary directory. Run them from a Git clone containing that commit and with tar available. CI checks out the history. The ordinary evidence audit explicitly rejects enhanced-policy seals until it has a dedicated adapter.
+
+公开版验证了七阶段送评证据、旧任务重放、失败引用和分来源展示。预览测试需先构建 GUI，其余复验步骤见下文。完整测试命令为 GUI 目录下的 `npm run test:runtime`、`npm run test:ui`、`npm run test:review`，以及仓库根目录下的 `node --test tools/review-preview/tests/*.test.mjs`。
+
+
 ## 2026-11-03 · Opt-in review evidence utilities
 
 | Check | Result |

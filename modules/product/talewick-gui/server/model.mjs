@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { agentProviderFor, crossChapterThinkingMode, followupContinuityReasoningEffort, full15ReasoningEffort, independentReviewReasoningEffort, isBusinessStage, isCrossChapterReviewStage, isFull15Stage, isIndependentReviewStage, isLibraryStage, isWholeQualityStage, isWholeRevisionStage, recoveryTextLimit, RECOVERY_BUDGET_VERSION, outputTokenLimit, usesDeepSeekThinking, wholeQualityReasoningEffort, wholeRevisionReasoningEffort, withNativeDeepSeekReasoningDefault } from './model-policy.mjs';
 import { readModelResponse } from './model-response.mjs';
 import { validateRelevanceModel, validateRelevanceProvider } from './config.mjs';
@@ -31,7 +32,7 @@ export function createModel(config, fetchImpl = fetch, { codexAssessorFactory = 
   const relevanceModel = validateRelevanceModel(config);
   const relevanceProvider = validateRelevanceProvider(config);
   return {
-    async complete({ stage, system, user, signal, directory, maxTokens = 6000, allowRecovery = true, modelPolicy, onAttempt = async () => {}, onReceipt = async () => {} }) {
+    async complete({ stage, system, user, signal, directory, maxTokens = 6000, allowRecovery = true, modelPolicy, onAttempt = async () => {}, onReceipt = async () => {}, onRequestBody }) {
       if (stage === 'library-relevance' && relevanceProvider === 'codex-cli') {
         signal?.throwIfAborted();
         const startedAt = Date.now(); let receipt, content, rejected = false;
@@ -92,16 +93,22 @@ export function createModel(config, fetchImpl = fetch, { codexAssessorFactory = 
         if (total.signal.aborted) throw new Error('模型响应超时：已达到本步骤等待上限，已保存此前完成的步骤，可以重试。');
         if (idle.signal.aborted) throw new Error('模型响应超时：长时间未收到生成进展，已保存此前完成的步骤，可以重试。');
       };
+      let requestBinding;
       const requestChoice = async (withoutThinking = false) => {
         checkAbort();
         const startedAt = Date.now();
         const body = withNativeDeepSeekReasoningDefault(requestConfig, withoutThinking ? { ...requestBody, thinking: { type: 'disabled' }, max_tokens: recoveryTextLimit(stage, maxTokens) } : requestBody);
+        const serializedBody = JSON.stringify(body);
+        if (onRequestBody) {
+          requestBinding = { requestBodySHA256: createHash('sha256').update(serializedBody).digest('hex'), requestBodyByteLength: Buffer.byteLength(serializedBody, 'utf8') };
+          await onRequestBody(serializedBody);
+        }
         let response;
         try {
           response = await fetchImpl(`${config.baseURL}/chat/completions`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
-            body: JSON.stringify(body),
+            body: serializedBody,
             signal: combined,
             redirect: 'error',
           });
@@ -160,12 +167,12 @@ export function createModel(config, fetchImpl = fetch, { codexAssessorFactory = 
         // when its semantic output is rejected below. Other stages retain the
         // existing success-only receipt behavior.
         const isolatedReceiptRecorded = (isFull15Stage(stage) || isWholeQualityStage(stage) || isCrossChapterReviewStage(stage) || isIndependentReviewStage(stage)) && Boolean(choice?.providerRequestId);
-        if (isolatedReceiptRecorded) await onReceipt({ provider: agentProviderFor(config), invocationId: choice.providerRequestId, contextId: choice.providerRequestId });
+        if (isolatedReceiptRecorded) await onReceipt({ provider: agentProviderFor(config), invocationId: choice.providerRequestId, contextId: choice.providerRequestId, ...(requestBinding ?? {}) });
         if (choice?.finish_reason === 'length') throw new Error(`模型输出达到长度上限（${productStageLabel(stage)}），本步骤未完成；此前内容已保留，需要处理该步骤的生成范围后重试。`);
         if (choice?.finish_reason && choice.finish_reason !== 'stop') throw new Error('模型未正常完成本次输出，请查看服务设置后重试。');
         const content = choice?.message?.content;
         if (typeof content !== 'string' || !content.trim()) throw new Error('模型没有返回正文，本步骤未完成。');
-        if (!isolatedReceiptRecorded) await onReceipt({ provider: agentProviderFor(config), invocationId: choice.providerRequestId, contextId: choice.providerRequestId });
+        if (!isolatedReceiptRecorded) await onReceipt({ provider: agentProviderFor(config), invocationId: choice.providerRequestId, contextId: choice.providerRequestId, ...(requestBinding ?? {}) });
         return content;
       } finally {
         clearTimeout(totalTimer);

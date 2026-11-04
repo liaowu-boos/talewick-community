@@ -12,7 +12,13 @@ The project separates the writing interface, source material management, writing
 
 ![Talewick workspace](examples/workspace.png)
 
-## Latest update · 2026-11-03
+## Latest update · 2026-11-04
+
+Opt-in review delivery checks bind the protocol, delivered prompt and outgoing request bytes. The goal audit verifies six sealed stages before receiving the text differences. Retry and recovery records from the previous public release can be replayed. [Review interface](modules/validation/runtime/independent-review-delivery-evidence.md)
+
+The local read-only preview separates source-specific progress and citations from factual review and adoption. Its tests build and render a synthetic bundle. [Preview tool](tools/review-preview/README.md)
+
+## Previous update · 2026-11-03
 
 - **Opt-in review evidence tools** distinguish dialogue from established facts, clarify example references, and hash the actual delivered prompt independently of the frozen protocol.
 - **Literal full-text comparison** preserves title, whitespace and Unicode differences. A separate difference supplement belongs only in the post-blind goal audit; a change is not evidence of improvement.

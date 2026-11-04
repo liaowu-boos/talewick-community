@@ -12,6 +12,8 @@ jobs:
         working-directory: modules/product/talewick-gui
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -27,3 +29,4 @@ jobs:
       - run: npm run test:runtime
       - run: npm run test:ui
       - run: npm run test:review
+      - run: node --test ../../../tools/review-preview/tests/*.test.mjs

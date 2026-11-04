@@ -115,21 +115,33 @@ export function getReviewEvidenceAuditFormatNormalizationVersions() {
   return Object.freeze([AUDIT_CITATION_ALIAS_VERSION]);
 }
 
-function expectedSourceVersions() {
-  const rulesVersion = sha(Buffer.concat([sourceBytes('whole-quality-evaluation.mjs'), Buffer.from('\0'), sourceBytes('focused-whole-quality-evaluation.mjs')]));
-  return { protocolVersion: 'whole-quality-evaluation-3', rulesVersion,
-    toolVersion: sha(Buffer.concat([Buffer.from(rulesVersion), Buffer.from('\0'), sourceBytes('independent-review-task.mjs'),
-      Buffer.from('\0'), sourceBytes('independent-review-position-recovery.mjs'), Buffer.from('\0'), sourceBytes('independent-review-zero-dispatch.mjs'),
-      Buffer.from('\0'), sourceBytes('independent-review-paragraph-references.mjs')])) };
+// Both releases use the same focused rules and ordinary paragraph seal schema.
+// A changed runtime requires an explicit review before its output can enter this audit.
+const RELEASED_SOURCE = Object.freeze({
+  protocolVersion: 'whole-quality-evaluation-3',
+  rulesVersion: '88fe05c5ba2b376e2906e57240d7173a3f1ae95d6c006735c350715f3e53e980',
+  toolVersion: '5bc20d9ada478f465973d82f3539b13b6126372318a880ef122d9b9061aeba68',
+});
+const DELIVERY_CAPABLE_SOURCE = Object.freeze({ ...RELEASED_SOURCE,
+  toolVersion: '6356a09863795b3cf32d507069c82843d94d3cd9eedae5c0562ac0361f779fb9',
+});
+const RELEASED_AUDIT_TOOL = 'a94e6cddaf00012bb0effb23dd0b07bbd65f3b23c68aeda5dddc8f21ecf67534';
+const RELEASED_AUDIT_VERSIONS = [POLICY, FACT_SUPPORT_POLICY, PREMISE_SUPPORT_POLICY].map(policyVersion =>
+  Object.freeze({ protocolVersion: VERSION, policyVersion, toolVersion: RELEASED_AUDIT_TOOL }));
+
+function requireOrdinarySource(task) {
+  ensure(!Object.hasOwn(task, 'evidencePolicy'), 'AUDIT_SOURCE_EVIDENCE_POLICY_UNSUPPORTED',
+    '此审计入口仅支持普通段落引用封存，当前交付证据策略需要独立的审计适配。');
 }
 
 function validateSourceSnapshot(snapshot) {
   exact(snapshot, ['schemaVersion', 'sourceReviewTaskId', 'sourceRequestHash', 'task', 'files'], 'AUDIT_SOURCE_SNAPSHOT');
   ensure(snapshot.schemaVersion === `${VERSION}-source` && nonempty(snapshot.sourceReviewTaskId), 'AUDIT_SOURCE_ID');
   const { task, files } = snapshot;
+  requireOrdinarySource(task);
   exact(task, ['schemaVersion', 'caseId', 'mode', 'requestHash', 'versions', 'stagePlan', 'createdAt', 'modelCitationMode'], 'AUDIT_SOURCE_TASK');
   ensure(task.schemaVersion === 'independent-review-task-1' && task.mode === 'compare' && task.modelCitationMode === MODE
-    && same(task.versions, expectedSourceVersions()), 'AUDIT_SOURCE_VERSION');
+    && (same(task.versions, RELEASED_SOURCE) || same(task.versions, DELIVERY_CAPABLE_SOURCE)), 'AUDIT_SOURCE_VERSION');
   ensure(same(task.stagePlan, STAGES.map(([id, stage, readerId, kind]) => ({ id, stage, readerId, kind }))), 'AUDIT_SOURCE_STAGE_PLAN');
   ensure(object(files) && ROOT_FILES.every(name => typeof files[name] === 'string'), 'AUDIT_SOURCE_FILES');
   const request = normalizeIndependentReviewRequest(json(files['request.json']));
@@ -228,6 +240,7 @@ export async function prepareReviewEvidenceAudit({ sourceReviewTaskId, sourceRun
   const meta = json(await readText(join(parent, 'task.json')));
   ensure(meta.runDir === runDir && meta.runRoot === dirname(parent) && runDir === join(parent, 'run'), 'AUDIT_SOURCE_METADATA_PATH');
   const { runDir: ignoredRun, runRoot: ignoredRoot, ...task } = meta;
+  requireOrdinarySource(task);
   const files = {};
   for (const name of ROOT_FILES) files[name] = await readText(join(parent, name));
   for (const [stageId] of STAGES) {
@@ -365,7 +378,8 @@ function validatePrepared(prepared) {
     ...(enabled ? ['formatNormalizationVersion'] : []), ...(factSupport ? ['auditPolicyVersion'] : [])], 'AUDIT_PREPARED_FIELDS');
   ensure(!enabled || prepared.formatNormalizationVersion === AUDIT_CITATION_ALIAS_VERSION, 'AUDIT_FORMAT_VERSION');
   ensure(!factSupport || [FACT_SUPPORT_POLICY, PREMISE_SUPPORT_POLICY].includes(prepared.auditPolicyVersion), 'AUDIT_POLICY_VERSION');
-  const historical = [R01_VERSIONS, FORMAT_V1_VERSIONS, ...FACT_V2_VERSIONS, ...PRE_COMPACT_VERSIONS].find(v => same(prepared.versions, v));
+  const historical = [R01_VERSIONS, FORMAT_V1_VERSIONS, ...FACT_V2_VERSIONS, ...PRE_COMPACT_VERSIONS, ...RELEASED_AUDIT_VERSIONS].find(v => same(prepared.versions, v));
+  if (historical) ensure(same(prepared.sourceSnapshot?.task?.versions, RELEASED_SOURCE), 'AUDIT_SOURCE_VERSION');
   ensure(!same(historical, R01_VERSIONS) || !enabled, 'AUDIT_FORMAT_HISTORICAL_OPT_IN');
   ensure(!historical || historical.policyVersion === (normalizePolicy(prepared.auditPolicyVersion) ?? POLICY), 'AUDIT_POLICY_HISTORICAL_OPT_IN');
   const expected = buildPrepared(prepared.sourceSnapshot, { formatNormalizationVersion: prepared.formatNormalizationVersion,
@@ -653,10 +667,11 @@ const FAILURE_SOURCE_FILES = ['input.json', 'started.json', 'received.json', 'ra
 const RECOVERY_FILES = [...FAILURE_SOURCE_FILES.map(name => `source-${name}`), 'recovery-binding.json', 'result.json', 'proof.json', ...FORMAT_FILES];
 
 function validateFailureSource(files, requestHash, recoveryToolVersion = getReviewEvidenceAuditVersions().toolVersion) {
-  ensure([getReviewEvidenceAuditVersions().toolVersion, FORMAT_V1_VERSIONS.toolVersion, FACT_V2_TOOL_VERSION].includes(recoveryToolVersion), 'AUDIT_RECOVERY_VERSION');
+  ensure([getReviewEvidenceAuditVersions().toolVersion, FORMAT_V1_VERSIONS.toolVersion, FACT_V2_TOOL_VERSION, RELEASED_AUDIT_TOOL].includes(recoveryToolVersion), 'AUDIT_RECOVERY_VERSION');
   exact(files, FAILURE_SOURCE_FILES, 'AUDIT_RECOVERY_SOURCE_FILES');
   const prepared = validatePrepared(json(files['input.json'])), started = json(files['started.json']),
     received = json(files['received.json']), failure = json(files['failure.json']), raw = files['raw-response.txt'];
+  if (recoveryToolVersion === RELEASED_AUDIT_TOOL) ensure(same(prepared.sourceSnapshot.task.versions, RELEASED_SOURCE), 'AUDIT_SOURCE_VERSION');
   ensure(prepared.requestHash === requestHash && prepared.formatNormalizationVersion === undefined, 'AUDIT_RECOVERY_REQUEST');
   exact(started, ['schemaVersion', 'requestHash', 'inputHash', 'attemptId', 'createdAt'], 'AUDIT_STARTED_FIELDS');
   ensure(started.schemaVersion === `${VERSION}-started` && started.requestHash === requestHash && started.inputHash === prepared.inputHash

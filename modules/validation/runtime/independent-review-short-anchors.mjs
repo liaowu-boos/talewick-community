@@ -85,7 +85,7 @@ function reconstructCatalog(packet) {
 }
 export function resolveCodexAnchorResponse({ promptText, rawResponse }) {
   const report = { schemaVersion: 'codex-short-anchor-inspection-1', promptSHA256: hash(promptText), responseSHA256: hash(rawResponse),
-    rawResponseChanged: false, derivedLocationsOnly: true, jsonClosed: false, schemaValid: false, exactCitationIntegrity: false,
+    passed: false, rawResponseChanged: false, derivedLocationsOnly: true, jsonClosed: false, schemaValid: false, exactCitationIntegrity: false,
     semanticSupportVerified: false, qualityPass: 'NOT_COMPUTED', errors: [], mappings: [] };
   let packet, response, entries;
   try { packet = JSON.parse(JSON.parse(promptText).user).packet; entries = reconstructCatalog(packet); }
@@ -99,9 +99,13 @@ export function resolveCodexAnchorResponse({ promptText, rawResponse }) {
   const byId = new Map(entries.map(e => [e.anchorId, e]));
   const derived = structuredClone(response);
   function citations(list, at, blindId) {
+    const seen = new Set();
     return list.map((ref, i) => {
       const location = `${at}/${i}`, entry = byId.get(ref.anchorId);
       const fail = code => report.errors.push({ code, JSONPointer: location, anchorId: ref.anchorId });
+      const key = JSON.stringify([ref.anchorId, ref.quote]);
+      if (seen.has(key)) { fail('DUPLICATE_CITATION_IN_LIST'); return null; }
+      seen.add(key);
       if (!entry || !entry.citable) { fail('UNKNOWN_OR_NONCITABLE_ANCHOR'); return null; }
       if (blindId && entry.blindId !== blindId) { fail('WRONG_MANUSCRIPT_ANCHOR'); return null; }
       const localStart = entry.text.indexOf(ref.quote);

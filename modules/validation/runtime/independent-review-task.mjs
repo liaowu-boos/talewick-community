@@ -1,3 +1,5 @@
+import { DELIVERY_EVIDENCE_POLICY, validateDeliveryEvidence, bytesHash } from './independent-review-delivery-evidence.mjs';
+import { computeDifferenceAudit } from './independent-review-evidence-policy.mjs';
 import { PARAGRAPH_REFERENCE_MODE, PARAGRAPH_SEAL_VERSION, prepareParagraphReferenceProjection, resolveParagraphReferenceResponse, paragraphReferenceInstruction } from './independent-review-paragraph-references.mjs';
 import { AUDITED_REPAIR_DIRECTORY, inspectZeroDispatchAuthorization, saveZeroDispatchAuthorization, replayZeroDispatchAuthorization, zeroDispatchSummary } from './independent-review-zero-dispatch.mjs';
 import * as legacyRuntime from './independent-review-task-v2.mjs';
@@ -99,7 +101,7 @@ export async function getIndependentReviewVersions(protocolVersion = 'whole-qual
   return {
     protocolVersion: WHOLE_QUALITY_EVALUATION_VERSION,
     rulesVersion,
-    toolVersion: sha256(Buffer.concat([Buffer.from(rulesVersion), Buffer.from('\0'), adapterSource, Buffer.from('\0'), recoverySource, Buffer.from('\0'), zeroDispatchSource, Buffer.from('\0'), paragraphSource])),
+    toolVersion: sha256(Buffer.concat([Buffer.from(rulesVersion), Buffer.from('\0'), adapterSource, await readFile(new URL('./independent-review-delivery-evidence.mjs', import.meta.url)), await readFile(new URL('./independent-review-evidence-policy.mjs', import.meta.url)), Buffer.from('\0'), recoverySource, Buffer.from('\0'), zeroDispatchSource, Buffer.from('\0'), paragraphSource])),
   };
 }
 
@@ -129,11 +131,18 @@ const FOCUS_R10_VERSIONS = Object.freeze({
   rulesVersion: '88fe05c5ba2b376e2906e57240d7173a3f1ae95d6c006735c350715f3e53e980',
   toolVersion: 'd8a71b078bfedbc5a0a9446f4c1c1c77894fa502019237aee06d2cb8eb7e6611',
 });
+// Released focused protocol, before opt-in delivery evidence was introduced.
+const RELEASE_E68F56D_VERSIONS = Object.freeze({
+  protocolVersion: 'whole-quality-evaluation-3',
+  rulesVersion: '88fe05c5ba2b376e2906e57240d7173a3f1ae95d6c006735c350715f3e53e980',
+  toolVersion: '5bc20d9ada478f465973d82f3539b13b6126372318a880ef122d9b9061aeba68',
+});
 function recoveryVersionsCompatible(current, saved) {
-  return same(current, saved) || [RECOVERY_R01_VERSIONS, FOCUS_R01_VERSIONS, FOCUS_R09_VERSIONS, INVALID_READING_RETRY_R01_VERSIONS, FOCUS_R10_VERSIONS].some(pin => current.rulesVersion === pin.rulesVersion && current.protocolVersion === pin.protocolVersion && same(saved, pin));
+  return same(current, saved) || [RECOVERY_R01_VERSIONS, FOCUS_R01_VERSIONS, FOCUS_R09_VERSIONS, INVALID_READING_RETRY_R01_VERSIONS, FOCUS_R10_VERSIONS, RELEASE_E68F56D_VERSIONS].some(pin => current.rulesVersion === pin.rulesVersion && current.protocolVersion === pin.protocolVersion && same(saved, pin));
 }
 
-function versionsCompatible(current, saved) {
+function versionsCompatible(current, saved, evidencePolicy) {
+  if (evidencePolicy !== undefined) return same(current, saved);
   return recoveryVersionsCompatible(current, saved) || (current.rulesVersion === PRE_POSITION_RECOVERY_VERSIONS.rulesVersion && same(saved, PRE_POSITION_RECOVERY_VERSIONS));
 }
 
@@ -165,9 +174,14 @@ function validateModelCitationMode(request, modelCitationMode) {
   return modelCitationMode;
 }
 
-export function getIndependentReviewRequestHash({ request, modelCitationMode } = {}) {
+export function getIndependentReviewRequestHash({ request, modelCitationMode, evidencePolicy } = {}) {
   const normalized = normalizeRequest(request);
   validateModelCitationMode(normalized, modelCitationMode);
+  ensure(evidencePolicy === undefined || evidencePolicy === DELIVERY_EVIDENCE_POLICY, 'EVIDENCE_POLICY_UNSUPPORTED');
+  if (evidencePolicy) {
+    ensure(normalized.readingFocusVersion === READING_FOCUS_VERSION && normalized.mode === 'compare', 'EVIDENCE_POLICY_REQUIRES_FOCUSED_COMPARE');
+    return wholeQualitySha256({ schemaVersion: DELIVERY_EVIDENCE_POLICY, request: normalized, modelCitationMode: modelCitationMode ?? null, evidencePolicy });
+  }
   return modelCitationMode === undefined ? wholeQualitySha256(normalized) : wholeQualitySha256({
     schemaVersion: 'independent-review-model-citation-request-1', request: normalized, modelCitationMode });
 }
@@ -540,7 +554,7 @@ export function prepareIndependentReviewModelStage({ request, modelCitationMode,
 async function expectedModelCitationOptions(task) {
   ensure(task.modelCitationMode === PARAGRAPH_REFERENCE_MODE && task.versions.protocolVersion === WHOLE_QUALITY_EVALUATION_VERSION, 'MODEL_CITATION_TASK_BINDING');
   const request = await readJson(requestPath(task.runDir));
-  ensure(getIndependentReviewRequestHash({ request, modelCitationMode: task.modelCitationMode }) === task.requestHash, 'MODEL_CITATION_REQUEST_BINDING');
+  ensure(getIndependentReviewRequestHash({ request, modelCitationMode: task.modelCitationMode, evidencePolicy: task.evidencePolicy }) === task.requestHash, 'MODEL_CITATION_REQUEST_BINDING');
   return { schemaVersion: CITATION_OPTIONS_VERSION, modelCitationMode: task.modelCitationMode,
     requestHash: task.requestHash, canonicalRequestSha256: wholeQualitySha256(normalizeRequest(request)),
     taskMetadataBinding: await readRetryTaskMetadataBinding(task) };
@@ -637,7 +651,7 @@ async function currentReport(task) {
 async function persistedRequestHash(task) {
   try {
     const request = await readJson(requestPath(task.runDir));
-    return task.modelCitationMode === undefined ? wholeQualitySha256(request) : getIndependentReviewRequestHash({ request, modelCitationMode: task.modelCitationMode });
+    return task.modelCitationMode === undefined && task.evidencePolicy === undefined ? wholeQualitySha256(request) : getIndependentReviewRequestHash({ request, modelCitationMode: task.modelCitationMode, evidencePolicy: task.evidencePolicy });
   }
   catch { return null; }
 }
@@ -649,7 +663,7 @@ async function resultFor(task, suppliedRequestHash = task.requestHash, options) 
   catch (error) { protocolProblem = error; }
   try {
     const citationOptions = await validateModelCitationTask(task, events);
-    if (citationOptions) for (const descriptor of task.stagePlan) {
+    if (citationOptions || task.evidencePolicy) for (const descriptor of task.stagePlan) {
       const value = await sealed(task.runDir, descriptor.id); if (!value) break;
       await validatePersistedSeal(task, descriptor, value, { readOnly: true });
     }
@@ -683,7 +697,7 @@ async function resultFor(task, suppliedRequestHash = task.requestHash, options) 
   const unresolvedDispatch = events.find(event => event.type === 'dispatch_started' && !terminalAttempts.has(event.attemptId));
   const problem = unresolvedDispatch ? { type: 'unknown_dispatch', code: 'PROVIDER_OUTCOME_UNKNOWN', message: 'A persisted dispatch has no sealed provider outcome; it will not be resent automatically.', stageId: unresolvedDispatch.stageId } : explicitProblem;
   let status = 'queued';
-  if (suppliedRequestHash !== task.requestHash || diskRequestHash !== task.requestHash || !versionsCompatible(versions, task.versions)) status = 'stale';
+  if (suppliedRequestHash !== task.requestHash || diskRequestHash !== task.requestHash || !versionsCompatible(versions, task.versions, task.evidencePolicy)) status = 'stale';
   else if (protocolProblem) status = 'needs_attention';
   else if ([...events].reverse().find(event => event.type === 'cancelled')) status = 'cancelled';
   else if (events.some(event => ['stage_needs_attention', 'unknown_dispatch'].includes(event.type) && !recovered.has(event))) status = 'needs_attention';
@@ -730,7 +744,8 @@ async function validatePersistedSeal(task, descriptor, seal, options) {
   const invalid = (condition, message) => ensure(condition, 'PERSISTED_STAGE_SEAL_INVALID', message);
   exact(seal, ['schemaVersion', 'stageId', 'stage', 'attemptId', 'inputHash', 'contextId', 'invocationId', 'protocolPacket', 'record', 'recordSha256', 'positionResolution',
     ...(seal?.schemaVersion === REREAD_SEAL_VERSION ? ['whitespaceRestorations'] : []),
-    ...(seal?.schemaVersion === PARAGRAPH_SEAL_VERSION ? ['paragraphReferences'] : [])], [], 'PERSISTED_STAGE_SEAL_INVALID');
+    ...(seal?.schemaVersion === PARAGRAPH_SEAL_VERSION ? ['paragraphReferences'] : []),
+    ...(task.evidencePolicy ? ['deliveryProofSHA256'] : [])], [], 'PERSISTED_STAGE_SEAL_INVALID');
   invalid(['independent-review-stage-seal-1', 'independent-review-recovered-stage-seal-1', REREAD_SEAL_VERSION, PARAGRAPH_SEAL_VERSION].includes(seal.schemaVersion) && seal.stageId === descriptor.id && seal.stage === descriptor.stage && nonempty(seal.attemptId), 'Persisted seal identity is invalid.');
   if (existsSync(invalidReadingRetryPath(task.runDir, descriptor.id))) invalid(seal.schemaVersion === REREAD_SEAL_VERSION, 'A reserved reread cannot be represented as an ordinary/format-recovered seal.');
   const built = await buildEnvelope(task, descriptor, options);
@@ -755,6 +770,13 @@ async function validatePersistedSeal(task, descriptor, seal, options) {
   invalid(same(packet, built.packet) && instruction === `${built.instruction}\n`, 'Persisted packet or instruction does not match the current stage input.');
   invalid(object(dispatch) && dispatch.stageId === descriptor.id && dispatch.stage === descriptor.stage && dispatch.attemptId === seal.attemptId && dispatch.inputHash === built.inputHash, 'Persisted dispatch does not bind the stage input.');
   invalid(receiptFields(receipt) && receipt.inputHash === built.inputHash && receipt.contextId === seal.contextId && receipt.invocationId === seal.invocationId, 'Persisted receipt does not bind the seal and exact input.');
+  if (task.evidencePolicy) {
+    const context = await buildEvidenceContext(task, descriptor, built);
+    invalid(same(context, await readJson(join(attemptDir, 'delivery-context.json'))), 'Delivery context changed.');
+    const proof = validateDeliveryEvidence({ input: { stage: descriptor.stage, ...built }, context,
+      evidence: await readJson(join(attemptDir, 'delivery-evidence.json')), receipt });
+    invalid(same(proof, await readJson(join(attemptDir, 'delivery-proof.json'))) && seal.deliveryProofSHA256 === bytesHash(JSON.stringify(proof)), 'Delivery proof changed.');
+  }
   let rawParsed;
   try { rawParsed = JSON.parse(raw); } catch { invalid(false, 'Persisted raw response is not valid JSON.'); }
   invalid(same(rawParsed, parsed), 'Persisted parsed response differs from the raw response.');
@@ -785,6 +807,7 @@ async function validatePersistedSeal(task, descriptor, seal, options) {
   invalid(dispatched?.stageId === descriptor.id && dispatched.stage === descriptor.stage && dispatched.inputHash === built.inputHash, 'Persisted dispatch event is missing or mismatched.');
   invalid(returned?.stageId === descriptor.id && returned.stage === descriptor.stage && returned.inputHash === built.inputHash && returned.contextId === receipt.contextId && returned.invocationId === receipt.invocationId, 'Persisted provider return event is missing or mismatched.');
   const sealedEvents = events.filter(event => event.type === 'stage_sealed' && event.stageId === descriptor.id);
+  if (task.evidencePolicy) invalid(sealedEvents.every(event => event.deliveryProofSHA256 === seal.deliveryProofSHA256), 'Seal event delivery proof mismatch.');
   if (seal.schemaVersion === PARAGRAPH_SEAL_VERSION) invalid(sealedEvents.every(event => event.paragraphReferencesSha256 === wholeQualitySha256(seal.paragraphReferences)), 'Paragraph event lacks its evidence binding.');
   if (seal.schemaVersion === REREAD_SEAL_VERSION) invalid(sealedEvents.every(event => event.invalidReadingRetry === INVALID_INDEPENDENT_READING_RETRY_VERSION), 'Reread seal event lacks its policy binding.');
   invalid(sealedEvents.every(event => event.attemptId === seal.attemptId && event.inputHash === built.inputHash && event.recordSha256 === validation.recordSha256 && event.contextId === receipt.contextId), 'Persisted stage event conflicts with its seal.');
@@ -806,12 +829,29 @@ async function reconcilePersistedSeals(task, onProgress) {
     if (!checked.hasSealEvent) {
       await record(task, 'stage_sealed', { stageId: descriptor.id, stage: descriptor.stage, attemptId: value.attemptId, inputHash: value.inputHash,
         recordSha256: value.recordSha256, contextId: value.contextId, recoveredFromSeal: true,
+        ...(task.evidencePolicy ? { deliveryProofSHA256: value.deliveryProofSHA256 } : {}),
         ...(value.schemaVersion === 'independent-review-recovered-stage-seal-1' ? { positionRecovery: POSITION_RECOVERY_VERSION } : {}),
         ...(value.schemaVersion === REREAD_SEAL_VERSION ? { invalidReadingRetry: INVALID_INDEPENDENT_READING_RETRY_VERSION } : {}),
         ...(value.schemaVersion === PARAGRAPH_SEAL_VERSION ? { paragraphReferencesSha256: wholeQualitySha256(value.paragraphReferences) } : {}) }, onProgress);
     }
   }
   return true;
+}
+
+async function buildEvidenceContext(task, descriptor, built) {
+  ensure(task.evidencePolicy === DELIVERY_EVIDENCE_POLICY, 'EVIDENCE_POLICY_UNSUPPORTED');
+  ensure(await persistedRequestHash(task) === task.requestHash, 'EVIDENCE_REQUEST_BINDING');
+  const context = { policy: task.evidencePolicy, stageId: descriptor.id, protocolInputHash: built.inputHash, priorSeals: [] };
+  if (descriptor.stage === 'goal_audit') {
+    for (const previous of plans.compare.slice(0, 6)) {
+      const seal = await sealed(task.runDir, previous.id);
+      ensure(seal && (await validatePersistedSeal(task, previous, seal, { readOnly: true })).hasSealEvent, 'EVIDENCE_PRIOR_SEALS_REQUIRED');
+      context.priorSeals.push({ stageId: previous.id, sealSHA256: bytesHash(await readFile(sealedPath(task.runDir, previous.id))) });
+    }
+    const request = await readJson(requestPath(task.runDir));
+    context.differenceAudit = computeDifferenceAudit(request.baselineChapters, request.candidate.chapters);
+  }
+  return context;
 }
 
 async function processStage(task, descriptor, analyze, signal, onProgress, invalidReadingRetry = null) {
@@ -840,10 +880,18 @@ async function processStage(task, descriptor, analyze, signal, onProgress, inval
   if (built.paragraphCatalog) await atomicJson(join(attemptDir, 'paragraph-catalog.json'), built.paragraphCatalog);
   await atomicJson(join(attemptDir, 'dispatch.json'), { stageId: descriptor.id, stage: descriptor.stage, attemptId, inputHash: built.inputHash, createdAt: new Date().toISOString() });
   await record(task, 'dispatch_started', { stageId: descriptor.id, stage: descriptor.stage, attemptId, inputHash: built.inputHash }, onProgress);
-  let returned;
+  let returned, analyzeEntered = false;
   try {
-    returned = await analyze({ stage: descriptor.stage, packet: clone(built.packet), inputHash: built.inputHash, instruction: built.instruction, signal });
+    const evidenceContext = task.evidencePolicy ? await buildEvidenceContext(task, descriptor, built) : undefined;
+    if (evidenceContext) await atomicJson(join(attemptDir, 'delivery-context.json'), evidenceContext);
+    analyzeEntered = true;
+    returned = await analyze({ stage: descriptor.stage, packet: clone(built.packet), inputHash: built.inputHash, instruction: built.instruction, signal,
+      ...(evidenceContext ? { evidenceContext } : {}) });
   } catch (error) {
+    if (task.evidencePolicy && !analyzeEntered) {
+      await markAttention(task, descriptor, attemptId, 'EVIDENCE_PRE_DISPATCH_REJECTED', error.message, onProgress, { providerOutcomeUnknown: false, definitelyNotDispatched: true });
+      return 'blocked';
+    }
     if (signal?.aborted) {
       await record(task, 'cancelled', { stageId: descriptor.id, stage: descriptor.stage, attemptId, code: 'CANCELLED', message: 'Review cancelled after dispatch; provider outcome is not reused.' }, onProgress);
       return 'cancelled';
@@ -876,6 +924,17 @@ async function processStage(task, descriptor, analyze, signal, onProgress, inval
     return 'blocked';
   }
 
+  if (task.evidencePolicy) {
+    await atomicJson(join(attemptDir, 'delivery-evidence.json'), returned?.deliveryEvidence ?? null);
+    try {
+      const context = await buildEvidenceContext(task, descriptor, built);
+      const proof = validateDeliveryEvidence({ input: { stage: descriptor.stage, ...built }, context, evidence: returned.deliveryEvidence, receipt });
+      await atomicJson(join(attemptDir, 'delivery-proof.json'), proof);
+    } catch (error) {
+      await markAttention(task, descriptor, attemptId, 'DELIVERY_EVIDENCE_INVALID', error.message, onProgress);
+      return 'blocked';
+    }
+  }
   let parsed;
   try { parsed = JSON.parse(raw); }
   catch (error) {
@@ -911,10 +970,12 @@ async function processStage(task, descriptor, analyze, signal, onProgress, inval
   const seal = { schemaVersion: built.paragraphCatalog ? PARAGRAPH_SEAL_VERSION : invalidReadingRetry ? REREAD_SEAL_VERSION : 'independent-review-stage-seal-1', stageId: descriptor.id, stage: descriptor.stage, attemptId,
     inputHash: built.inputHash, contextId: receipt.contextId, invocationId: receipt.invocationId, protocolPacket: built.protocolPacket,
     record: resolved.record, recordSha256: validation.recordSha256, positionResolution: resolved.log,
+    ...(task.evidencePolicy ? { deliveryProofSHA256: bytesHash(JSON.stringify(await readJson(join(attemptDir, 'delivery-proof.json')))) } : {}),
     ...(invalidReadingRetry ? { whitespaceRestorations: rereadWhitespace } : {}),
     ...(built.paragraphCatalog ? { paragraphReferences: await paragraphEvidenceBinding(built, attemptDir) } : {}) };
   await atomicJson(sealedPath(task.runDir, descriptor.id), seal);
   await record(task, 'stage_sealed', { stageId: descriptor.id, stage: descriptor.stage, attemptId, inputHash: built.inputHash, recordSha256: validation.recordSha256, contextId: receipt.contextId,
+    ...(task.evidencePolicy ? { deliveryProofSHA256: seal.deliveryProofSHA256 } : {}),
     ...(invalidReadingRetry ? { invalidReadingRetry: INVALID_INDEPENDENT_READING_RETRY_VERSION } : {}),
     ...(built.paragraphCatalog ? { paragraphReferencesSha256: wholeQualitySha256(seal.paragraphReferences) } : {}) }, onProgress);
   return 'sealed';
@@ -1012,15 +1073,16 @@ async function continueRun(task, analyze, signal, onProgress) {
   return resultFor(task);
 }
 
-export async function startIndependentReview({ runRoot, request, modelCitationMode, analyze, signal, onProgress } = {}) {
+export async function startIndependentReview({ runRoot, request, modelCitationMode, evidencePolicy, analyze, signal, onProgress } = {}) {
+  if (evidencePolicy !== undefined) getIndependentReviewRequestHash({ request, modelCitationMode, evidencePolicy });
   validateModelCitationMode(request, modelCitationMode);
   if (!Object.hasOwn(request ?? {}, 'readingFocusVersion') && !Object.hasOwn(request ?? {}, 'readingFocusDefinitions')) return legacyRuntime.startIndependentReview({ runRoot, request, analyze, signal, onProgress });
   ensure(typeof analyze === 'function', 'ANALYZE_REQUIRED');
   const normalized = normalizeRequest(request), root = await trustedRoot(runRoot), versions = await getIndependentReviewVersions(WHOLE_QUALITY_EVALUATION_VERSION);
-  const requestHash = getIndependentReviewRequestHash({ request: normalized, modelCitationMode }), parent = await mkdtemp(join(root, 'independent-review-task-')), runDir = join(parent, 'run');
+  const requestHash = getIndependentReviewRequestHash({ request: normalized, modelCitationMode, evidencePolicy }), parent = await mkdtemp(join(root, 'independent-review-task-')), runDir = join(parent, 'run');
   await mkdir(join(runDir, 'controller'), { recursive: true, mode: 0o700 });
   const task = { schemaVersion: TASK_SCHEMA, caseId: normalized.caseId, mode: normalized.mode, runRoot: root, runDir, requestHash, versions,
-    stagePlan: clone(plans[normalized.mode]), createdAt: new Date().toISOString(),
+    ...(evidencePolicy ? { evidencePolicy } : {}), stagePlan: clone(plans[normalized.mode]), createdAt: new Date().toISOString(),
     ...(modelCitationMode ? { modelCitationMode } : {}) };
   await atomicJson(join(parent, 'request.json'), normalized);
   await atomicJson(join(parent, 'task.json'), task);
@@ -1348,7 +1410,7 @@ async function validateInvalidReadingRetryReservation(task, descriptor, { retryA
     && inspection.stageId === descriptor.id && inspection.requestHash === task.requestHash
     && same(inspection.sourceVersions, task.versions)
     && (inspection.schemaVersion === RETRY_SNAPSHOT_VERSION
-      ? (same(inspection.retryVersions, await getIndependentReviewVersions(task.versions.protocolVersion)) || same(inspection.retryVersions, FOCUS_R10_VERSIONS))
+      ? (same(inspection.retryVersions, await getIndependentReviewVersions(task.versions.protocolVersion)) || same(inspection.retryVersions, FOCUS_R10_VERSIONS) || (task.evidencePolicy === undefined && same(inspection.retryVersions, RELEASE_E68F56D_VERSIONS)))
       : same(inspection.retryVersions, INVALID_READING_RETRY_R01_VERSIONS))
     && reservation.inspectionHash === wholeQualitySha256(inspection), 'INVALID_READING_RETRY_RESERVATION');
   await validateRetryProtectedFiles(task, inspection);
@@ -1517,7 +1579,7 @@ export async function buildIndependentReviewPartialReport({ runDir, requestHash 
   if (task.versions.protocolVersion !== WHOLE_QUALITY_EVALUATION_VERSION) return legacyRuntime.buildIndependentReviewPartialReport({ runDir, requestHash });
   ensure(task.mode === 'compare' && same(task.stagePlan, plans.compare), 'PARTIAL_REPORT_COMPARE_REQUIRED');
   ensure(requestHash === task.requestHash && await persistedRequestHash(task) === requestHash, 'PARTIAL_REPORT_REQUEST_BINDING');
-  ensure(versionsCompatible(await getIndependentReviewVersions(task.versions.protocolVersion), task.versions), 'PARTIAL_REPORT_STALE');
+  ensure(versionsCompatible(await getIndependentReviewVersions(task.versions.protocolVersion), task.versions, task.evidencePolicy), 'PARTIAL_REPORT_STALE');
   const { bundle, privateBinding } = await validateTaskProtocolArtifacts(task);
   ensure(!(await sealed(task.runDir, '07-goal-audit')), 'PARTIAL_REPORT_GOAL_ALREADY_SEALED');
   const events = await eventsFor(task.runDir);

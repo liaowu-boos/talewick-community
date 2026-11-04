@@ -1,0 +1,12 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import {once} from 'node:events';
+import {createPreviewServer,loadSite} from '../src/serve.mjs';
+import {sha256} from '../src/evidence-store.mjs';
+import {fixture} from './fixture.mjs';
+import {writeFile} from 'node:fs/promises';
+import path from 'node:path';
+const request=(port,{url='/',method='GET',headers={}}={})=>new Promise((resolve,reject)=>{const req=http.request({host:'127.0.0.1',port,path:url,method,headers},res=>{const parts=[];res.on('data',x=>parts.push(x));res.on('end',()=>resolve({status:res.statusCode,headers:res.headers,body:Buffer.concat(parts).toString()}));});req.on('error',reject);req.end();});
+test('exact static routes, local host, same-origin and GET-only boundaries',async t=>{const server=createPreviewServer(new Map([['/',{bytes:Buffer.from('synthetic'),contentType:'text/html; charset=utf-8'}]]));server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>new Promise(r=>server.close(r)));const port=server.address().port;assert.equal((await request(port)).status,200);for(const url of ['/../private/source-lock.json','/%2e%2e/private/source-lock.json','/?path=/etc/passwd','/evidence/not-registered','/manifest.json'])assert.equal((await request(port,{url})).status,404);assert.equal((await request(port,{method:'POST'})).status,405);assert.equal((await request(port,{headers:{Host:'evil.example'}})).status,403);assert.equal((await request(port,{headers:{Origin:'https://evil.example'}})).status,403);assert.equal((await request(port,{headers:{'Sec-Fetch-Site':'cross-site'}})).status,403);const ok=await request(port);assert.equal(ok.headers['x-content-type-options'],'nosniff');assert.match(ok.headers['content-security-policy'],/default-src 'none'/);});
+test('tampered generated asset or site manifest prevents server startup',async()=>{const f=await fixture(),html='synthetic';await writeFile(path.join(f.dir,'index.html'),html);const manifest=JSON.stringify({schemaVersion:'review-static-site-1',entries:[{url:'/',path:'index.html',sha256:sha256(html),contentType:'text/html; charset=utf-8'}]});await writeFile(path.join(f.dir,'site-manifest.json'),manifest);assert.equal((await loadSite(f.dir,sha256(manifest))).size,1);await writeFile(path.join(f.dir,'index.html'),'changed');await assert.rejects(loadSite(f.dir,sha256(manifest)),/asset hash mismatch/);await assert.rejects(loadSite(f.dir,'0'.repeat(64)),/manifest hash mismatch/);});
