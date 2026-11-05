@@ -8,10 +8,38 @@ const f=await fixture();f.manifest.title='<script>alert(1)</script>';f.manifest.
 const v=adaptResult(await f.open()),html=render(v,labels);
 assert(!html.includes('<script>'));assert(!html.includes('<img'));
 assert(html.includes('&lt;script&gt;'));
-assert(html.includes('引用检查未通过'));assert(html.includes('精确 1 / 共 2 · 失败 1'));
+assert(html.includes('引用检查未通过'));assert(html.includes('报告内精确 1 / 共 2 · 失败 1'));
 assert(html.includes('未通过整稿验收'));assert(html.includes('实际采纳：未执行'));
 assert(!html.includes('http://'));assert(!html.includes('https://'));
 for(const m of html.matchAll(/href="([^"]+)"/g))assert(/^\/evidence\/[a-z0-9_-]+\/[a-f0-9]{64}$/.test(m[1]));
 const pending=structuredClone(v); pending.conclusion.literaryQuality.status='pending';
 const pendingHTML=render(pending,labels); assert(pendingHTML.includes('全文质量：待判断')); assert(!pendingHTML.includes('未通过整稿验收'));
 console.log(JSON.stringify({renderedSyntheticOnly:true,xssEscaped:true,sourceFailureVisible:true,qualityNotElevated:true,linksAllowlisted:true,externalResources:0,pendingNotMislabelledAsFailed:true}));
+
+// Render the same checker output exercised by the adapter tests.
+const {comparisonFixture}=await import('./comparison-fixture.mjs');
+const comparison=await comparisonFixture();
+const compared=render(adaptResult(await comparison.open()),labels);
+assert(compared.includes('原始阅读偏好：倾向后读稿（second）'));
+assert(compared.includes('<dt>精确定位数</dt><dd>2 次</dd>'));
+assert(compared.includes('<dt>覆盖修改段数</dt><dd>0 段</dd>'));
+assert(compared.includes('<dt>覆盖修改段数</dt><dd>2 段</dd>'));
+assert(compared.includes('主证据引文都在两稿共有段'));
+assert(compared.includes('反证 · 精确定位 1 次 · 覆盖修改段数 1 段'));
+comparison.a.comparisons=[{...comparison.a.comparisons[0],coverageId:null,exact:2}];
+await comparison.save();
+const unknown=render(adaptResult(await comparison.open()),labels);
+assert(unknown.includes('<dt>覆盖修改段数</dt><dd>待核</dd>'));
+assert(unknown.includes('原始阅读偏好：倾向后读稿（second）'));
+assert(!unknown.includes('主证据引文都在两稿共有段'));
+
+const {stageReturnFixture}=await import('./stage-return-fixture.mjs');
+const stages=await stageReturnFixture();
+const stageHTML=render(adaptResult(await stages.open()),labels);
+assert(stageHTML.includes('原回包已保存，引用校验失败'));
+assert(stageHTML.includes('reader-c</strong> · 返回未知'));
+assert(stageHTML.includes('reader-d</strong> · 未派发'));
+assert(stageHTML.includes('未封存原回包自报：倾向先读稿（first）'));
+const sealedSection=stageHTML.match(/<section aria-label="有效封存偏好">(.*?)<\/section>/s)?.[1];
+assert(sealedSection?.includes('倾向后读稿（second）'));
+assert(!sealedSection.includes('first'));

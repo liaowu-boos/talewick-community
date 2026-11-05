@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import {stageReturns} from './stage-returns.mjs';
+import {comparisonViews} from './comparison-coverage.mjs';
 import {binding, isId} from './evidence-store.mjs';
 const text = x => typeof x === 'string' && x.trim().length > 0;
 const count = x => Number.isSafeInteger(x) && x >= 0;
@@ -27,7 +29,8 @@ export function adaptResult(store) {
   const sources = m.sources.map(s => {
     assert(isId(s.id) && !['coordinator', 'manuscript'].includes(s.id) && !seen.has(s.id), 'Duplicate/reserved source'); seen.add(s.id);
     assert(text(s.label));
-    if (s.reportId === null) return {id:s.id, label:s.label, process:{status:'pending', completed:0, total:null, summary:'此版本尚未导入该来源评阅。'}, citations:{status:'pending', total:null, checked:0, exact:0, failures:[], originalPassed:null, summary:'尚未导入该来源引用检查。'}, references:[]};
+    const returns = stageReturns(store,s);
+    if (s.reportId === null) return {id:s.id, label:s.label, stageReturns:returns, comparisons:[], process:{status:'pending', completed:0, total:null, summary:'此版本尚未导入该来源评阅。'}, citations:{status:'pending', total:null, checked:0, exact:0, failures:[], originalPassed:null, summary:'尚未导入该来源引用检查。'}, references:[]};
     const r = reportJSON(store, s.reportId, s.id, 'source-report');
     assert.equal(r.schemaVersion, 'review-source-result-1');
     const p = r.process, c = r.citations;
@@ -45,7 +48,7 @@ export function adaptResult(store) {
     else if (c.checked > 0) status = c.total !== null && c.checked === c.total && c.originalPassed === true ? 'passed' : 'partial';
     assert(!(c.originalPassed === true && status !== 'passed'), 'Contradictory citation pass');
     const references = [store.ref(s.reportId, s.id), ...refs(store, r.references, s.id, p.status !== 'pending' || status !== 'pending')];
-    return {id:s.id, label:s.label, process:structuredClone(p), citations:{...structuredClone(c), status}, references};
+    return {id:s.id, label:s.label, stageReturns:returns, comparisons:comparisonViews(store,r), process:structuredClone(p), citations:{...structuredClone(c), status}, references};
   });
   const conclusion = {};
   if (m.conclusionId === null) {

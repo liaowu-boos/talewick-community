@@ -4,12 +4,21 @@ import { ButtonLink } from '@/components/base/buttons/button';
 import { cx } from '@/utils/cx';
 
 type Evidence = {id:string; label:string; url:string; sha256:string};
+type Comparison = {
+  id:string; label:string; preference:string; exact:number|null; total:number;
+  knownChanged:number; knownChangedTitles:number; secondary:{channel:string;exact:number;total:number;changedParagraphCount:number|null;knownChanged:number}[];
+  changedParagraphCount:number|null; sharedOnly:boolean; references:Evidence[];
+};
+type StageReturn = {
+  id:string; label:string; statusLabel:string; reason:string|null;
+  rawPreference:string|null; sealedPreference:string|null; references:Evidence[];
+};
 type State = {status:string; summary:string; references:Evidence[]};
 export type ReviewResultView = {
   title:string; versionLabel:string; caseId:string; baselineSHA256:string; candidateSHA256:string;
   citationOverall:string; literaryAccepted:boolean; adopted:false;
   manuscripts:Evidence[];
-  sources:{id:string;label:string;process:{status:string;completed:number;total:number|null;summary:string};citations:{status:string;total:number|null;checked:number;exact:number;originalPassed:boolean|null;failures:{code:string;location:string;anchorId?:string}[];summary:string};references:Evidence[]}[];
+  sources:{id:string;label:string;stageReturns?:StageReturn[];comparisons?:Comparison[];process:{status:string;completed:number;total:number|null;summary:string};citations:{status:string;total:number|null;checked:number;exact:number;originalPassed:boolean|null;failures:{code:string;location:string;anchorId?:string}[];summary:string};references:Evidence[]}[];
   conclusion:{factReview:State;literaryQuality:State;adoption:State};
 };
 type Labels = Record<string, Record<string,string>>;
@@ -19,11 +28,51 @@ function Panel({title,children}:{title:string;children:ReactNode}) {
 function EvidenceLinks({items}:{items:Evidence[]}) {
   return <details><summary className="text-body-medium cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring">查看证据（{items.length}）</summary><ul className="flex flex-col gap-3 p-4">{items.map(r=><li key={r.id} className="flex flex-col gap-1"><ButtonLink href={r.url} download variant="secondary" size="small">{r.label}</ButtonLink><code className="text-caption-1-regular break-all">SHA256 {r.sha256}</code></li>)}</ul></details>;
 }
+function preferenceText(value: string) {
+  const translations: Record<string, string> = {first:'倾向先读稿',second:'倾向后读稿',mixed:'各有得失',no_clear_preference:'无明显偏好'};
+  return Object.hasOwn(translations, value) ? `${translations[value]}（${value}）` : value;
+}
+function StageReturns({ stages }: { stages?: StageReturn[] }) {
+  if (!stages?.length) return <p>回包状态未知，尚未导入阶段诊断。</p>;
+  const sealed = stages.filter(stage => stage.sealedPreference !== null);
+  return <section className="flex flex-col gap-3" aria-label="阶段回包诊断">
+    <h4 className="text-headline-medium">阶段回包状态</h4>
+    {stages.map(stage => <div key={stage.id} className="flex flex-col gap-1">
+      <p><strong>{stage.label}</strong> · {stage.statusLabel}</p>
+      {stage.reason && <p>{stage.reason}</p>}
+      {stage.rawPreference !== null && <p>未封存原回包自报：{preferenceText(stage.rawPreference)}</p>}
+      {stage.references.length > 0 && <EvidenceLinks items={stage.references}/>}
+    </div>)}
+    <section aria-label="有效封存偏好">
+      <h4 className="text-headline-medium">有效封存偏好</h4>
+      {sealed.length ? sealed.map(stage => <p key={stage.id}>{stage.label} · {preferenceText(stage.sealedPreference!)}</p>) : <p>当前记录未提供可确认的封存偏好。</p>}
+    </section>
+  </section>;
+}
+function ComparisonOpinions({ opinions, showRawPreference }: { opinions?: Comparison[]; showRawPreference:boolean }) {
+  if (!opinions?.length) return <p>对照意见的改段覆盖待核，尚无逐条记录。</p>;
+  return <section className="flex flex-col gap-3" aria-label="对照意见">
+    {opinions.map(opinion => <div key={opinion.id} className="flex flex-col gap-2">
+      <h4 className="text-body-medium">{opinion.label}</h4>
+      {showRawPreference && <p>原始阅读偏好：{preferenceText(opinion.preference)}（原回包字段）</p>}
+      <p>主证据 · 修改段按稿件版本分别去重，章题另计。</p>
+      <dl className="flex flex-wrap gap-4">
+        <div><dt>精确定位数</dt><dd>{opinion.exact === null ? '待核' : `${opinion.exact} 次`}</dd></div>
+        <div><dt>覆盖修改段数</dt><dd>{opinion.changedParagraphCount === null ? '待核' : `${opinion.changedParagraphCount} 段`}</dd></div>
+      </dl>
+      {opinion.changedParagraphCount === null && opinion.knownChanged > 0 && <p>已确认命中 {opinion.knownChanged} 个修改段，其余落点待核。</p>}
+      {opinion.sharedOnly && <p>主证据引文都在两稿共有段。要核实这条意见所说的改动，还需对照修改段原文。</p>}
+      {opinion.knownChangedTitles > 0 && <p>另命中 {opinion.knownChangedTitles} 个修改章题。</p>}
+      {opinion.secondary.map(row => <p key={row.channel}>{row.channel === 'counterEvidence' ? '反证' : '严重影响证据'} · 精确定位 {row.exact} 次 · 覆盖修改段数 {row.changedParagraphCount ?? '待核'}{row.changedParagraphCount !== null && ' 段'}</p>)}
+      {opinion.references.length > 0 && <EvidenceLinks items={opinion.references}/>}
+    </div>)}
+  </section>;
+}
 export function ResultEvidencePanel({view,labels}:{view:ReviewResultView;labels:Labels}) {
   return <main className="mx-auto max-w-5xl p-6 flex flex-col gap-4 text-body-regular">
     <header className="flex flex-col gap-3"><p className="text-caption-1-semibold text-text-secondary">Talewick · 只读评阅证据</p><h1 className="text-title-2-medium">{view.title}</h1><p>{view.versionLabel}</p><p>全文质量：{view.conclusion.literaryQuality.status==='pending'?'待判断':view.literaryAccepted?'已明确验收':'未通过整稿验收'} · 实际采纳：未执行</p><p>流程完成、引用定位、事实判断与文学评价分别记录。</p></header>
     <Panel title="稿件版本"><p>以下结果仅适用于这组全文。新候选须重新绑定证据。</p><dl className="flex flex-col gap-2"><dt>基线 SHA256</dt><dd className="text-caption-1-regular break-all">{view.baselineSHA256}</dd><dt>候选 SHA256</dt><dd className="text-caption-1-regular break-all">{view.candidateSHA256}</dd></dl><EvidenceLinks items={view.manuscripts}/></Panel>
-    <Panel title="各来源的流程与引用"><p className={cx('text-body-medium',view.citationOverall==='failed'&&'text-text-error-primary')}>引用完整性：{labels.citations[view.citationOverall]}</p><p>某一来源定位成功不会覆盖另一来源失败。定位成功只证明引文位置，不证明观点成立。</p>{view.sources.map(s=><article key={s.id} className="flex flex-col gap-3 p-4 border border-separator-border rounded-xl"><h3 className="text-headline-medium">{s.label}</h3><p><Badge>{labels.process[s.process.status]}</Badge>　{s.process.completed}/{s.process.total??'未登记'} 阶段</p><p>{s.process.summary}</p><p className={cx('text-body-medium',s.citations.status==='failed'&&'text-text-error-primary')}>{labels.citations[s.citations.status]} · 精确 {s.citations.exact} / 共 {s.citations.total??'未知'} · 失败 {s.citations.failures.length}</p><p>{s.citations.summary}</p>{s.citations.failures.length>0&&<ul className="flex flex-col gap-2">{s.citations.failures.map(f=><li key={f.location}><code className="break-all">{f.location}</code> · {f.code}{f.anchorId&&` · ${f.anchorId}`}</li>)}</ul>}<EvidenceLinks items={s.references}/></article>)}</Panel>
+    <Panel title="各来源的流程与引用"><p className={cx('text-body-medium',view.citationOverall==='failed'&&'text-text-error-primary')}>已导入引用报告：{labels.citations[view.citationOverall]}</p><p>某一来源定位成功不会覆盖另一来源失败。定位成功只证明引文位置，不证明观点成立。</p>{view.sources.map(s=><article key={s.id} className="flex flex-col gap-3 p-4 border border-separator-border rounded-xl"><h3 className="text-headline-medium">{s.label}</h3><p><Badge>{labels.process[s.process.status]}</Badge>　{s.process.completed}/{s.process.total??'未登记'} 阶段</p><p>{s.process.summary}</p><p className={cx('text-body-medium',s.citations.status==='failed'&&'text-text-error-primary')}>{labels.citations[s.citations.status]} · 报告内精确 {s.citations.exact} / 共 {s.citations.total??'未知'} · 失败 {s.citations.failures.length}</p><p>{s.citations.summary}</p>{s.citations.failures.length>0&&<ul className="flex flex-col gap-2">{s.citations.failures.map(f=><li key={f.location}><code className="break-all">{f.location}</code> · {f.code}{f.anchorId&&` · ${f.anchorId}`}</li>)}</ul>}<StageReturns stages={s.stageReturns}/><ComparisonOpinions opinions={s.comparisons} showRawPreference={!s.stageReturns?.length}/><EvidenceLinks items={s.references}/></article>)}</Panel>
     {(['factReview','literaryQuality','adoption'] as const).map((key,index)=><Panel key={key} title={['人工事实核实','文学取舍','采纳建议'][index]}><p className="text-body-medium">{labels[key][view.conclusion[key].status]}</p><p>{view.conclusion[key].summary}</p><EvidenceLinks items={view.conclusion[key].references}/></Panel>)}
     <footer className="text-body-2-regular text-text-secondary">本页没有发起模型请求、修改原评语或执行采纳。</footer>
   </main>;

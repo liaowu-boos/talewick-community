@@ -1,0 +1,10 @@
+{
+  "baselineChapters": [{"id":"c","title":"等潮","body":"栈桥边，铜铃响了两声。\n\n阿岚说，船还能再等一盏灯。\n\n她把票折进袖口。"}],
+  "candidateChapters": [{"id":"c","title":"退潮","body":"栈桥边，铜铃响了两声。\n\n阿岚掐灭了灯。\n\n她把票折进袖口。"}],
+  "rolesByBlindId": {"A":"candidate","B":"baseline"},
+  "comparisons": [
+    {"id":"pace","statement":"新版的迟疑更短。","evidence":[{"blindId":"A","chapterId":"c","quote":"她把票折进袖口。"},{"blindId":"B","chapterId":"c","quote":"她把票折进袖口。"}],"counterEvidence":[{"blindId":"A","chapterId":"c","quote":"掐灭了灯"}]},
+    {"id":"action","statement":"改稿用动作结束了等候。","evidence":[{"blindId":"B","chapterId":"c","quote":"再等一盏灯"},{"blindId":"A","chapterId":"c","quote":"掐灭了灯"}]},
+    {"id":"title","evidence":[{"blindId":"A","chapterId":"c","field":"title","quote":"退潮"}]}
+  ]
+}

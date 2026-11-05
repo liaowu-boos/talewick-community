@@ -1,0 +1,420 @@
+{
+  "schemaVersion": "comparison-citation-coverage-1",
+  "binding": {
+    "rolesByBlindId": {
+      "A": "candidate",
+      "B": "baseline"
+    },
+    "comparisonsSHA256": "121db4d0f666249711793c826a9456b5ad2499408c515e0a1e8a6e00d024330e",
+    "baselineSHA256": "55f69efb4592583c31a3cfcebde404fba23e1d63926559afc79b2f1921e388d8",
+    "candidateSHA256": "af9f0fe388c5e239293b7d4843940156086252526d5eeb5b0e1b1ac915fd8b06"
+  },
+  "units": [
+    {
+      "unitId": 0,
+      "side": "baseline",
+      "chapterId": "c",
+      "field": "title",
+      "ordinal": 1,
+      "start": 0,
+      "end": 2,
+      "state": "changed",
+      "kind": "title_changed"
+    },
+    {
+      "unitId": 1,
+      "side": "baseline",
+      "chapterId": "c",
+      "field": "body",
+      "ordinal": 1,
+      "start": 0,
+      "end": 11,
+      "state": "shared",
+      "kind": "shared"
+    },
+    {
+      "unitId": 2,
+      "side": "baseline",
+      "chapterId": "c",
+      "field": "body",
+      "ordinal": 2,
+      "start": 13,
+      "end": 26,
+      "state": "changed",
+      "kind": "replacement_region"
+    },
+    {
+      "unitId": 3,
+      "side": "baseline",
+      "chapterId": "c",
+      "field": "body",
+      "ordinal": 3,
+      "start": 28,
+      "end": 36,
+      "state": "shared",
+      "kind": "shared"
+    },
+    {
+      "unitId": 4,
+      "side": "candidate",
+      "chapterId": "c",
+      "field": "title",
+      "ordinal": 1,
+      "start": 0,
+      "end": 2,
+      "state": "changed",
+      "kind": "title_changed"
+    },
+    {
+      "unitId": 5,
+      "side": "candidate",
+      "chapterId": "c",
+      "field": "body",
+      "ordinal": 1,
+      "start": 0,
+      "end": 11,
+      "state": "shared",
+      "kind": "shared"
+    },
+    {
+      "unitId": 6,
+      "side": "candidate",
+      "chapterId": "c",
+      "field": "body",
+      "ordinal": 2,
+      "start": 13,
+      "end": 20,
+      "state": "changed",
+      "kind": "replacement_region"
+    },
+    {
+      "unitId": 7,
+      "side": "candidate",
+      "chapterId": "c",
+      "field": "body",
+      "ordinal": 3,
+      "start": 22,
+      "end": 30,
+      "state": "shared",
+      "kind": "shared"
+    }
+  ],
+  "separatorOnlyChapterIds": [],
+  "citations": [
+    {
+      "pointer": "/comparisons/0/evidence/0",
+      "channel": "evidence",
+      "ref": {
+        "blindId": "A",
+        "chapterId": "c",
+        "quote": "她把票折进袖口。"
+      },
+      "location": "exact",
+      "method": "unique_substring",
+      "side": "candidate",
+      "field": "body",
+      "start": 22,
+      "end": 30,
+      "sameQuoteInCounterpartField": true,
+      "unitIds": [
+        7
+      ],
+      "coverage": "shared_only"
+    },
+    {
+      "pointer": "/comparisons/0/evidence/1",
+      "channel": "evidence",
+      "ref": {
+        "blindId": "B",
+        "chapterId": "c",
+        "quote": "她把票折进袖口。"
+      },
+      "location": "exact",
+      "method": "unique_substring",
+      "side": "baseline",
+      "field": "body",
+      "start": 28,
+      "end": 36,
+      "sameQuoteInCounterpartField": true,
+      "unitIds": [
+        3
+      ],
+      "coverage": "shared_only"
+    },
+    {
+      "pointer": "/comparisons/0/counterEvidence/0",
+      "channel": "counterEvidence",
+      "ref": {
+        "blindId": "A",
+        "chapterId": "c",
+        "quote": "掐灭了灯"
+      },
+      "location": "exact",
+      "method": "unique_substring",
+      "side": "candidate",
+      "field": "body",
+      "start": 15,
+      "end": 19,
+      "sameQuoteInCounterpartField": false,
+      "unitIds": [
+        6
+      ],
+      "coverage": "changed"
+    },
+    {
+      "pointer": "/comparisons/1/evidence/0",
+      "channel": "evidence",
+      "ref": {
+        "blindId": "B",
+        "chapterId": "c",
+        "quote": "再等一盏灯"
+      },
+      "location": "exact",
+      "method": "unique_substring",
+      "side": "baseline",
+      "field": "body",
+      "start": 20,
+      "end": 25,
+      "sameQuoteInCounterpartField": false,
+      "unitIds": [
+        2
+      ],
+      "coverage": "changed"
+    },
+    {
+      "pointer": "/comparisons/1/evidence/1",
+      "channel": "evidence",
+      "ref": {
+        "blindId": "A",
+        "chapterId": "c",
+        "quote": "掐灭了灯"
+      },
+      "location": "exact",
+      "method": "unique_substring",
+      "side": "candidate",
+      "field": "body",
+      "start": 15,
+      "end": 19,
+      "sameQuoteInCounterpartField": false,
+      "unitIds": [
+        6
+      ],
+      "coverage": "changed"
+    },
+    {
+      "pointer": "/comparisons/2/evidence/0",
+      "channel": "evidence",
+      "ref": {
+        "blindId": "A",
+        "chapterId": "c",
+        "field": "title",
+        "quote": "退潮"
+      },
+      "location": "exact",
+      "method": "unique_substring",
+      "side": "candidate",
+      "field": "title",
+      "start": 0,
+      "end": 2,
+      "sameQuoteInCounterpartField": false,
+      "unitIds": [
+        4
+      ],
+      "coverage": "changed"
+    }
+  ],
+  "comparisons": [
+    {
+      "comparisonIndex": 0,
+      "comparisonId": "pace",
+      "byChannel": {
+        "evidence": {
+          "references": 2,
+          "exact": 2,
+          "sharedOnly": 2,
+          "sharedParagraphOnly": 2,
+          "changedParagraph": 0,
+          "changedTitle": 0,
+          "changed": 0,
+          "unresolved": 0,
+          "changedUnitIds": [],
+          "coversChangedParagraph": false,
+          "coversChangedTitle": false
+        },
+        "counterEvidence": {
+          "references": 1,
+          "exact": 1,
+          "sharedOnly": 0,
+          "sharedParagraphOnly": 0,
+          "changedParagraph": 1,
+          "changedTitle": 0,
+          "changed": 1,
+          "unresolved": 0,
+          "changedUnitIds": [
+            6
+          ],
+          "coversChangedParagraph": true,
+          "coversChangedTitle": false
+        },
+        "severeHarm.evidence": {
+          "references": 0,
+          "exact": 0,
+          "sharedOnly": 0,
+          "sharedParagraphOnly": 0,
+          "changedParagraph": 0,
+          "changedTitle": 0,
+          "changed": 0,
+          "unresolved": 0,
+          "changedUnitIds": [],
+          "coversChangedParagraph": null,
+          "coversChangedTitle": null
+        }
+      }
+    },
+    {
+      "comparisonIndex": 1,
+      "comparisonId": "action",
+      "byChannel": {
+        "evidence": {
+          "references": 2,
+          "exact": 2,
+          "sharedOnly": 0,
+          "sharedParagraphOnly": 0,
+          "changedParagraph": 2,
+          "changedTitle": 0,
+          "changed": 2,
+          "unresolved": 0,
+          "changedUnitIds": [
+            2,
+            6
+          ],
+          "coversChangedParagraph": true,
+          "coversChangedTitle": false
+        },
+        "counterEvidence": {
+          "references": 0,
+          "exact": 0,
+          "sharedOnly": 0,
+          "sharedParagraphOnly": 0,
+          "changedParagraph": 0,
+          "changedTitle": 0,
+          "changed": 0,
+          "unresolved": 0,
+          "changedUnitIds": [],
+          "coversChangedParagraph": null,
+          "coversChangedTitle": null
+        },
+        "severeHarm.evidence": {
+          "references": 0,
+          "exact": 0,
+          "sharedOnly": 0,
+          "sharedParagraphOnly": 0,
+          "changedParagraph": 0,
+          "changedTitle": 0,
+          "changed": 0,
+          "unresolved": 0,
+          "changedUnitIds": [],
+          "coversChangedParagraph": null,
+          "coversChangedTitle": null
+        }
+      }
+    },
+    {
+      "comparisonIndex": 2,
+      "comparisonId": "title",
+      "byChannel": {
+        "evidence": {
+          "references": 1,
+          "exact": 1,
+          "sharedOnly": 0,
+          "sharedParagraphOnly": 0,
+          "changedParagraph": 0,
+          "changedTitle": 1,
+          "changed": 1,
+          "unresolved": 0,
+          "changedUnitIds": [
+            4
+          ],
+          "coversChangedParagraph": false,
+          "coversChangedTitle": true
+        },
+        "counterEvidence": {
+          "references": 0,
+          "exact": 0,
+          "sharedOnly": 0,
+          "sharedParagraphOnly": 0,
+          "changedParagraph": 0,
+          "changedTitle": 0,
+          "changed": 0,
+          "unresolved": 0,
+          "changedUnitIds": [],
+          "coversChangedParagraph": null,
+          "coversChangedTitle": null
+        },
+        "severeHarm.evidence": {
+          "references": 0,
+          "exact": 0,
+          "sharedOnly": 0,
+          "sharedParagraphOnly": 0,
+          "changedParagraph": 0,
+          "changedTitle": 0,
+          "changed": 0,
+          "unresolved": 0,
+          "changedUnitIds": [],
+          "coversChangedParagraph": null,
+          "coversChangedTitle": null
+        }
+      }
+    }
+  ],
+  "byChannel": {
+    "evidence": {
+      "references": 5,
+      "exact": 5,
+      "sharedOnly": 2,
+      "sharedParagraphOnly": 2,
+      "changedParagraph": 2,
+      "changedTitle": 1,
+      "changed": 3,
+      "unresolved": 0,
+      "changedUnitIds": [
+        2,
+        6,
+        4
+      ],
+      "coversChangedParagraph": true,
+      "coversChangedTitle": true
+    },
+    "counterEvidence": {
+      "references": 1,
+      "exact": 1,
+      "sharedOnly": 0,
+      "sharedParagraphOnly": 0,
+      "changedParagraph": 1,
+      "changedTitle": 0,
+      "changed": 1,
+      "unresolved": 0,
+      "changedUnitIds": [
+        6
+      ],
+      "coversChangedParagraph": true,
+      "coversChangedTitle": false
+    },
+    "severeHarm.evidence": {
+      "references": 0,
+      "exact": 0,
+      "sharedOnly": 0,
+      "sharedParagraphOnly": 0,
+      "changedParagraph": 0,
+      "changedTitle": 0,
+      "changed": 0,
+      "unresolved": 0,
+      "changedUnitIds": [],
+      "coversChangedParagraph": null,
+      "coversChangedTitle": null
+    }
+  },
+  "semanticSupport": "NOT_COMPUTED",
+  "literaryEffect": "NOT_COMPUTED",
+  "automaticAdoption": false
+}

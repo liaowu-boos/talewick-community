@@ -18,6 +18,8 @@ Opt-in review delivery checks bind the protocol, delivered prompt and outgoing r
 
 The local read-only preview separates source-specific progress and citations from factual review and adoption. Its tests build and render a synthetic bundle. [Preview tool](tools/review-preview/README.md)
 
+The [continuous three-chapter review tool](tools/continuous-review/README.md) builds counterbalanced prompts and checks exact citations, version bindings and evidence coverage. The preview distinguishes rejected responses, unknown returns and stages not dispatched, while preserving raw opinions. Change coverage and valid citations do not establish semantic support or literary improvement.
+
 ## Previous update · 2026-11-03
 
 - **Opt-in review evidence tools** distinguish dialogue from established facts, clarify example references, and hash the actual delivered prompt independently of the frozen protocol.

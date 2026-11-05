@@ -1,5 +1,20 @@
 # Verification / 验证记录
 
+## 2026-11-05 · Citation coverage and invalid review states
+
+The public checkout passed the production build and 1,832 tests: 1,571 runtime, 123 UI, 53 Python, 69 preview and 16 continuous-review tests. The preview suite includes synthetic SSR and loopback HTTP checks. Existing locked dependencies were reused; the existing large-bundle build warning remains.
+
+公开新增比较引文覆盖、阶段返回诊断、连续三章匿名对读离线校验和限定范围状态适配。无效响应保留原意见，有效偏好为空；引用位置与变化覆盖不会自动转成事实或文学质量通过。通用工具需要调用方显式接入，默认GUI评阅流程不变。
+
+Only code, protocol definitions, documentation and synthetic fixtures are included. Private manuscripts, captured responses, round-specific previews, provider/accounting records and personal paths remain local. Publication verification made zero model requests. Public file boundaries and common credential patterns passed; GitHub CI also runs the new continuous-review suite.
+
+Reproduce from the repository root after building the GUI:
+
+```sh
+node --test tools/review-preview/tests/*.test.mjs tools/continuous-review/*.test.mjs
+node tools/check-public.mjs
+```
+
 ## 2026-11-04 · Review delivery and compatibility
 
 The public checkout passed the production build and 1,751 tests (1,548 runtime, 123 UI, 53 Python and 27 preview tests). The preview suite includes a synthetic SSR build, HTML escaping and loopback HTTP checks. Publication verification used local synthetic inputs and made zero model requests.

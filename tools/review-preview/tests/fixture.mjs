@@ -5,9 +5,8 @@ import {mkdir,mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {sha256,openEvidenceStore} from '../src/evidence-store.mjs';
 const root=await mkdtemp(path.join(tmpdir(),'talewick-review-fixtures-'));
 after(()=>rm(root,{recursive:true,force:true}));
-export async function fixture(){
+export async function fixture(docs = {baseline:'Synthetic baseline only.',candidate:'Synthetic candidate only.'}){
  await mkdir(root,{recursive:true});const dir=await mkdtemp(path.join(root,'synthetic-'));await mkdir(path.join(dir,'data'));
- const docs={baseline:'Synthetic baseline only.',candidate:'Synthetic candidate only.'};
  const binding={caseId:'synthetic-story',baselineSHA256:sha256(docs.baseline),candidateSHA256:sha256(docs.candidate)};
  const entries=[];
  async function put(id,sourceId,kind,value){const bytes=Buffer.from(typeof value==='string'?value:JSON.stringify(value));await writeFile(path.join(dir,'data',id+'.json'),bytes);const e={id,sourceId,kind,path:'data/'+id+'.json',sha256:sha256(bytes),...binding};const at=entries.findIndex(x=>x.id===id);if(at<0)entries.push(e);else entries[at]=e;}

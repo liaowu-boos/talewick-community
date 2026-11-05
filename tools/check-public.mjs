@@ -28,6 +28,11 @@ const approvedReviewJSON=new Set([
  'modules/creation/novel-review/report_fields.json',
  'modules/creation/novel-review/SOURCE_SNAPSHOTS.json',
  'modules/creation/novel-review/acceptance/functional_cases.json',
+ // Audited synthetic comparison replay; no captured manuscript or model response.
+ 'tools/review-preview/tests/fixtures/comparison-coverage/input.json',
+ 'tools/review-preview/tests/fixtures/comparison-coverage/result.json',
+ // Protocol definition only; manuscript and response data remain external.
+ 'tools/continuous-review/prompt-templates.json',
 ]);
 const forbidden=/(?:^|\/)(?:node_modules|dist|\.local-runs|\.local-releases|private|source-library|objects|project-archive|development|9月爆款分类|10月爆款分类|优秀文笔例文—爱意全家桶|小说样本数据补充-可信样本)(?:\/|$)/;
 const secrets=/(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|sk-[A-Za-z0-9_-]{24,}|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)/;
