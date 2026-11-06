@@ -31,3 +31,4 @@ jobs:
       - run: npm run test:review
       - run: node --test ../../../tools/review-preview/tests/*.test.mjs
       - run: node --test ../../../tools/continuous-review/*.test.mjs
+      - run: node --test ../../../tools/isolated-anchor-reading/*.test.mjs

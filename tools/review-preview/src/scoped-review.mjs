@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import {sha256} from './evidence-store.mjs';
+import {compareFrozenBodies, semanticReviewView} from './scoped-review-facts.mjs';
 
 // Consumes frozen, trusted evidence-store entries; never modifies a response.
 export function scopedReaders({manifest, get, ref, manuscripts, planned}) {
   const json = id => JSON.parse(get(id).bytes);
+  const textComparison = compareFrozenBodies(manuscripts);
   const execution = manifest.executionId ? json(manifest.executionId) : null;
   if (execution) {
     assert.equal(execution.schemaVersion, 'continuous-review-execution-inspection-1');
@@ -22,6 +24,10 @@ export function scopedReaders({manifest, get, ref, manuscripts, planned}) {
       rawPreference: null, effectivePreference: null,
       assessment: null, counterReading: null, scopeLimit: null,
       rawText: null, inspection: null, references: [],
+      textComparison,
+      machineCitations: {status: 'pending', statusLabel: '机器引用检查未完成'},
+      semanticReview: semanticReviewView({textComparison}),
+      factualWarningMeaning: '措辞提示仅供复核；空列表不代表事实正确，也不确定同文主张的范围。',
     };
     if (!item.rawId) return row;
 
@@ -37,6 +43,11 @@ export function scopedReaders({manifest, get, ref, manuscripts, planned}) {
       ['counterReading', record?.counterReading?.assessment],
       ['scopeLimit', record?.scopeLimit],
     ]) if (typeof value === 'string') row[target] = value;
+    if (item.semanticReviewId) {
+      row.semanticReview = semanticReviewView({report: json(item.semanticReviewId),
+        rawSHA256: raw.entry.sha256, record, textComparison});
+      row.references.push(ref(item.semanticReviewId));
+    }
     row.statusLabel = '原回包已保存，校验结果未知';
     row.reason = '已有原件，尚无可确认的完整证据契约结果。';
 
@@ -89,6 +100,11 @@ export function scopedReaders({manifest, get, ref, manuscripts, planned}) {
       errors: check.errors, exact, total: check.references.length,
       changedUnits: units.length, uncovered: check.changeCoverage?.uncoveredUnitCount ?? null,
       warnings: check.factualWarnings ?? [],
+    };
+    row.machineCitations = {
+      status: check.citationsExact === true ? 'passed' : check.citationsExact === false ? 'failed' : 'pending',
+      statusLabel: check.citationsExact === true ? '机器引用定位合格，主张语义另列'
+        : check.citationsExact === false ? '机器引用定位未通过' : '机器引用检查未完成',
     };
     if (check.valid === false) {
       assert.equal(check.preference, null);

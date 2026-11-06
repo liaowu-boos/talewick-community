@@ -12,7 +12,15 @@ The project separates the writing interface, source material management, writing
 
 ![Talewick workspace](examples/workspace.png)
 
-## Latest update · 2026-11-04
+## Latest update · 2026-11-06
+
+The public v2 [isolated reading and assisted comparison tool](tools/isolated-anchor-reading/README.md) prepares two independent anonymous single-manuscript readings and a third comparison with both texts and neutral literal differences. An explicit ordered chapterIds list supports different scope lengths; both manuscripts must match it exactly, and legacy plans are not silently migrated. Single-manuscript readers have no comparative preference; the third response is difference-assisted comparison, not three blind-review votes. Frozen anchors check location, source and change coverage, not whether a quotation supports a claim.
+
+The [three-route read-only adapter](tools/review-preview/ISOLATED-READING.md) separates original returns, contract validation, human semantic review and editorial decisions. Invalid originals remain readable. Mechanical success can coexist with failed semantic review. The existing continuous-reading adapter also exposes per-chapter body identity and explicit pending semantic review; an empty warning list does not establish factual correctness.
+
+These APIs require explicit integration and do not change the default GUI review flow. Offline prompt construction, checks and synthetic tests make no model calls and never adopt or accept a whole manuscript. [Running and dependencies](tools/isolated-anchor-reading/DEPENDENCIES.md)
+
+## Previous update · 2026-11-04
 
 Opt-in review delivery checks bind the protocol, delivered prompt and outgoing request bytes. The goal audit verifies six sealed stages before receiving the text differences. Retry and recovery records from the previous public release can be replayed. [Review interface](modules/validation/runtime/independent-review-delivery-evidence.md)
 
@@ -34,7 +42,7 @@ These utilities require explicit integration and do not change the default GUI r
 - **Scene and revision safeguards**: check actor presence, dialogue attribution, actions, and object transfers. Plan fact checks and independent candidate scene checks retain failures and block unverified adoption.
 - **Material adoption**: preserve adopted material context, distinguish complete references from limited component applicability, and report retrieval failures. Saved tasks retain their original request policies.
 
-This sync uses the integrated and built r10 candidate, with separate public-edition validation. Completed workflows, exact quotations, and passing tests do not establish semantic correctness or whole-manuscript literary quality. The separate Full15 entry remains C01–C06; adoption remains author-controlled.
+See the verification record for the scope of each code update. Completed workflows, exact quotations, and passing tests do not establish semantic correctness or whole-manuscript literary quality. The separate Full15 entry remains C01–C06; adoption remains author-controlled.
 
 Private manuscripts, analysis samples, historical tasks, and captured model responses are excluded. The six existing [reading examples](examples/README.md) remain unchanged and the built-in library stays empty. Private replay tests are excluded; scene-dependency controls use original synthetic input. See [verification](VERIFICATION.md) for the tested scope.
 

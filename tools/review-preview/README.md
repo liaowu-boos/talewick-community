@@ -39,3 +39,13 @@
 
 
 连续三章协议的独立状态适配见 [scoped-review](SCOPED-REVIEW.md)，其合成测试与通用校验器共同运行。它需由调用方显式接入，不修改默认GUI评阅流程。
+
+
+## 两种独立阅读接口
+
+| 接口 | 输入方式 | 偏好与判断边界 |
+| --- | --- | --- |
+| [scopedReaders](SCOPED-REVIEW.md) | continuous-review-1，两路AB/BA连续对读 | 原偏好与机械有效偏好分列；无措辞警告不等于事实正确，逐章正文比较与人工语义复核独立。 |
+| [adaptIsolatedReading](ISOLATED-READING.md) | isolated-anchor-reading-2，两路独立X单稿加一路差异辅助比较 | S1/S2没有稿间偏好；仅C1可保留比较偏好。返回、契约、人工复核、编辑决定分别显示，不汇总为三票。 |
+
+不能把一个协议的计划、schema或原回包交给另一个入口。三路工具及其纯合成运行示例见[协议说明](../isolated-anchor-reading/README.md)，已有依赖与安装边界见[依赖清单](../isolated-anchor-reading/DEPENDENCIES.md)。这些适配器仅返回视图数据，没有为新协议增加整页或默认产品接入口；调用方须同时显示各判断轴，不得用机械通过代替语义成立或全稿验收。
