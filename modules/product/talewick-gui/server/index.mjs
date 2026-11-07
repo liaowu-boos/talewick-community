@@ -26,14 +26,16 @@ import { CandidateRecheckService, PRODUCT_RECHECK_VERSION, createCandidateRechec
 import { resolveDeepReferenceLayer, queryDeepReferences as queryDeepReferenceLayer } from '../../../data/runtime/deep-reference-layer.mjs';
 import { listImportableProjects, projectImportSnapshot } from './project-import.mjs';
 
+import {isolatedReportRouter, listReports} from './isolated-report-history.mjs';
+
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.woff2': 'font/woff2', '.ico': 'image/x-icon' };
 const json = (res, status, data) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); res.end(JSON.stringify(data)); };
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
 
-async function bodyJSON(req) {
+async function bodyJSON(req, limit = 2 * 1024 * 1024) {
   if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) throw fail('请求需要使用 JSON 格式。', 415);
   let size = 0; const chunks = [];
-  for await (const chunk of req) { size += chunk.length; if (size > 2 * 1024 * 1024) throw fail('本次材料超过 2 MB，请减少选取内容。', 413); chunks.push(chunk); }
+  for await (const chunk of req) { size += chunk.length; if (size > limit) throw fail(`本次材料超过 ${limit / (1024 * 1024)} MB，请减少选取内容。`, 413); chunks.push(chunk); }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw fail('请求正文不是有效 JSON。'); }
 }
 
@@ -155,7 +157,9 @@ export async function createRuntime({ config, model = createModel(config), workf
   const reviewEvidenceAuditRouter = createReviewEvidenceAuditRouter({ service: reviewEvidenceAudits, json, bodyJSON, canRun: () => publicConfig(config).configured });
   const candidateRecheckRouter = createCandidateRecheckRouter({ service: candidateRechecks, json, bodyJSON, canRun: () => publicConfig(config).configured });
   const full15Router=createFull15Router({service:full15,json,bodyJSON});
-  const independentReviewRouter=createIndependentReviewRouter({service:independentReviews,json,bodyJSON});
+  const historyRoot = path.join(config.runsDir, 'isolated-reports');
+  const historyReportRouter = isolatedReportRouter({root:historyRoot, json, bodyJSON});
+  const independentReviewRouter=createIndependentReviewRouter({service:independentReviews,json,bodyJSON,listIsolatedReports:id=>listReports(historyRoot,id)});
   const sockets = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, perMessageDeflate: false });
   const close = async () => { for (const socket of sockets.clients) socket.terminate(); sockets.close(); const results=await Promise.allSettled([reviewEvidenceAudits?.close(),candidateRechecks.close(),independentReviews.close(),full15.close(),publicationFeedback.close(),conversations.close(),libraryBatches?.close(),tasks.close(),library?.close()]); const failed=results.find(r=>r.status==='rejected');if(failed)throw failed.reason; };
   const allowedOrigins = new Set([`http://127.0.0.1:${config.port}`, `http://localhost:${config.port}`, 'http://127.0.0.1:4323', 'http://localhost:4323']);
@@ -165,6 +169,7 @@ export async function createRuntime({ config, model = createModel(config), workf
       if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host)) throw fail('请通过本机地址访问创作服务。', 403);
       if (req.headers.origin && !allowedOrigins.has(req.headers.origin)) throw fail('当前页面不能访问这台电脑的创作服务。', 403);
       const url = new URL(req.url, `http://${host}`);
+      if (await historyReportRouter(req,res,url)) return;
       if (await reviewEvidenceAuditRouter(req,res,url)) return;
       if (await independentReviewRouter(req,res,url)) return;
       if (await candidateRecheckRouter(req,res,url)) return;

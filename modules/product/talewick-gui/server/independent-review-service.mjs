@@ -659,10 +659,18 @@ export class IndependentReviewService {
   async close() { this.closed = true; for (const controller of this.controllers.values()) controller.abort(); while (this.busy) await new Promise(resolve => setTimeout(resolve, 5)); await Promise.allSettled(this.writes.values()); }
 }
 
-export function createIndependentReviewRouter({ service, json, bodyJSON }) {
+export function createIndependentReviewRouter({ service, json, bodyJSON, listIsolatedReports }) {
   return async (req, res, url) => {
     if (!url.pathname.startsWith('/api/independent-reviews')) return false;
-    if (url.pathname === '/api/independent-reviews' && req.method === 'GET') { json(res, 200, { available: service.available(), versions: await service.versions(), readingFocusVersions: service.readingFocusVersions(), modelCitationModes: service.modelCitationModes(), tasks: await service.readList(url.searchParams.get('projectId')) }); return true; }
+    if (url.pathname === '/api/independent-reviews' && req.method === 'GET') {
+      const projectId = url.searchParams.get('projectId');
+      const history = {available: service.available(), versions: await service.versions(),
+        readingFocusVersions: service.readingFocusVersions(), modelCitationModes: service.modelCitationModes(),
+        tasks: await service.readList(projectId)};
+      if (listIsolatedReports && projectId) history.isolatedReports = await listIsolatedReports(projectId);
+      json(res, 200, history);
+      return true;
+    }
     if (url.pathname === '/api/independent-reviews' && req.method === 'POST') { json(res, 202, { task: await service.start(await bodyJSON(req)) }); return true; }
     const match = url.pathname.match(/^\/api\/independent-reviews\/([a-f0-9-]{36})(?:\/(cancel|retry|recover|retry-invalid-reading))?$/);
     if (match && req.method === 'GET' && !match[2]) { json(res, 200, { task: await service.read(match[1]) }); return true; }

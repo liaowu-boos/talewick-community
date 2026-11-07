@@ -20,7 +20,7 @@ Talewick 是一个在本机运行的 AI 小说创作工作台，主要面向中�
 
 用[单文件离线报告](tools/review-preview/ISOLATED-REPORT.md)可以直接打开三路结果；内置合成示例无需 API Key、安装依赖或启动服务。
 
-这些接口需要调用方显式接入，未改变默认GUI评审流程。离线构建提示、检查和合成测试不调用模型，不自动采纳或验收全稿。[运行与依赖](tools/isolated-anchor-reading/DEPENDENCIES.md)
+已登记的三路报告可从工作台的评阅历史打开，打开时会重新核对项目和整稿版本。离线构建提示、检查和合成测试不调用模型，不自动采纳或验收全稿。[运行与依赖](tools/isolated-anchor-reading/DEPENDENCIES.md)
 
 ## 上次更新 · 2026-11-04
 

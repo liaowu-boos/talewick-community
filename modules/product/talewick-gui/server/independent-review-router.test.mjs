@@ -25,11 +25,12 @@ test('router exposes create, list, get, cancel and retry contract without intern
     resumeIndependentReview: async () => assert.fail('not expected') };
   service = await new IndependentReviewService({ rootDir, adapter, analyze: async()=>{}, prepareRequest: input => ({ request: { caseId: input.caseId, mode: 'single', baselineChapters: input.chapters }, provenance: {} }) }).init();
   t.after(async()=>{await service.close();await rm(rootDir,{recursive:true,force:true});});
-  const router = createIndependentReviewRouter({ service, json: (_res,status,value)=>{_res.status=status;_res.value=value;}, bodyJSON: async req=>req.payload });
+  const isolated = {id:'registered-report',title:'雨',manuscriptRevision:body.manuscriptRevision};
+  const router = createIndependentReviewRouter({ service, listIsolatedReports: async projectId => projectId === body.projectId ? [isolated] : [], json: (_res,status,value)=>{_res.status=status;_res.value=value;}, bodyJSON: async req=>req.payload });
   const invoke = async (method, route, payload) => { const req={method,payload},res={}; const handled=await router(req,res,new URL(route,'http://127.0.0.1')); return {handled,status:res.status,value:res.value}; };
   const created = await invoke('POST','/api/independent-reviews',body); assert.equal(created.status,202); assert.equal(created.value.task.mode,'single');
   const done = await waitFor(service,created.value.task.id); assert.equal(done.status,'complete');
-  const listed = await invoke('GET','/api/independent-reviews?projectId=project-http'); assert.equal(listed.value.tasks.length,1);
+  const listed = await invoke('GET','/api/independent-reviews?projectId=project-http'); assert.equal(listed.value.tasks.length,1); assert.deepEqual(listed.value.isolatedReports,[isolated]);
   const one = await invoke('GET',`/api/independent-reviews/${done.id}`); assert.equal(one.status,200); assert.equal(Object.hasOwn(one.value.task,'runDir'),false); assert.equal(one.value.task.report.literaryPass,'NOT_COMPUTED');
   await assert.rejects(invoke('POST',`/api/independent-reviews/${done.id}/retry`,{}), error => error.code === 'REVIEW_RERUN_FORBIDDEN' && error.status === 409);
 });

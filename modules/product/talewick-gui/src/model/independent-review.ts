@@ -2,6 +2,14 @@ import type { Project } from './types.ts';
 import type { AnonymousComparisonBinding, ReviewSourceBinding } from './review-result-state.ts';
 import { manuscriptRevision } from './runtime.ts';
 
+export type IsolatedHistoryRecord = {
+  id: string;
+  title: string;
+  createdAt: string;
+  manuscriptRevision: string;
+  synthetic: boolean;
+};
+
 export type IndependentReviewStatus = 'queued' | 'running' | 'complete' | 'interrupted' | 'cancelled' | 'needs_attention' | 'stale';
 export const INDEPENDENT_READING_FOCUS_VERSION = 'literary-reading-six-1';
 export const PARAGRAPH_CITATION_MODE = 'paragraph_refs_v1';
@@ -41,9 +49,9 @@ async function call(path: string, body?: unknown) {
   return value;
 }
 
-export async function listIndependentReviews(projectId: string): Promise<{ available: boolean; readingFocusVersions: string[]; modelCitationModes: string[]; tasks: IndependentReviewTask[] }> {
+export async function listIndependentReviews(projectId: string): Promise<{ available: boolean; readingFocusVersions: string[]; modelCitationModes: string[]; tasks: IndependentReviewTask[]; isolatedReports: IsolatedHistoryRecord[] }> {
   const value = await call(`/api/independent-reviews?projectId=${encodeURIComponent(projectId)}`);
-  return { ...value, readingFocusVersions: value.readingFocusVersions ?? [], modelCitationModes: value.modelCitationModes ?? [] };
+  return { ...value, isolatedReports: value.isolatedReports ?? [], readingFocusVersions: value.readingFocusVersions ?? [], modelCitationModes: value.modelCitationModes ?? [] };
 }
 
 export function comparableWholeQualityTask(project: Project) {

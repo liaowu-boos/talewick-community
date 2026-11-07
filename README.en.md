@@ -20,7 +20,7 @@ The [three-route read-only adapter](tools/review-preview/ISOLATED-READING.md) se
 
 The [offline reading report](tools/review-preview/ISOLATED-REPORT.md) renders the three routes as a single local HTML file. Its synthetic demo requires no API key, installation, or server.
 
-These APIs require explicit integration and do not change the default GUI review flow. Offline prompt construction, checks and synthetic tests make no model calls and never adopt or accept a whole manuscript. [Running and dependencies](tools/isolated-anchor-reading/DEPENDENCIES.md)
+Registered reports open from the workbench review history after a project and full-manuscript version check. Offline prompt construction, checks and synthetic tests make no model calls and never adopt or accept a whole manuscript. [Running and dependencies](tools/isolated-anchor-reading/DEPENDENCIES.md)
 
 ## Previous update · 2026-11-04
 

@@ -34,7 +34,7 @@ node --test tools/review-preview/tests/*.test.mjs tools/continuous-review/*.test
 
 渲染器使用React、react-dom、TypeScript和esbuild。当前package.json固定React/react-dom为19.2.8、TypeScript为5.9.3；esbuild由现有工具链的package-lock.json解析。以同一份锁文件执行npm ci，不要为运行纯离线适配器另装这些包或拷贝node_modules进发布包。
 
-既有preview的构建与监听命令见[预览运行说明](../review-preview/README.md)。三路适配器的视图也可用[单文件离线报告](../review-preview/ISOLATED-REPORT.md)展示。它不依赖 SSR 构建，不需要服务端口，不改变默认 GUI。
+既有preview的构建与监听命令见[预览运行说明](../review-preview/README.md)。三路适配器的视图也可用[单文件离线报告](../review-preview/ISOLATED-REPORT.md)展示。它不依赖 SSR 构建，不需要服务端口，可登记到工作台的评阅历史。
 
 ## 维护边界
 

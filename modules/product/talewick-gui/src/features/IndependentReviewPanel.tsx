@@ -1,17 +1,18 @@
+import {IsolatedHistoryRows} from './IsolatedHistoryRows';
 import { ReviewEvidenceAuditPanel } from '@/features/ReviewEvidenceAuditPanel';
 import { ReviewResultStateDetails } from '@/features/ReviewResultStateDetails';
 import { anonymousReviewComparison } from '@/model/review-result-state';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { RiBookOpenLine, RiEyeLine, RiPlayLine, RiRefreshLine } from '@remixicon/react';
 import { Button } from '@/components/base/buttons/button';
-import { PARAGRAPH_CITATION_MODE, INDEPENDENT_READING_FOCUS_VERSION, comparableWholeQualityTask, canRetryInvalidIndependentReading, retryInvalidIndependentReading, independentReviewAction, independentReviewRecoveryModes, recoverIndependentReview, listIndependentReviews, startIndependentReview, type IndependentReviewTask } from '@/model/independent-review';
+import { PARAGRAPH_CITATION_MODE, INDEPENDENT_READING_FOCUS_VERSION, comparableWholeQualityTask, canRetryInvalidIndependentReading, retryInvalidIndependentReading, independentReviewAction, independentReviewRecoveryModes, recoverIndependentReview, listIndependentReviews, startIndependentReview, type IndependentReviewTask, type IsolatedHistoryRecord } from '@/model/independent-review';
 import { independentReviewView, independentReviewSnapshotForEvidence, isPartialBlindReport, type IndependentReviewSnapshot, type ReviewEvidenceLocation } from '@/model/independent-review-view';
 import { manuscriptRevision } from '@/model/runtime';
 import type { Project } from '@/model/types';
 import { DialogShell } from '@/features/shared';
 
 const statusNames: Record<IndependentReviewTask['status'], string> = { queued: '等待评阅', running: '独立评阅进行中', complete: '评阅记录已保存', interrupted: '评阅已中断', cancelled: '评阅已取消', needs_attention: '评阅需要处理', stale: '报告对应旧版本' };
-const empty = (projectId: string) => ({ projectId, available: false, readingFocusVersions: [] as string[], modelCitationModes: [] as string[], tasks: [] as IndependentReviewTask[] });
+const empty = (projectId: string) => ({ projectId, available: false, readingFocusVersions: [] as string[], modelCitationModes: [] as string[], isolatedReports: [] as IsolatedHistoryRecord[], tasks: [] as IndependentReviewTask[] });
 interface SnapshotSelection { snapshot: IndependentReviewSnapshot; chapterId: string; evidence?: ReviewEvidenceLocation }
 
 export function IndependentReviewStopReason({ error, partial = false }: { error: IndependentReviewTask['error']; partial?: boolean }) {
@@ -95,7 +96,8 @@ export function IndependentReviewPanel({ project, hasUnsavedDraft, onLocate }: {
     {!scoped.available && <p className="mt-3 text-caption-1-regular text-text-secondary">独立评阅适配器尚未接通；稿件仍可编辑、保存和导出。</p>}
     {scoped.available && !focusedReadingAvailable && <p className="mt-2 text-caption-1-regular text-text-secondary">六项阅读维度评审尚未接通；已有评阅与恢复记录仍可查看。</p>}
     {!comparableWholeQualityTask(project) && <p className="mt-2 text-caption-1-regular text-text-tertiary">候选盲评只对仍与当前原稿精确绑定的整稿质量候选开放；采纳或编辑后请评阅实际新版本。</p>}
-    {scoped.tasks.length > 0 && <details className="mt-3 border-t border-separator-border pt-3" open={Boolean(active)}><summary className="cursor-pointer text-body-2-medium">评阅历史 · {scoped.tasks.length} 次</summary><div className="mt-3 flex flex-col gap-3">
+    {scoped.tasks.length + scoped.isolatedReports.length > 0 && <details className="mt-3 border-t border-separator-border pt-3" open={Boolean(active)}><summary className="cursor-pointer text-body-2-medium">评阅历史 · {scoped.tasks.length + scoped.isolatedReports.length} 次</summary><div className="mt-3 flex flex-col gap-3">
+      {scoped.isolatedReports.length > 0 && (hasUnsavedDraft ? <p className="text-caption-1-regular text-text-secondary">请先保存或撤回正文修改，再打开对应版本的三路报告。</p> : <IsolatedHistoryRows project={project} reports={scoped.isolatedReports}/>)}
       {scoped.tasks.map(task => {
         const partial = isPartialBlindReport(task.partialReport) ? task.partialReport : null;
         const anonymous = anonymousReviewComparison(task);
