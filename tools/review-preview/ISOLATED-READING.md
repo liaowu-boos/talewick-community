@@ -1,6 +1,6 @@
 # 三路只读阅读适配器
 
-`src/isolated-reading.mjs` 消费 `isolated-anchor-reading-2` 的冻结计划、原件和校验存档，不调用模型、不改写回包、不执行采纳，也不创建页面或监听。
+`src/isolated-reading.mjs` 消费 `isolated-anchor-reading-2` 的冻结计划、原件和校验存档，不调用模型、不改写回包、不执行采纳，也不创建页面或监听。要把同一组可信输入渲染为独立 HTML，见[离线报告](ISOLATED-REPORT.md)。
 
 依赖同仓库 `tools/isolated-anchor-reading/review-tools.mjs` 及其 `prompt-templates.json`，必须使用与计划冻结时一致的版本。这个入口独立于旧 `scopedReaders`，不把新协议伪装为 AB/BA 两读者。
 
@@ -18,14 +18,18 @@ const view = adaptIsolatedReading({
 ```js
 const manifest = {
   planSHA256: expectedPlanSHA256,
-  requests: ['S1', 'S2', 'C1'].map(requestId => ({
-    requestId,
-    rawId: `${requestId}-raw`,
-    inspectionId: `${requestId}-inspection`,
-    messagesId: `${requestId}-messages`,
-    receiptId: `${requestId}-receipt`,
-    // semanticReviewId 可选
-  })),
+  requests: ['S1', 'S2', 'C1'].map(requestId => {
+    // 协议槽位区分大小写；文件证据库的登记 ID 使用小写。
+    const prefix = requestId.toLowerCase();
+    return {
+      requestId,
+      rawId: `${prefix}-raw`,
+      inspectionId: `${prefix}-inspection`,
+      messagesId: `${prefix}-messages`,
+      receiptId: `${prefix}-receipt`,
+      // semanticReviewId 可选
+    };
+  }),
   executionId: 'execution', // 可选，inspectExecution 的完整存档
   // editorialDecisionId 可选
 };

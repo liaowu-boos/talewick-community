@@ -18,6 +18,8 @@ The public v2 [isolated reading and assisted comparison tool](tools/isolated-anc
 
 The [three-route read-only adapter](tools/review-preview/ISOLATED-READING.md) separates original returns, contract validation, human semantic review and editorial decisions. Invalid originals remain readable. Mechanical success can coexist with failed semantic review. The existing continuous-reading adapter also exposes per-chapter body identity and explicit pending semantic review; an empty warning list does not establish factual correctness.
 
+The [offline reading report](tools/review-preview/ISOLATED-REPORT.md) renders the three routes as a single local HTML file. Its synthetic demo requires no API key, installation, or server.
+
 These APIs require explicit integration and do not change the default GUI review flow. Offline prompt construction, checks and synthetic tests make no model calls and never adopt or accept a whole manuscript. [Running and dependencies](tools/isolated-anchor-reading/DEPENDENCIES.md)
 
 ## Previous update · 2026-11-04
