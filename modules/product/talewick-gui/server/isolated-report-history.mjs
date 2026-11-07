@@ -60,8 +60,8 @@ export async function listReports(root, projectId) {
     const id = name.slice(prefix.length, -5);
     if (!digestPattern.test(id)) continue;
     try {
-      const {title, createdAt, manuscriptRevision, synthetic} = await readReceipt(root, projectId, id);
-      rows.push({id, title, createdAt, manuscriptRevision, synthetic});
+      const {title, createdAt, manuscriptRevision, synthetic, version} = await readReceipt(root, projectId, id);
+      rows.push({id, title, createdAt, manuscriptRevision, synthetic, version});
     } catch { /* Invalid receipts cannot authorize a history entry. Other rows remain usable. */ }
   }
   return rows.sort((a,b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));

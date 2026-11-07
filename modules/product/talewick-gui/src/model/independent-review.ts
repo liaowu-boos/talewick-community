@@ -6,6 +6,7 @@ export type IsolatedHistoryRecord = {
   id: string;
   title: string;
   createdAt: string;
+  version?: 'A' | 'B';
   manuscriptRevision: string;
   synthetic: boolean;
 };

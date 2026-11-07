@@ -97,7 +97,7 @@ export function IndependentReviewPanel({ project, hasUnsavedDraft, onLocate }: {
     {scoped.available && !focusedReadingAvailable && <p className="mt-2 text-caption-1-regular text-text-secondary">六项阅读维度评审尚未接通；已有评阅与恢复记录仍可查看。</p>}
     {!comparableWholeQualityTask(project) && <p className="mt-2 text-caption-1-regular text-text-tertiary">候选盲评只对仍与当前原稿精确绑定的整稿质量候选开放；采纳或编辑后请评阅实际新版本。</p>}
     {scoped.tasks.length + scoped.isolatedReports.length > 0 && <details className="mt-3 border-t border-separator-border pt-3" open={Boolean(active)}><summary className="cursor-pointer text-body-2-medium">评阅历史 · {scoped.tasks.length + scoped.isolatedReports.length} 次</summary><div className="mt-3 flex flex-col gap-3">
-      {scoped.isolatedReports.length > 0 && (hasUnsavedDraft ? <p className="text-caption-1-regular text-text-secondary">请先保存或撤回正文修改，再打开对应版本的三路报告。</p> : <IsolatedHistoryRows project={project} reports={scoped.isolatedReports}/>)}
+      {scoped.isolatedReports.length > 0 && <IsolatedHistoryRows project={project} reports={scoped.isolatedReports} hasUnsavedDraft={hasUnsavedDraft}/>}
       {scoped.tasks.map(task => {
         const partial = isPartialBlindReport(task.partialReport) ? task.partialReport : null;
         const anonymous = anonymousReviewComparison(task);

@@ -1,11 +1,11 @@
-import {useEffect, useRef, useState} from 'react';
+import {useLayoutEffect, useRef, useState} from 'react';
 import {Button} from '@/components/base/buttons/button';
 import {manuscriptRevision} from '@/model/runtime';
 import type {Project} from '@/model/types';
 
 import type {IsolatedHistoryRecord} from '@/model/independent-review';
 
-type Props = {project: Project; reports: IsolatedHistoryRecord[]};
+type Props = {project: Project; reports: IsolatedHistoryRecord[]; hasUnsavedDraft: boolean};
 type Selection =
   | {id: string; status: 'loading'}
   | {id: string; status: 'open'; html: string}
@@ -16,16 +16,16 @@ function createdLabel(value: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN');
 }
 
-export function IsolatedHistoryRows({project, reports}: Props) {
+export function IsolatedHistoryRows({project, reports, hasUnsavedDraft}: Props) {
   const revision = manuscriptRevision(project);
-  // Remount on either identity change so a previous iframe cannot survive a render.
-  return <HistoryRows key={JSON.stringify([project.id, project.title, project.chapters])} project={project} reports={reports} revision={revision} />;
+  // Reset the viewer on draft transitions as well as on changes to the saved manuscript.
+  return <HistoryRows key={JSON.stringify([project.id, project.title, project.chapters, hasUnsavedDraft])} project={project} reports={reports} hasUnsavedDraft={hasUnsavedDraft} revision={revision} />;
 }
 
-function HistoryRows({project, reports, revision}: Props & {revision: string}) {
+function HistoryRows({project, reports, hasUnsavedDraft, revision}: Props & {revision: string}) {
   const [selection, setSelection] = useState<Selection | null>(null);
   const pending = useRef<AbortController | null>(null);
-  useEffect(() => () => pending.current?.abort(), []);
+  useLayoutEffect(() => () => pending.current?.abort(), []);
 
   function close() {
     pending.current?.abort();
@@ -34,7 +34,7 @@ function HistoryRows({project, reports, revision}: Props & {revision: string}) {
   }
 
   async function open(report: IsolatedHistoryRecord) {
-    if (report.manuscriptRevision !== revision) return;
+    if (hasUnsavedDraft || report.manuscriptRevision !== revision) return;
     pending.current?.abort();
     const controller = new AbortController();
     pending.current = controller;
@@ -66,16 +66,18 @@ function HistoryRows({project, reports, revision}: Props & {revision: string}) {
     }
   }
 
-  return <>{reports.map(report => {
+  return <>
+    {hasUnsavedDraft && <p className="text-caption-1-regular text-text-secondary">请先保存或撤回正文修改，再打开对应版本的三路报告。</p>}
+    {reports.map(report => {
     const stale = report.manuscriptRevision !== revision;
     const current = !stale && selection?.id === report.id ? selection : null;
     return <article key={report.id} className="flex flex-col gap-2 rounded-xl border border-separator-border p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0"><h4 className="break-words text-body-2-medium">{report.title}</h4>
-          <p className="text-caption-1-regular text-text-secondary">{report.synthetic ? '合成演示 · ' : ''}<time dateTime={report.createdAt}>{createdLabel(report.createdAt)}</time></p>
+          <p className="text-caption-1-regular text-text-secondary">{report.synthetic ? '合成演示 · ' : ''}{(report.version === 'A' || report.version === 'B') && `本轮匿名稿 ${report.version} · `}<time dateTime={report.createdAt}>{createdLabel(report.createdAt)}</time></p>
         </div>
         {current?.status === 'open' ? <Button type="button" size="xs" variant="secondary" onClick={close}>关闭报告</Button> :
-          <Button type="button" size="xs" variant="secondary" disabled={stale || current?.status === 'loading'} onClick={() => void open(report)}>
+          <Button type="button" size="xs" variant="secondary" disabled={hasUnsavedDraft || stale || current?.status === 'loading'} onClick={() => void open(report)}>
             {current?.status === 'loading' ? '正在打开…' : '打开三路报告'}
           </Button>}
       </div>
