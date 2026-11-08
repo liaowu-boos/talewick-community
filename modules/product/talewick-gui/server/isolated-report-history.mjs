@@ -76,17 +76,17 @@ export function isolatedReportRouter({root, bodyJSON, json}) {
     const match = /^\/api\/isolated-reports\/([a-f0-9]{64})\/open$/.exec(url.pathname);
     if (!match || req.method !== 'POST') return false;
     const body = await bodyJSON(req, 16 * 1024 * 1024);
-    let html;
-    try {
-      const row = await readReceipt(root, body?.projectId, match[1]);
-      const current = manuscriptBinding(body.title, body.chapters);
-      if (current.manuscriptSHA256 !== row.manuscriptSHA256 || current.manuscriptRevision !== row.manuscriptRevision ||
-          body.manuscriptRevision !== row.manuscriptRevision) throw mismatch();
-      html = await verifiedBytes(root, row.htmlSHA256 + '.html', row.htmlSHA256, 32 * 1024 * 1024);
-    } catch (err) {
+    const row = await readReceipt(root, body?.projectId, match[1]).catch(err => {
       if (err.code === 'ENOENT') throw fail('当前项目找不到这份报告。', 404);
       throw err;
-    }
+    });
+    const current = manuscriptBinding(body.title, body.chapters);
+    if (current.manuscriptSHA256 !== row.manuscriptSHA256 || current.manuscriptRevision !== row.manuscriptRevision ||
+        body.manuscriptRevision !== row.manuscriptRevision) throw mismatch();
+    const html = await verifiedBytes(root, row.htmlSHA256 + '.html', row.htmlSHA256, 32 * 1024 * 1024).catch(err => {
+      if (err.code === 'ENOENT') throw fail('报告已登记，但本地报告文件缺失。请重新导入原评阅包后再打开。', 409);
+      throw err;
+    });
     res.writeHead(200, {'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store',
       'X-Content-Type-Options':'nosniff','Content-Security-Policy':"sandbox; default-src 'none'; style-src 'unsafe-inline'"});
     res.end(html);

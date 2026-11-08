@@ -52,6 +52,13 @@ test('imported history opens only the registered project and full manuscript, an
     await assert.rejects(openReport(extra),{status:409});
   }
   await assert.rejects(openReport({projectId:'foreign'}),{status:404});
+  await rm(path.join(root,r.htmlSHA256+'.html'));
+  assert.deepEqual(await listReports(root,'paper'),history);
+  await assert.rejects(openReport(),{status:409, message:'报告已登记，但本地报告文件缺失。请重新导入原评阅包后再打开。'});
+  await assert.rejects(openReport({projectId:'foreign'}),{status:404});
+  await assert.rejects(openReport({chapters:manuscripts.B}),{status:409, message:/版本不符/});
+  assert.equal((await register()).id,r.id);
+  assert.deepEqual(await openReport(),ok);
   const {id, ...metadata} = r;
   const invalid = Buffer.from(JSON.stringify({...metadata,createdAt:42}));
   await writeFile(path.join(root,receiptName('paper',bytesHash(invalid))),invalid);

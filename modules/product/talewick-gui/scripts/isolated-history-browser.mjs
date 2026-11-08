@@ -3,7 +3,7 @@
  * plus optional TALEWICK_BROWSER_EXECUTABLE. Uses the production workbench and a temporary archive.
  */
 import assert from 'node:assert/strict';
-import {mkdtemp, rm} from 'node:fs/promises';
+import {mkdtemp, rename, rm} from 'node:fs/promises';
 import {createServer} from 'node:net';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
@@ -16,7 +16,7 @@ import {manuscripts} from '../../../../tools/isolated-anchor-reading/synthetic-f
 const title = '门廊合成稿';
 const projectId = 'isolated-history-browser';
 const sides = ['A', 'B'];
-const ids = {};
+const records = {};
 const runsDir = await mkdtemp(path.join(tmpdir(), 'talewick-history-browser-'));
 let runtime, browser;
 
@@ -67,7 +67,20 @@ async function exercise(origin, current) {
     assert.equal(await rows.count(), 2);
     assert(await openButton(current).isEnabled());
     assert(await openButton(other).isDisabled());
-    const url = `${origin}/api/isolated-reports/${ids[current]}/open`;
+    const url = `${origin}/api/isolated-reports/${records[current].id}/open`;
+    const archive = path.join(runsDir, 'isolated-reports', records[current].htmlSHA256 + '.html');
+    await rename(archive, archive + '.held');
+    try {
+      const [missing] = await Promise.all([page.waitForResponse(r => r.url() === url), openButton(current).click()]);
+      assert.equal(missing.status(), 409);
+      const alert = row(current).getByRole('alert');
+      await alert.waitFor();
+      assert.match(await alert.innerText(), /本地报告文件缺失.*重新导入/);
+      assert.equal(await history.locator('iframe').count(), 0);
+      assert.equal(await rows.count(), 2);
+    } finally {
+      await rename(archive + '.held', archive);
+    }
     const [response] = await Promise.all([page.waitForResponse(r => r.url() === url && r.request().method() === 'POST'), openButton(current).click()]);
     assert.equal(response.status(), 200);
     const report = row(current).locator('iframe');
@@ -117,10 +130,10 @@ async function exercise(origin, current) {
     assert.equal(await rows.count(), 2);
     for (const side of sides) assert(await openButton(side).isDisabled());
     assert.equal(await history.locator('iframe').count(), 0);
-    assert.deepEqual(opens, [url, url]);
+    assert.deepEqual(opens, [url, url, url]);
     assert.deepEqual(errors, []);
     assert.deepEqual(external, []);
-    console.log(`PASS ${current}: both labels, matching report, stale disabled, draft closes report, undo restores access, saving a new version blocks both even with a delayed response`);
+    console.log(`PASS ${current}: missing archive reported and restored, both labels, matching report, stale disabled, draft closes report, undo restores access, saving a new version blocks both even with a delayed response`);
   } finally {
     await context.close();
   }
@@ -131,7 +144,7 @@ try {
   for (const version of sides) {
     const record = await registerWorkbenchReport({runsDir, projectId, version, manuscript: {title, chapters: manuscripts[version]},
       adapterInput, createdAt: '2026-01-01T00:00:00.000Z', synthetic: true});
-    ids[version] = record.id;
+    records[version] = record;
   }
   const port = await freePort();
   runtime = await createRuntime({config: {port, runsDir, apiKey: '', model: 'offline', baseURL: 'https://example.invalid/v1', timeoutMs: 1000},
