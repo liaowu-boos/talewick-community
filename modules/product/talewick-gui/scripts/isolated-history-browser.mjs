@@ -28,6 +28,15 @@ async function freePort() {
   return port;
 }
 
+async function registerPair() {
+  const adapterInput = createDemoInput();
+  for (const version of sides) {
+    const record = await registerWorkbenchReport({runsDir, projectId, version, manuscript: {title, chapters: manuscripts[version]},
+      adapterInput, createdAt: '2026-01-01T00:00:00.000Z', synthetic: true});
+    records[version] = record;
+  }
+}
+
 async function exercise(origin, current) {
   const other = current === 'A' ? 'B' : 'A';
   const context = await browser.newContext({viewport: {width: 1512, height: 982}, reducedMotion: 'reduce'});
@@ -52,8 +61,21 @@ async function exercise(origin, current) {
     page.on('request', req => {
       if (req.method() === 'POST' && /\/api\/isolated-reports\/[^/]+\/open$/.test(req.url())) opens.push(req.url());
     });
+    const historyUrl = origin + '/api/independent-reviews?projectId=' + projectId;
+    if (current === 'A') {
+      await page.route(historyUrl, route => route.fulfill({status: 503, json: {error: '历史暂时不可用'}}));
+    }
     await page.goto(origin);
     const panel = page.getByRole('region', {name: '独立全文评阅', exact: true});
+    const refresh = panel.getByRole('button', {name: '刷新评阅历史', exact: true});
+    if (current === 'A') {
+      await panel.getByRole('alert').filter({hasText: '历史暂时不可用'}).waitFor();
+      await page.unroute(historyUrl);
+      await refresh.click();
+      await panel.getByText('暂无评阅记录', {exact: true}).waitFor();
+      await registerPair();
+      await refresh.click();
+    }
     const history = panel.locator('details').filter({has: page.locator('summary').filter({hasText: '评阅历史'})});
     await history.locator('summary').click();
     const rows = history.locator('article');
@@ -100,6 +122,16 @@ async function exercise(origin, current) {
       assert(await row(side).isVisible());
       assert(await openButton(side).isDisabled());
     }
+    // A malformed list response must leave the last good history and the local draft usable.
+    await page.route(historyUrl, route => route.fulfill({status: 200, contentType: 'text/html', body: '<html></html>'}), {times: 1});
+    await refresh.click();
+    const historyError = panel.getByRole('alert').filter({hasText: '评阅历史格式有误'});
+    await historyError.waitFor();
+    assert.equal(await rows.count(), 2);
+    await refresh.click();
+    await historyError.waitFor({state: 'hidden'});
+    assert.equal(await editor.inputValue(), savedTitle + '（未保存）');
+    for (const side of sides) assert(await openButton(side).isDisabled());
     await page.getByRole('button', {name: '撤销本次', exact: true}).click();
     assert.equal(await editor.inputValue(), savedTitle);
     await page.getByText('有未保存的修改', {exact: true}).waitFor({state: 'hidden'});
@@ -140,12 +172,6 @@ async function exercise(origin, current) {
 }
 
 try {
-  const adapterInput = createDemoInput();
-  for (const version of sides) {
-    const record = await registerWorkbenchReport({runsDir, projectId, version, manuscript: {title, chapters: manuscripts[version]},
-      adapterInput, createdAt: '2026-01-01T00:00:00.000Z', synthetic: true});
-    records[version] = record;
-  }
   const port = await freePort();
   runtime = await createRuntime({config: {port, runsDir, apiKey: '', model: 'offline', baseURL: 'https://example.invalid/v1', timeoutMs: 1000},
     distDir: process.env.TALEWICK_DIST_DIR || undefined});

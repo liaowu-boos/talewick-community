@@ -41,15 +41,28 @@ function FrozenSnapshotDialog({ selection, onChange, onClose }: { selection: Sna
 export function IndependentReviewPanel({ project, hasUnsavedDraft, onLocate }: { project: Project; hasUnsavedDraft: boolean; onLocate: (location: ReviewEvidenceLocation, revision: string) => void }) {
   const [snapshot, setSnapshot] = useState(() => empty(project.id));
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
+  const [readingHistory, setReadingHistory] = useState(true);
+  const [historyError, setHistoryError] = useState('');
   const [citationMode, setCitationMode] = useState<typeof PARAGRAPH_CITATION_MODE | 'verbatim'>(PARAGRAPH_CITATION_MODE);
   const [snapshotSelection, setSnapshotSelection] = useState<SnapshotSelection | null>(null);
   const activeProject = useRef(project.id), sequence = useRef(0); activeProject.current = project.id;
   const refresh = useCallback(async () => {
     const projectId = project.id, current = ++sequence.current;
-    try { const value = await listIndependentReviews(projectId); if (activeProject.current === projectId && current === sequence.current) { setSnapshot({ projectId, ...value }); setError(''); } }
-    catch (cause) { if (activeProject.current === projectId && current === sequence.current) setError(cause instanceof Error ? cause.message : '独立评阅状态暂时无法读取。'); }
+    const isCurrent = () => activeProject.current === projectId && current === sequence.current;
+    setReadingHistory(true);
+    try {
+      const value = await listIndependentReviews(projectId);
+      if (isCurrent()) {
+        setSnapshot({ ...value, projectId });
+        setHistoryError('');
+      }
+    } catch (cause) {
+      if (isCurrent()) setHistoryError(cause instanceof Error ? cause.message : '评阅历史暂时无法读取。');
+    } finally {
+      if (isCurrent()) setReadingHistory(false);
+    }
   }, [project.id]);
-  useEffect(() => { sequence.current += 1; setSnapshot(empty(project.id)); setSnapshotSelection(null); setError(''); void refresh(); }, [project.id, refresh]);
+  useEffect(() => { sequence.current += 1; setSnapshot(empty(project.id)); setHistoryError(''); setSnapshotSelection(null); setError(''); void refresh(); }, [project.id, refresh]);
   const scoped = snapshot.projectId === project.id ? snapshot : empty(project.id), currentRevision = manuscriptRevision(project);
   const focusedReadingAvailable = scoped.readingFocusVersions.includes(INDEPENDENT_READING_FOCUS_VERSION);
   const paragraphAvailable = scoped.modelCitationModes.includes(PARAGRAPH_CITATION_MODE);
@@ -89,13 +102,19 @@ export function IndependentReviewPanel({ project, hasUnsavedDraft, onLocate }: {
     <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-body-medium">独立全文评阅</h3><p className="text-caption-1-regular text-text-secondary">新评审围绕六项阅读感受，保留引文、反向证据和不确定性；不会自动修改或采用正文。</p></div>
       <div className="flex flex-wrap gap-2"><Button size="small" variant="secondary" leadingIcon={RiEyeLine} disabled={busy || hasUnsavedDraft || Boolean(active) || !scoped.available || !focusedReadingAvailable || selectedCitationUnavailable} onClick={() => void run('single')}>全文评审</Button>
         <Button size="small" variant="secondary" leadingIcon={RiPlayLine} disabled={busy || hasUnsavedDraft || Boolean(active) || !scoped.available || !focusedReadingAvailable || selectedCitationUnavailable || !comparableWholeQualityTask(project)} onClick={() => void run('compare')}>修订盲评</Button></div></div>
-    <div className="mt-3 flex flex-wrap items-center gap-2"><label className="text-caption-1-medium" htmlFor={`review-citation-mode-${project.id}`}>新评阅的证据定位</label><select id={`review-citation-mode-${project.id}`} className="rounded-lg border border-border-button-default bg-background-primary px-2 py-1 text-caption-1-regular" value={citationMode} disabled={busy || Boolean(active)} onChange={event => setCitationMode(event.target.value === PARAGRAPH_CITATION_MODE ? PARAGRAPH_CITATION_MODE : 'verbatim')}><option value={PARAGRAPH_CITATION_MODE}>段落证据定位</option><option value="verbatim">逐字引文（原方式）</option></select></div>
+    <div className="mt-3 flex flex-wrap items-center gap-2"><label className="text-caption-1-medium" htmlFor={`review-citation-mode-${project.id}`}>新评阅的证据定位</label><select id={`review-citation-mode-${project.id}`} className="rounded-lg border border-border-button-default bg-background-primary px-2 py-1 text-caption-1-regular" value={citationMode} disabled={busy || Boolean(active)} onChange={event => setCitationMode(event.target.value === PARAGRAPH_CITATION_MODE ? PARAGRAPH_CITATION_MODE : 'verbatim')}><option value={PARAGRAPH_CITATION_MODE}>段落证据定位</option><option value="verbatim">逐字引文（原方式）</option></select>
+      <Button type="button" size="xs" variant="secondary" leadingIcon={RiRefreshLine} disabled={readingHistory} onClick={() => void refresh()}>
+        {readingHistory ? '正在读取评阅历史…' : '刷新评阅历史'}
+      </Button>
+      {!readingHistory && !historyError && scoped.tasks.length + scoped.isolatedReports.length === 0 && <span className="text-caption-1-regular text-text-secondary">暂无评阅记录</span>}
+    </div>
     {citationMode === PARAGRAPH_CITATION_MODE && <p className="mt-2 text-caption-1-regular text-text-secondary">按评阅时冻结正文中的段落定位证据，引文由程序逐字取回；已有评阅保持原样。</p>}
     {scoped.available && selectedCitationUnavailable && <p className="mt-2 text-caption-1-regular text-text-secondary">段落证据定位尚未接通；可明确选择原方式开始新评阅。</p>}
     {hasUnsavedDraft && <p className="mt-3 text-caption-1-regular text-text-secondary">请先保存当前编辑，评阅只接收固定版本。</p>}
     {!scoped.available && <p className="mt-3 text-caption-1-regular text-text-secondary">独立评阅适配器尚未接通；稿件仍可编辑、保存和导出。</p>}
     {scoped.available && !focusedReadingAvailable && <p className="mt-2 text-caption-1-regular text-text-secondary">六项阅读维度评审尚未接通；已有评阅与恢复记录仍可查看。</p>}
     {!comparableWholeQualityTask(project) && <p className="mt-2 text-caption-1-regular text-text-tertiary">候选盲评只对仍与当前原稿精确绑定的整稿质量候选开放；采纳或编辑后请评阅实际新版本。</p>}
+    {historyError && <p role="alert" className="mt-2 text-caption-1-regular text-text-error-primary">{historyError}</p>}
     {scoped.tasks.length + scoped.isolatedReports.length > 0 && <details className="mt-3 border-t border-separator-border pt-3" open={Boolean(active)}><summary className="cursor-pointer text-body-2-medium">评阅历史 · {scoped.tasks.length + scoped.isolatedReports.length} 次</summary><div className="mt-3 flex flex-col gap-3">
       {scoped.isolatedReports.length > 0 && <IsolatedHistoryRows project={project} reports={scoped.isolatedReports} hasUnsavedDraft={hasUnsavedDraft}/>}
       {scoped.tasks.map(task => {

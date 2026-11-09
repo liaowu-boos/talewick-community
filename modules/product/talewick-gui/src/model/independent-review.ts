@@ -52,6 +52,9 @@ async function call(path: string, body?: unknown) {
 
 export async function listIndependentReviews(projectId: string): Promise<{ available: boolean; readingFocusVersions: string[]; modelCitationModes: string[]; tasks: IndependentReviewTask[]; isolatedReports: IsolatedHistoryRecord[] }> {
   const value = await call(`/api/independent-reviews?projectId=${encodeURIComponent(projectId)}`);
+  if (!Array.isArray(value?.tasks) || [value.isolatedReports, value.readingFocusVersions, value.modelCitationModes].some(field => field != null && !Array.isArray(field))) {
+    throw new Error('评阅历史格式有误，请检查本地服务后刷新。');
+  }
   return { ...value, isolatedReports: value.isolatedReports ?? [], readingFocusVersions: value.readingFocusVersions ?? [], modelCitationModes: value.modelCitationModes ?? [] };
 }
 
