@@ -68,7 +68,11 @@ export function IndependentReviewPanel({ project, hasUnsavedDraft, onLocate }: {
   const paragraphAvailable = scoped.modelCitationModes.includes(PARAGRAPH_CITATION_MODE);
   const selectedCitationUnavailable = citationMode === PARAGRAPH_CITATION_MODE && !paragraphAvailable;
   const active = scoped.tasks.find(task => ['queued', 'running'].includes(task.status));
-  useEffect(() => { if (!active) return; const timer = window.setInterval(() => { void refresh(); }, 1200); return () => window.clearInterval(timer); }, [active?.id, active?.status, refresh]);
+  useEffect(() => {
+    if (!active || readingHistory) return;
+    const timer = window.setTimeout(() => { void refresh(); }, 1200);
+    return () => window.clearTimeout(timer);
+  }, [active?.id, active?.status, readingHistory, refresh]);
 
   async function run(mode: 'single' | 'compare') {
     setBusy(true); setError('');

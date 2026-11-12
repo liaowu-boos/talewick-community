@@ -37,6 +37,37 @@ async function registerPair() {
   }
 }
 
+async function checkSlowHistory(page, panel, historyUrl, revision) {
+  const original = await (await page.request.get(historyUrl)).json();
+  const task = {id: 'synthetic-running', projectId, mode: 'single', status: 'running',
+    manuscriptRevision: revision, createdAt: '2026-01-01T00:00:00.000Z',
+    progress: {completedStages: 0, totalStages: 1}, report: null, error: null};
+  let calls = 0, pending = 0, peak = 0;
+  await page.route(historyUrl, async route => {
+    const number = ++calls;
+    peak = Math.max(peak, ++pending);
+    try {
+      if (number > 1) await new Promise(resolve => setTimeout(resolve, 2000));
+      await route.fulfill({json: number === 1 ? {...original, tasks: [task]} : original});
+    } finally {
+      pending--;
+    }
+  });
+  try {
+    await panel.getByRole('button', {name: '刷新评阅历史', exact: true}).click();
+    const running = panel.getByText('单稿独立初读 · 独立评阅进行中', {exact: true});
+    await running.waitFor();
+    await running.waitFor({state: 'hidden', timeout: 7000});
+    assert.equal(peak, 1, 'slow history requests must not overlap');
+    assert.equal(calls, 2, 'the completed history must be accepted');
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    assert.equal(calls, 2, 'completed tasks stop polling');
+    console.log('PASS slow history accepted, one request at a time, polling stops');
+  } finally {
+    await page.unroute(historyUrl);
+  }
+}
+
 async function exercise(origin, current) {
   const other = current === 'A' ? 'B' : 'A';
   const context = await browser.newContext({viewport: {width: 1512, height: 982}, reducedMotion: 'reduce'});
@@ -76,6 +107,7 @@ async function exercise(origin, current) {
       await registerPair();
       await refresh.click();
     }
+    await checkSlowHistory(page, panel, historyUrl, records[current].manuscriptRevision);
     const history = panel.locator('details').filter({has: page.locator('summary').filter({hasText: '评阅历史'})});
     await history.locator('summary').click();
     const rows = history.locator('article');
