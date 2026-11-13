@@ -154,6 +154,33 @@ async function exercise(origin, current) {
       assert(await row(side).isVisible());
       assert(await openButton(side).isDisabled());
     }
+    // A hanging history read must release the refresh button without losing local edits.
+    const releaseHistory = Promise.withResolvers();
+    let hangingReads = 0;
+    await page.route(historyUrl, async route => {
+      hangingReads++;
+      await releaseHistory.promise;
+      await route.fulfill({json: {tasks: []}});
+    }, {times: 1});
+    try {
+      await refresh.click();
+      await panel.getByRole('button', {name: '正在读取评阅历史…', exact: true}).waitFor();
+      const timeoutError = panel.getByRole('alert').filter({hasText: '读取评阅历史超时'});
+      await timeoutError.waitFor({timeout: 18000});
+      assert(await refresh.isEnabled());
+      assert.equal(hangingReads, 1);
+      assert.equal(await rows.count(), 2);
+      assert.equal(await editor.inputValue(), savedTitle + '（未保存）');
+      await refresh.click();
+      await timeoutError.waitFor({state: 'hidden'});
+    } finally {
+      releaseHistory.resolve();
+      await page.unrouteAll({behavior: 'wait'});
+    }
+    assert.equal(await rows.count(), 2);
+    assert.equal(await editor.inputValue(), savedTitle + '（未保存）');
+    for (const side of sides) assert(await openButton(side).isDisabled());
+    console.log('PASS timeout preserves history and draft, manual refresh recovers');
     // A malformed list response must leave the last good history and the local draft usable.
     await page.route(historyUrl, route => route.fulfill({status: 200, contentType: 'text/html', body: '<html></html>'}), {times: 1});
     await refresh.click();

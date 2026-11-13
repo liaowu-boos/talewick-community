@@ -43,19 +43,29 @@ export interface IndependentReviewTask {
   error: { code: string; message: string; recoverable: boolean; stage?: string } | null;
 }
 
-async function call(path: string, body?: unknown) {
-  const response = await fetch(path, { method: body === undefined ? 'GET' : 'POST', headers: body === undefined ? undefined : { 'Content-Type': 'application/json', Accept: 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+async function call(path: string, body?: unknown, signal?: AbortSignal) {
+  const response = await fetch(path, { method: body === undefined ? 'GET' : 'POST', headers: body === undefined ? undefined : { 'Content-Type': 'application/json', Accept: 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), signal });
   const value = await response.json().catch(() => ({}));
+  signal?.throwIfAborted();
   if (!response.ok) throw new Error(typeof value.error === 'string' ? value.error : '独立全文评阅服务未能完成请求。');
   return value;
 }
 
 export async function listIndependentReviews(projectId: string): Promise<{ available: boolean; readingFocusVersions: string[]; modelCitationModes: string[]; tasks: IndependentReviewTask[]; isolatedReports: IsolatedHistoryRecord[] }> {
-  const value = await call(`/api/independent-reviews?projectId=${encodeURIComponent(projectId)}`);
-  if (!Array.isArray(value?.tasks) || [value.isolatedReports, value.readingFocusVersions, value.modelCitationModes].some(field => field != null && !Array.isArray(field))) {
-    throw new Error('评阅历史格式有误，请检查本地服务后刷新。');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const value = await call(`/api/independent-reviews?projectId=${encodeURIComponent(projectId)}`, undefined, controller.signal);
+    if (!Array.isArray(value?.tasks) || [value.isolatedReports, value.readingFocusVersions, value.modelCitationModes].some(field => field != null && !Array.isArray(field))) {
+      throw new Error('评阅历史格式有误，请检查本地服务后刷新。');
+    }
+    return { ...value, isolatedReports: value.isolatedReports ?? [], readingFocusVersions: value.readingFocusVersions ?? [], modelCitationModes: value.modelCitationModes ?? [] };
+  } catch (cause) {
+    if (controller.signal.aborted) throw new Error('读取评阅历史超时，请检查本地服务后刷新。');
+    throw cause;
+  } finally {
+    clearTimeout(timer);
   }
-  return { ...value, isolatedReports: value.isolatedReports ?? [], readingFocusVersions: value.readingFocusVersions ?? [], modelCitationModes: value.modelCitationModes ?? [] };
 }
 
 export function comparableWholeQualityTask(project: Project) {
