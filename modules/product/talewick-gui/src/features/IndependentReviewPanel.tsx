@@ -46,23 +46,41 @@ export function IndependentReviewPanel({ project, hasUnsavedDraft, onLocate }: {
   const [citationMode, setCitationMode] = useState<typeof PARAGRAPH_CITATION_MODE | 'verbatim'>(PARAGRAPH_CITATION_MODE);
   const [snapshotSelection, setSnapshotSelection] = useState<SnapshotSelection | null>(null);
   const activeProject = useRef(project.id), sequence = useRef(0); activeProject.current = project.id;
+  const pendingHistory = useRef<AbortController | null>(null);
   const refresh = useCallback(async () => {
+    if (activeProject.current !== project.id) return;
+    pendingHistory.current?.abort();
+    const controller = new AbortController();
+    pendingHistory.current = controller;
     const projectId = project.id, current = ++sequence.current;
     const isCurrent = () => activeProject.current === projectId && current === sequence.current;
     setReadingHistory(true);
     try {
-      const value = await listIndependentReviews(projectId);
+      const value = await listIndependentReviews(projectId, controller.signal);
       if (isCurrent()) {
         setSnapshot({ ...value, projectId });
         setHistoryError('');
       }
     } catch (cause) {
-      if (isCurrent()) setHistoryError(cause instanceof Error ? cause.message : '评阅历史暂时无法读取。');
+      if (isCurrent() && !controller.signal.aborted) setHistoryError(cause instanceof Error ? cause.message : '评阅历史暂时无法读取。');
     } finally {
       if (isCurrent()) setReadingHistory(false);
+      if (pendingHistory.current === controller) pendingHistory.current = null;
     }
   }, [project.id]);
-  useEffect(() => { sequence.current += 1; setSnapshot(empty(project.id)); setHistoryError(''); setSnapshotSelection(null); setError(''); void refresh(); }, [project.id, refresh]);
+  useEffect(() => {
+    sequence.current += 1;
+    setSnapshot(empty(project.id));
+    setHistoryError('');
+    setSnapshotSelection(null);
+    setError('');
+    void refresh();
+    return () => {
+      sequence.current += 1;
+      pendingHistory.current?.abort();
+      pendingHistory.current = null;
+    };
+  }, [project.id, refresh]);
   const scoped = snapshot.projectId === project.id ? snapshot : empty(project.id), currentRevision = manuscriptRevision(project);
   const focusedReadingAvailable = scoped.readingFocusVersions.includes(INDEPENDENT_READING_FOCUS_VERSION);
   const paragraphAvailable = scoped.modelCitationModes.includes(PARAGRAPH_CITATION_MODE);
@@ -102,7 +120,7 @@ export function IndependentReviewPanel({ project, hasUnsavedDraft, onLocate }: {
     setSnapshotSelection({ snapshot, chapterId: evidence?.chapterId ?? snapshot.chapters[0].id, ...(evidence ? { evidence } : {}) });
   }
 
-  return <section className="mx-6 mb-4 rounded-3xl border border-border-button-default bg-tw-glass p-4" aria-label="独立全文评阅">
+  return <section className="tw-independent-review mx-6 mb-4 rounded-3xl border border-border-button-default bg-tw-glass p-4" aria-label="独立全文评阅">
     <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-body-medium">独立全文评阅</h3><p className="text-caption-1-regular text-text-secondary">新评审围绕六项阅读感受，保留引文、反向证据和不确定性；不会自动修改或采用正文。</p></div>
       <div className="flex flex-wrap gap-2"><Button size="small" variant="secondary" leadingIcon={RiEyeLine} disabled={busy || hasUnsavedDraft || Boolean(active) || !scoped.available || !focusedReadingAvailable || selectedCitationUnavailable} onClick={() => void run('single')}>全文评审</Button>
         <Button size="small" variant="secondary" leadingIcon={RiPlayLine} disabled={busy || hasUnsavedDraft || Boolean(active) || !scoped.available || !focusedReadingAvailable || selectedCitationUnavailable || !comparableWholeQualityTask(project)} onClick={() => void run('compare')}>修订盲评</Button></div></div>

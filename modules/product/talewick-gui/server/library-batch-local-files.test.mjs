@@ -153,7 +153,7 @@ test('runtime keeps writing and independent review available while only cloud-wa
   assert.equal(closed, 0);
   const tasks = await request(runtime, '/api/tasks');
   assert.equal(tasks.status, 200); assert.deepEqual(tasks.body.tasks, []);
-  const reviews = await request(runtime, '/api/independent-reviews');
+  const reviews = await request(runtime, '/api/independent-reviews?projectId=synthetic-library');
   assert.equal(reviews.status, 200); assert.equal(reviews.body.available, true);
   const batches = await request(runtime, '/api/library/batches');
   assert.equal(batches.status, 503); assert.equal(batches.body.error.code, 'BATCH_LOCAL_FILE_WAIT');

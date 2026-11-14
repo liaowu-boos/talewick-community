@@ -33,7 +33,7 @@ function routerFor(service) {
 
 test('API compare opts in to v3, retains unchanged text and all six anonymous reads without claiming improvement', async t => {
   const f = await fixture(t), invoke = routerFor(f.service);
-  assert.deepEqual((await invoke('GET', '/api/independent-reviews')).value.readingFocusVersions, ['literary-reading-six-1']);
+  assert.deepEqual((await invoke('GET', '/api/independent-reviews?projectId=synthetic-focus')).value.readingFocusVersions, ['literary-reading-six-1']);
   const submitted = await invoke('POST', '/api/independent-reviews', f.input({ candidate: { forged: true }, goals: [{ forged: true }] }));
   assert.equal(submitted.status, 202); const done = await settled(f.service, submitted.value.task.id);
   assert.equal(done.status, 'complete', JSON.stringify(done.error)); assert.equal(done.progress.completedStages, 7);
@@ -66,7 +66,7 @@ test('v3 semantic goal failure exposes checksummed six-stage partial through GET
   assert.equal(partial.completeBlindReview, true); assert.equal(partial.completedBlindStages, 6);
   assert.equal(partial.goalAuditStatus, 'needs_attention'); assert.equal(partial.automaticAdoption, false);
   const view = independentReviewView(partial, 'compare'); assert.equal(view.sections.flatMap(section => section.findings).filter(item => item.uncertainty).length, 36);
-  const listed = (await invoke('GET', '/api/independent-reviews')).value.tasks;
+  const listed = (await invoke('GET', '/api/independent-reviews?projectId=synthetic-focus')).value.tasks;
   assert.deepEqual(listed[0].partialReport, partial);
   await assert.rejects(invoke('POST', `/api/independent-reviews/${task.id}/retry`, {}), { code: 'REVIEW_RERUN_FORBIDDEN' });
   assert.deepEqual(await fileHashes(f.rootDir), before); assert.equal(f.calls.length, 7);

@@ -23,21 +23,43 @@ export function IsolatedHistoryRows({project, reports, hasUnsavedDraft}: Props) 
 }
 
 function HistoryRows({project, reports, hasUnsavedDraft, revision}: Props & {revision: string}) {
+  const [filter, setFilter] = useState<'all' | 'current'>('all');
   const [selection, setSelection] = useState<Selection | null>(null);
-  const pending = useRef<AbortController | null>(null);
-  useLayoutEffect(() => () => pending.current?.abort(), []);
+  const pending = useRef<{controller: AbortController; timer: ReturnType<typeof setTimeout>} | null>(null);
+  const visibleReports = filter === 'current' ? reports.filter(report => report.manuscriptRevision === revision) : reports;
+  const selectionVisible = selection !== null && visibleReports.some(report => report.id === selection.id && report.manuscriptRevision === revision);
+
+  function cancelPending() {
+    if (!pending.current) return;
+    clearTimeout(pending.current.timer);
+    pending.current.controller.abort();
+    pending.current = null;
+  }
+
+  useLayoutEffect(() => cancelPending, []);
+  useLayoutEffect(() => {
+    if (selection && !selectionVisible) {
+      cancelPending();
+      setSelection(null);
+    }
+  }, [selection, selectionVisible]);
 
   function close() {
-    pending.current?.abort();
-    pending.current = null;
+    cancelPending();
     setSelection(null);
   }
 
   async function open(report: IsolatedHistoryRecord) {
     if (hasUnsavedDraft || report.manuscriptRevision !== revision) return;
-    pending.current?.abort();
+    cancelPending();
     const controller = new AbortController();
-    pending.current = controller;
+    const timer = setTimeout(() => {
+      if (pending.current?.controller !== controller) return;
+      controller.abort();
+      pending.current = null;
+      setSelection({id: report.id, status: 'error', message: '打开报告超时，请重试。'});
+    }, 15000);
+    pending.current = {controller, timer};
     setSelection({id: report.id, status: 'loading'});
     try {
       const response = await fetch(`/api/isolated-reports/${encodeURIComponent(report.id)}/open`, {
@@ -62,26 +84,33 @@ function HistoryRows({project, reports, hasUnsavedDraft, revision}: Props & {rev
         setSelection({id: report.id, status: 'error', message: cause instanceof Error ? cause.message : '读取报告失败，请重试。'});
       }
     } finally {
-      if (pending.current === controller) pending.current = null;
+      clearTimeout(timer);
+      if (pending.current?.controller === controller) pending.current = null;
     }
   }
 
   return <>
+    <div role="group" aria-label="三路报告筛选" className="flex flex-wrap gap-2">
+      <Button type="button" size="xs" variant={filter === 'all' ? 'primary' : 'secondary'} aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>全部报告</Button>
+      <Button type="button" size="xs" variant={filter === 'current' ? 'primary' : 'secondary'} aria-pressed={filter === 'current'} onClick={() => setFilter('current')}>当前版本</Button>
+    </div>
+    {visibleReports.length === 0 && <p role="status" className="text-caption-1-regular text-text-secondary">{filter === 'current' ? '当前版本暂无三路报告。' : '暂无三路报告。'}</p>}
     {hasUnsavedDraft && <p className="text-caption-1-regular text-text-secondary">请先保存或撤回正文修改，再打开对应版本的三路报告。</p>}
-    {reports.map(report => {
+    {visibleReports.map(report => {
     const stale = report.manuscriptRevision !== revision;
-    const current = !stale && selection?.id === report.id ? selection : null;
+    const current = selectionVisible && !stale && selection?.id === report.id ? selection : null;
     return <article key={report.id} className="flex flex-col gap-2 rounded-xl border border-separator-border p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0"><h4 className="break-words text-body-2-medium">{report.title}</h4>
           <p className="text-caption-1-regular text-text-secondary">{report.synthetic ? '合成演示 · ' : ''}{(report.version === 'A' || report.version === 'B') && `本轮匿名稿 ${report.version} · `}<time dateTime={report.createdAt}>{createdLabel(report.createdAt)}</time></p>
         </div>
-        {current?.status === 'open' ? <Button type="button" size="xs" variant="secondary" onClick={close}>关闭报告</Button> :
-          <Button type="button" size="xs" variant="secondary" disabled={hasUnsavedDraft || stale || current?.status === 'loading'} onClick={() => void open(report)}>
-            {current?.status === 'loading' ? '正在打开…' : '打开三路报告'}
+        {current?.status === 'loading' ? <Button type="button" size="xs" variant="secondary" onClick={close}>取消打开</Button> : current?.status === 'open' ? <Button type="button" size="xs" variant="secondary" onClick={close}>关闭报告</Button> :
+          <Button type="button" size="xs" variant="secondary" disabled={hasUnsavedDraft || stale} onClick={() => void open(report)}>
+            打开三路报告
           </Button>}
       </div>
       {stale && <p className="text-caption-1-regular text-text-secondary">此报告对应其他稿件版本，请切换到对应版本后查看。</p>}
+      {current?.status === 'loading' && <p role="status" className="text-caption-1-regular text-text-secondary">正在打开报告…</p>}
       {current?.status === 'error' && <p role="alert" className="text-caption-1-regular text-text-error-primary">{current.message}</p>}
       {current?.status === 'open' && <iframe title={report.title} sandbox="" referrerPolicy="no-referrer" srcDoc={current.html}
         className="h-96 w-full rounded-xl border border-border-button-default bg-background-primary-default" />}

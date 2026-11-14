@@ -42,3 +42,40 @@ test('completed and failed reads clear their timers and keep service errors', as
   t.mock.timers.tick(15000);
   assert(signals.every(signal => !signal.aborted));
 });
+
+test('caller cancellation aborts the request and remains distinct from a timeout', async t => {
+  t.mock.timers.enable({apis: ['setTimeout']});
+  let requestSignal;
+  const fetch = t.mock.method(globalThis, 'fetch', async (_url, {signal}) => {
+    requestSignal = signal;
+    return new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), {once: true}));
+  });
+  const caller = new AbortController();
+  const pending = listIndependentReviews('project-test', caller.signal);
+  const rejected = assert.rejects(pending, {name: 'AbortError'});
+  caller.abort();
+  await rejected;
+  assert.equal(requestSignal.aborted, true);
+  t.mock.timers.tick(15000);
+  await assert.rejects(listIndependentReviews('project-test', caller.signal), {name: 'AbortError'});
+  assert.equal(fetch.mock.callCount(), 1, 'already cancelled callers dispatch no request');
+});
+
+test('history rejects foreign, malformed and duplicate rows while accepting legacy report sides', async t => {
+  const task = {id: 'task-one', projectId: 'project-test', mode: 'single', status: 'running',
+    manuscriptRevision: 'saved', createdAt: '2026-01-01T00:00:00Z', progress: {completedStages: 0, totalStages: 1}};
+  const report = {id: 'report-one', title: '合成稿', manuscriptRevision: 'saved',
+    createdAt: '2026-01-01T00:00:00Z', synthetic: true};
+  let reply = {tasks: [task], isolatedReports: [report]};
+  t.mock.method(globalThis, 'fetch', async () => Response.json(reply));
+  assert.equal((await listIndependentReviews('project-test')).isolatedReports[0].version, undefined);
+  const invalid = [
+    {tasks: [null]}, {tasks: [{...task, projectId: 'other-project'}]},
+    {tasks: [{...task, progress: null}]}, {tasks: [{...task, status: 'unknown'}]},
+    {tasks: [task, task]}, {tasks: [], isolatedReports: [null]},
+    {tasks: [], isolatedReports: [report, report]},
+    {tasks: [], isolatedReports: [{...report, version: 'candidate'}]},
+    {tasks: [], isolatedReports: [{...report, createdAt: 'invalid'}]},
+  ];
+  for (reply of invalid) await assert.rejects(listIndependentReviews('project-test'), /评阅历史记录有误/);
+});

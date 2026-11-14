@@ -37,7 +37,10 @@ test('new UI single/compare posts explicit six-focus mode and only the exact sav
 });
 
 test('old capability responses stay unavailable for new focus actions and do not relabel stored tasks', async t => {
-  const task = { id: 'old', status: 'needs_attention', report: null, error: { code: 'IMPLEMENTED_WITHOUT_CHANGE_EVIDENCE', stage: '07-goal-audit' } };
+  const task = { id: 'old', projectId: project.id, mode: 'single',
+    manuscriptRevision: ui.manuscriptRevision(project), createdAt: '2026-01-01T00:00:00Z',
+    progress: {phase: 'stopped', completedStages: 1, totalStages: 2},
+    status: 'needs_attention', report: null, error: { code: 'IMPLEMENTED_WITHOUT_CHANGE_EVIDENCE', stage: '07-goal-audit' } };
   t.mock.method(globalThis, 'fetch', async () => ({ ok: true, json: async () => ({ available: true, tasks: [task] }) }));
   const value = await ui.listIndependentReviews(project.id);
   assert.deepEqual(value.readingFocusVersions, []); assert.deepEqual(value.tasks, [task]);

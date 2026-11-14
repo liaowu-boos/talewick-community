@@ -127,3 +127,10 @@ test('both history endpoints project A/B from existing v1 receipts with identica
     assert.deepEqual(res.data[key], expected);
   }
 });
+
+test('standalone history rejects missing, duplicate and invalid project selection', async () => {
+  const router = isolatedReportRouter({root: '/unused-synthetic-root', json: () => assert.fail('invalid selector cannot return history')});
+  for (const query of ['', '?projectId=', '?projectId=a&projectId=b', '?projectId=a&projectId=a', '?projectId=../a']) {
+    await assert.rejects(router({method:'GET'}, {}, new URL('/api/isolated-reports' + query, 'http://localhost')), {status:400});
+  }
+});

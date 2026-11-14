@@ -663,7 +663,11 @@ export function createIndependentReviewRouter({ service, json, bodyJSON, listIso
   return async (req, res, url) => {
     if (!url.pathname.startsWith('/api/independent-reviews')) return false;
     if (url.pathname === '/api/independent-reviews' && req.method === 'GET') {
-      const projectId = url.searchParams.get('projectId');
+      const projectIds = url.searchParams.getAll('projectId');
+      if (projectIds.length !== 1 || !validId(projectIds[0])) {
+        throw fail('INVALID_PROJECT_ID', '请提供一个有效的项目标识。');
+      }
+      const projectId = projectIds[0];
       const history = {available: service.available(), versions: await service.versions(),
         readingFocusVersions: service.readingFocusVersions(), modelCitationModes: service.modelCitationModes(),
         tasks: await service.readList(projectId)};

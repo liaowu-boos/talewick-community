@@ -70,7 +70,9 @@ export async function listReports(root, projectId) {
 export function isolatedReportRouter({root, bodyJSON, json}) {
   return async (req, res, url) => {
     if (url.pathname === '/api/isolated-reports' && req.method === 'GET') {
-      json(res, 200, {reports:await listReports(root, url.searchParams.get('projectId'))});
+      const projectIds = url.searchParams.getAll('projectId');
+      if (projectIds.length !== 1) throw fail('请提供一个有效的项目标识。', 400);
+      json(res, 200, {reports:await listReports(root, projectIds[0])});
       return true;
     }
     const match = /^\/api\/isolated-reports\/([a-f0-9]{64})\/open$/.exec(url.pathname);

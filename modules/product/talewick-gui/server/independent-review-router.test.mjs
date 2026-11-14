@@ -31,6 +31,45 @@ test('router exposes create, list, get, cancel and retry contract without intern
   const created = await invoke('POST','/api/independent-reviews',body); assert.equal(created.status,202); assert.equal(created.value.task.mode,'single');
   const done = await waitFor(service,created.value.task.id); assert.equal(done.status,'complete');
   const listed = await invoke('GET','/api/independent-reviews?projectId=project-http'); assert.equal(listed.value.tasks.length,1); assert.deepEqual(listed.value.isolatedReports,[isolated]);
+  const other = await invoke('POST', '/api/independent-reviews', {...body, projectId: 'other_project-2', requestId: 'request-other'});
+  await waitFor(service, other.value.task.id);
+  for (const [projectId, expectedIds, expectedReports] of [
+    [body.projectId, [done.id], [isolated]],
+    ['other_project-2', [other.value.task.id], []],
+    ['unknown-project', [], []],
+    ['x', [], []],
+    ['p'.repeat(160), [], []],
+  ]) {
+    const history = await invoke('GET', '/api/independent-reviews?projectId=' + encodeURIComponent(projectId));
+    assert.equal(history.handled, true);
+    assert.equal(history.status, 200);
+    assert.deepEqual(history.value.tasks.map(task => task.id), expectedIds);
+    assert.deepEqual(history.value.isolatedReports, expectedReports);
+  }
   const one = await invoke('GET',`/api/independent-reviews/${done.id}`); assert.equal(one.status,200); assert.equal(Object.hasOwn(one.value.task,'runDir'),false); assert.equal(one.value.task.report.literaryPass,'NOT_COMPUTED');
   await assert.rejects(invoke('POST',`/api/independent-reviews/${done.id}/retry`,{}), error => error.code === 'REVIEW_RERUN_FORBIDDEN' && error.status === 409);
+});
+
+
+test('history rejects missing, empty, duplicate and invalid project IDs before accessing services', async () => {
+  const router = createIndependentReviewRouter({
+    service: new Proxy({}, {get: () => assert.fail('Invalid project must not access the service')}),
+    listIsolatedReports: () => assert.fail('Invalid project must not read isolated reports'),
+    json: () => assert.fail('Invalid project must not produce a success response'),
+  });
+  const queries = [
+    '', '?projectId', '?projectId=',
+    '?projectId=paper&projectId=other', '?projectId=paper&projectId=paper',
+    '?projectId=&projectId=paper', '?projectId=paper&projectId=',
+    '?projectId=paper&%70rojectId=other',
+    ...[' ', ' paper', 'paper ', 'a/b', '../paper', 'a\\b', 'a.b', 'a+b', '中文', '\0', '\n', 'p'.repeat(161)]
+      .map(value => '?projectId=' + encodeURIComponent(value)),
+  ];
+  for (const query of queries) {
+    await assert.rejects(
+      router({method: 'GET'}, {}, new URL('/api/independent-reviews' + query, 'http://localhost')),
+      {status: 400, code: 'INVALID_PROJECT_ID', message: '请提供一个有效的项目标识。'},
+      query,
+    );
+  }
 });

@@ -68,6 +68,80 @@ async function checkSlowHistory(page, panel, historyUrl, revision) {
   }
 }
 
+async function checkReportCancellationAndTimeout(page, history, currentRow, url, savedHtml) {
+  const openButton = currentRow.getByRole('button', {name: '打开三路报告', exact: true});
+  const report = currentRow.locator('iframe');
+  await currentRow.getByRole('button', {name: '关闭报告', exact: true}).click();
+
+  // Release the cancelled response only after the user has explicitly cancelled it.
+  const releaseCancelled = Promise.withResolvers();
+  const cancelledFinished = Promise.withResolvers();
+  const cancelledHandler = async route => {
+    try {
+      await releaseCancelled.promise;
+      await route.fulfill({status: 200, contentType: 'text/html', body: savedHtml + '<!-- cancelled response -->'});
+    } finally {
+      cancelledFinished.resolve();
+    }
+  };
+  await page.route(url, cancelledHandler, {times: 1});
+  try {
+    await Promise.all([page.waitForRequest(req => req.url() === url && req.method() === 'POST'), openButton.click()]);
+    await currentRow.getByRole('button', {name: '取消打开', exact: true}).click();
+    await openButton.waitFor({state: 'visible'});
+    assert(await openButton.isEnabled());
+    releaseCancelled.resolve();
+    await cancelledFinished.promise;
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await history.locator('iframe').count(), 0, 'cancelled response must not reopen a report');
+    assert.equal(await currentRow.getByRole('alert').count(), 0, 'explicit cancellation is not an error');
+  } finally {
+    releaseCancelled.resolve();
+    await page.unroute(url, cancelledHandler);
+  }
+
+  const releaseTimedOut = Promise.withResolvers();
+  const timedOutFinished = Promise.withResolvers();
+  const timedOutHandler = async route => {
+    try {
+      await releaseTimedOut.promise;
+      await route.fulfill({status: 200, contentType: 'text/html', body: savedHtml + '<!-- timed out response -->'});
+    } finally {
+      timedOutFinished.resolve();
+    }
+  };
+  await page.route(url, timedOutHandler, {times: 1});
+  try {
+    const started = Date.now();
+    await Promise.all([page.waitForRequest(req => req.url() === url && req.method() === 'POST'), openButton.click()]);
+    await currentRow.getByRole('button', {name: '取消打开', exact: true}).waitFor();
+    const timeoutError = currentRow.getByRole('alert').filter({hasText: '打开报告超时'});
+    await timeoutError.waitFor({timeout: 20000});
+    assert(Date.now() - started >= 14000, 'report timeout should allow the configured 15 seconds');
+    assert.equal(await history.locator('iframe').count(), 0);
+    assert.equal(await history.locator('article').count(), 2);
+    assert(await openButton.isEnabled());
+
+    // A new real HTTP request must succeed even while the old response is held.
+    const [retry] = await Promise.all([
+      page.waitForResponse(res => res.url() === url && res.request().method() === 'POST'), openButton.click(),
+    ]);
+    assert.equal(retry.status(), 200);
+    await report.waitFor({state: 'visible'});
+    const retryHtml = await retry.text();
+    assert.equal(await report.getAttribute('srcdoc'), retryHtml);
+    await timeoutError.waitFor({state: 'hidden'});
+    releaseTimedOut.resolve();
+    await timedOutFinished.promise;
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await report.getAttribute('srcdoc'), retryHtml, 'late timed-out response must not replace the successful retry');
+  } finally {
+    releaseTimedOut.resolve();
+    await page.unroute(url, timedOutHandler);
+  }
+  console.log('PASS cancelled report stays closed; 15-second timeout retries successfully and ignores the late response');
+}
+
 async function exercise(origin, current) {
   const other = current === 'A' ? 'B' : 'A';
   const context = await browser.newContext({viewport: {width: 1512, height: 982}, reducedMotion: 'reduce'});
@@ -121,6 +195,16 @@ async function exercise(origin, current) {
     assert.equal(await rows.count(), 2);
     assert(await openButton(current).isEnabled());
     assert(await openButton(other).isDisabled());
+    const currentFilter = history.getByRole('button', {name: '当前版本', exact: true});
+    const allFilter = history.getByRole('button', {name: '全部报告', exact: true});
+    await currentFilter.click();
+    assert.equal(await rows.count(), 1);
+    assert.equal(await row(current).count(), 1);
+    assert.equal(await row(other).count(), 0);
+    assert(await openButton(current).isEnabled());
+    await allFilter.click();
+    assert.equal(await rows.count(), 2);
+    assert(await openButton(other).isDisabled());
     const url = `${origin}/api/isolated-reports/${records[current].id}/open`;
     const archive = path.join(runsDir, 'isolated-reports', records[current].htmlSHA256 + '.html');
     await rename(archive, archive + '.held');
@@ -141,6 +225,8 @@ async function exercise(origin, current) {
     await report.waitFor({state: 'visible'});
     assert.equal(await report.getAttribute('srcdoc'), await response.text());
     assert.equal(await report.getAttribute('sandbox'), '');
+
+    await checkReportCancellationAndTimeout(page, history, row(current), url, await response.text());
 
     await page.getByRole('tab', {name: '编辑', exact: true}).click();
     const editor = page.getByRole('textbox', {name: '章节标题', exact: true});
@@ -221,7 +307,13 @@ async function exercise(origin, current) {
     assert.equal(await rows.count(), 2);
     for (const side of sides) assert(await openButton(side).isDisabled());
     assert.equal(await history.locator('iframe').count(), 0);
-    assert.deepEqual(opens, [url, url, url]);
+    assert.deepEqual(opens, Array(6).fill(url));
+    await currentFilter.click();
+    await history.getByText('当前版本暂无三路报告。', {exact: true}).waitFor();
+    assert.equal(await rows.count(), 0);
+    assert.equal(await currentFilter.getAttribute('aria-pressed'), 'true');
+    await allFilter.click();
+    assert.equal(await rows.count(), 2);
     assert.deepEqual(errors, []);
     assert.deepEqual(external, []);
     console.log(`PASS ${current}: missing archive reported and restored, both labels, matching report, stale disabled, draft closes report, undo restores access, saving a new version blocks both even with a delayed response`);

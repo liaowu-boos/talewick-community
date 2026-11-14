@@ -51,20 +51,40 @@ async function call(path: string, body?: unknown, signal?: AbortSignal) {
   return value;
 }
 
-export async function listIndependentReviews(projectId: string): Promise<{ available: boolean; readingFocusVersions: string[]; modelCitationModes: string[]; tasks: IndependentReviewTask[]; isolatedReports: IsolatedHistoryRecord[] }> {
+export async function listIndependentReviews(projectId: string, signal?: AbortSignal): Promise<{ available: boolean; readingFocusVersions: string[]; modelCitationModes: string[]; tasks: IndependentReviewTask[]; isolatedReports: IsolatedHistoryRecord[] }> {
+  signal?.throwIfAborted();
   const controller = new AbortController();
+  const cancel = () => controller.abort(signal?.reason);
+  signal?.addEventListener('abort', cancel, {once: true});
   const timer = setTimeout(() => controller.abort(), 15000);
   try {
     const value = await call(`/api/independent-reviews?projectId=${encodeURIComponent(projectId)}`, undefined, controller.signal);
     if (!Array.isArray(value?.tasks) || [value.isolatedReports, value.readingFocusVersions, value.modelCitationModes].some(field => field != null && !Array.isArray(field))) {
       throw new Error('评阅历史格式有误，请检查本地服务后刷新。');
     }
+    const reports = value.isolatedReports ?? [];
+    const validText = (text: unknown) => typeof text === 'string' && text.length > 0;
+    const validDate = (date: unknown) => typeof date === 'string' && Number.isFinite(Date.parse(date));
+    const statuses: IndependentReviewStatus[] = ['queued', 'running', 'complete', 'interrupted', 'cancelled', 'needs_attention', 'stale'];
+    if (value.tasks.some((task: IndependentReviewTask | null) => !task || !validText(task.id) ||
+        task.projectId !== projectId || !['single', 'compare'].includes(task.mode) || !statuses.includes(task.status) ||
+        !validText(task.manuscriptRevision) || !validDate(task.createdAt) ||
+        !Number.isFinite(task.progress?.completedStages) || !Number.isFinite(task.progress?.totalStages)) ||
+        reports.some((row: IsolatedHistoryRecord | null) => !row || !validText(row.id) ||
+          typeof row.title !== 'string' || !validDate(row.createdAt) || !validText(row.manuscriptRevision) ||
+          typeof row.synthetic !== 'boolean' || (row.version !== undefined && !['A', 'B'].includes(row.version))) ||
+        new Set(value.tasks.map((task: IndependentReviewTask) => task.id)).size !== value.tasks.length ||
+        new Set(reports.map((row: IsolatedHistoryRecord) => row.id)).size !== reports.length) {
+      throw new Error('评阅历史记录有误，请检查本地服务后刷新。');
+    }
     return { ...value, isolatedReports: value.isolatedReports ?? [], readingFocusVersions: value.readingFocusVersions ?? [], modelCitationModes: value.modelCitationModes ?? [] };
   } catch (cause) {
+    if (signal?.aborted) throw signal.reason;
     if (controller.signal.aborted) throw new Error('读取评阅历史超时，请检查本地服务后刷新。');
     throw cause;
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', cancel);
   }
 }
 
