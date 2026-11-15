@@ -1,11 +1,18 @@
-import {useLayoutEffect, useRef, useState} from 'react';
+import {useLayoutEffect, useMemo, useRef, useState} from 'react';
 import {Button} from '@/components/base/buttons/button';
 import {manuscriptRevision} from '@/model/runtime';
+import {findReportVersions} from '@/model/report-version';
 import type {Project} from '@/model/types';
 
 import type {IsolatedHistoryRecord} from '@/model/independent-review';
 
-type Props = {project: Project; reports: IsolatedHistoryRecord[]; hasUnsavedDraft: boolean};
+type Props = {
+  project: Project;
+  reports: IsolatedHistoryRecord[];
+  hasUnsavedDraft: boolean;
+  onLocateVersion?: (versionId: string, reportId: string) => void;
+  snapshotLabel?: string;
+};
 type Selection =
   | {id: string; status: 'loading'}
   | {id: string; status: 'open'; html: string}
@@ -16,17 +23,24 @@ function createdLabel(value: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN');
 }
 
-export function IsolatedHistoryRows({project, reports, hasUnsavedDraft}: Props) {
+export function IsolatedHistoryRows(props: Props) {
+  const {project, hasUnsavedDraft, snapshotLabel} = props;
   const revision = manuscriptRevision(project);
   // Reset the viewer on draft transitions as well as on changes to the saved manuscript.
-  return <HistoryRows key={JSON.stringify([project.id, project.title, project.chapters, hasUnsavedDraft])} project={project} reports={reports} hasUnsavedDraft={hasUnsavedDraft} revision={revision} />;
+  return <HistoryRows key={JSON.stringify([project.id, project.title, project.chapters, hasUnsavedDraft, snapshotLabel])} {...props} revision={revision} />;
 }
 
-function HistoryRows({project, reports, hasUnsavedDraft, revision}: Props & {revision: string}) {
+function HistoryRows({project, reports, hasUnsavedDraft, onLocateVersion, snapshotLabel, revision}: Props & {revision: string}) {
   const [filter, setFilter] = useState<'all' | 'current'>('all');
   const [selection, setSelection] = useState<Selection | null>(null);
   const pending = useRef<{controller: AbortController; timer: ReturnType<typeof setTimeout>} | null>(null);
-  const visibleReports = filter === 'current' ? reports.filter(report => report.manuscriptRevision === revision) : reports;
+  const inSnapshot = snapshotLabel !== undefined;
+  const matchedVersions = useMemo(() => {
+    if (inSnapshot || filter === 'current') return null;
+    const stale = reports.filter(report => report.manuscriptRevision !== revision);
+    return stale.length ? findReportVersions(project.versions, stale) : null;
+  }, [inSnapshot, filter, reports, revision, project.versions]);
+  const visibleReports = inSnapshot || filter === 'current' ? reports.filter(report => report.manuscriptRevision === revision) : reports;
   const selectionVisible = selection !== null && visibleReports.some(report => report.id === selection.id && report.manuscriptRevision === revision);
 
   function cancelPending() {
@@ -90,14 +104,16 @@ function HistoryRows({project, reports, hasUnsavedDraft, revision}: Props & {rev
   }
 
   return <>
-    <div role="group" aria-label="三路报告筛选" className="flex flex-wrap gap-2">
+    {inSnapshot ? <p className="text-body-2-medium">只读存稿 · {snapshotLabel}</p> : <div role="group" aria-label="三路报告筛选" className="flex flex-wrap gap-2">
       <Button type="button" size="xs" variant={filter === 'all' ? 'primary' : 'secondary'} aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>全部报告</Button>
       <Button type="button" size="xs" variant={filter === 'current' ? 'primary' : 'secondary'} aria-pressed={filter === 'current'} onClick={() => setFilter('current')}>当前版本</Button>
-    </div>
-    {visibleReports.length === 0 && <p role="status" className="text-caption-1-regular text-text-secondary">{filter === 'current' ? '当前版本暂无三路报告。' : '暂无三路报告。'}</p>}
+    </div>}
+    {inSnapshot && visibleReports.length === 0 && <p role="status" className="text-caption-1-regular text-text-secondary">此存稿暂无三路报告。</p>}
+    {!inSnapshot && visibleReports.length === 0 && <p role="status" className="text-caption-1-regular text-text-secondary">{filter === 'current' ? '当前版本暂无三路报告。' : '暂无三路报告。'}</p>}
     {hasUnsavedDraft && <p className="text-caption-1-regular text-text-secondary">请先保存或撤回正文修改，再打开对应版本的三路报告。</p>}
     {visibleReports.map(report => {
     const stale = report.manuscriptRevision !== revision;
+    const version = matchedVersions?.get(report.id);
     const current = selectionVisible && !stale && selection?.id === report.id ? selection : null;
     return <article key={report.id} className="flex flex-col gap-2 rounded-xl border border-separator-border p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -109,7 +125,10 @@ function HistoryRows({project, reports, hasUnsavedDraft, revision}: Props & {rev
             打开三路报告
           </Button>}
       </div>
-      {stale && <p className="text-caption-1-regular text-text-secondary">此报告对应其他稿件版本，请切换到对应版本后查看。</p>}
+      {stale && <div className="flex flex-wrap items-center gap-2">
+        <p className="text-caption-1-regular text-text-secondary">{version ? `对应存稿：${version.label}` : '版本记录中未找到与此报告匹配的存稿。'}</p>
+        {version && onLocateVersion && <Button type="button" size="xs" variant="secondary" disabled={hasUnsavedDraft} onClick={() => onLocateVersion(version.id, report.id)}>查看对应存稿</Button>}
+      </div>}
       {current?.status === 'loading' && <p role="status" className="text-caption-1-regular text-text-secondary">正在打开报告…</p>}
       {current?.status === 'error' && <p role="alert" className="text-caption-1-regular text-text-error-primary">{current.message}</p>}
       {current?.status === 'open' && <iframe title={report.title} sandbox="" referrerPolicy="no-referrer" srcDoc={current.html}

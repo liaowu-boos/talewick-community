@@ -144,6 +144,13 @@ async function checkReportCancellationAndTimeout(page, history, currentRow, url,
 
 async function exercise(origin, current) {
   const other = current === 'A' ? 'B' : 'A';
+  const matched = {id: `saved-${other}`, label: `合成存稿 ${other} · 门廊原文`, ...(current === 'A' ? {title} : {}),
+    date: '2026-01-01T10:00:00.000Z', chapters: manuscripts[other]};
+  // The newest snapshot shares the title and opening but differs in a later chapter.
+  // Defaulting to the last snapshot, or matching only the visible chapter, must fail.
+  const nearMatch = {...matched, title, id: `later-edit-${other}`, label: '合成存稿 · 中章改动',
+    date: '2026-01-02T10:00:00.000Z', chapters: matched.chapters.map((chapter, index) =>
+      index === 1 ? {...chapter, body: chapter.body + '（合成差异）'} : chapter)};
   const context = await browser.newContext({viewport: {width: 1512, height: 982}, reducedMotion: 'reduce'});
   try {
     const external = [], errors = [], opens = [];
@@ -154,12 +161,13 @@ async function exercise(origin, current) {
       return route.abort();
     });
     // Seed only a new browser context. Reports come through the actual registration and HTTP routes.
-    await context.addInitScript(({origin, title, projectId, chapters}) => {
+    await context.addInitScript(({origin, title, projectId, chapters, matched, nearMatch}) => {
       if (window.top !== window || location.origin !== origin) return;
-      const project = {id: projectId, title, chapters, phase: 'done', status: 'ready', docOpen: true, docMode: 'read'};
+      const versions = location.search === '?fixture=near-match-only' ? [nearMatch] : [matched, nearMatch];
+      const project = {id: projectId, title, chapters, versions, phase: 'done', status: 'ready', docOpen: true, docMode: 'read'};
       localStorage.setItem('talewick.boardui.gui.v1', JSON.stringify({schemaVersion: 1, projects: [project],
         activeProjectId: projectId, page: 'create', settings: {autoSave: false, reduceMotion: true}}));
-    }, {origin, title, projectId, chapters: manuscripts[current]});
+    }, {origin, title, projectId, chapters: manuscripts[current], matched, nearMatch});
     const page = await context.newPage();
     page.setDefaultTimeout(10000);
     page.on('pageerror', err => errors.push(err.message));
@@ -167,6 +175,17 @@ async function exercise(origin, current) {
       if (req.method() === 'POST' && /\/api\/isolated-reports\/[^/]+\/open$/.test(req.url())) opens.push(req.url());
     });
     const historyUrl = origin + '/api/independent-reviews?projectId=' + projectId;
+    if (current === 'B') {
+      // A registered both reports earlier in this run. Only the near match is saved here.
+      await page.goto(origin + '/?fixture=near-match-only');
+      const panel = page.getByRole('region', {name: '独立全文评阅', exact: true});
+      await panel.locator('summary').filter({hasText: '评阅历史'}).click();
+      const oldRow = panel.locator('article').filter({hasText: `匿名稿 ${other}`});
+      await oldRow.waitFor({state: 'visible'});
+      assert(await oldRow.getByRole('button', {name: '打开三路报告'}).isDisabled());
+      const jump = oldRow.getByRole('button', {name: '查看对应存稿', exact: true});
+      assert((await jump.count()) === 0 || await jump.isDisabled());
+    }
     if (current === 'A') {
       await page.route(historyUrl, route => route.fulfill({status: 503, json: {error: '历史暂时不可用'}}));
     }
@@ -206,6 +225,53 @@ async function exercise(origin, current) {
     assert.equal(await rows.count(), 2);
     assert(await openButton(other).isDisabled());
     const url = `${origin}/api/isolated-reports/${records[current].id}/open`;
+    const oldUrl = `${origin}/api/isolated-reports/${records[other].id}/open`;
+    const prose = page.getByTestId('manuscript-prose').filter({visible: true});
+    const opening = await prose.textContent();
+    assert.equal(opening.replace(/\r\n/g, '\n'), manuscripts[current][0].body.replace(/\r\n/g, '\n'));
+    const savedCopy = row(other).getByRole('button', {name: '查看对应存稿', exact: true});
+    const savedState = () => page.evaluate(id => {
+      const data = JSON.parse(localStorage.getItem('talewick.boardui.gui.v1'));
+      const {title, chapters, versions, pendingEdits, selectedChapter, docMode} = data.projects.find(p => p.id === id);
+      return {title, chapters, versions, pendingEdits, selectedChapter, docMode};
+    }, projectId);
+    const before = await savedState();
+    await savedCopy.click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByRole('heading', {name: matched.label, exact: true}).waitFor();
+    assert.equal(await dialog.getByRole('button', {name: '恢复此版本'}).count(), 0);
+    if (current === 'B') await dialog.getByText('存稿未记录书名', {exact: true}).waitFor();
+    assert.deepEqual(opens, [], 'navigating to a snapshot must not open its report automatically');
+    const [oldResponse] = await Promise.all([
+      page.waitForResponse(r => r.url() === oldUrl && r.request().method() === 'POST'),
+      dialog.getByRole('button', {name: '打开三路报告', exact: true}).click(),
+    ]);
+    assert.equal(oldResponse.status(), 200);
+    const payload = oldResponse.request().postDataJSON();
+    assert.equal(payload.projectId, projectId);
+    assert.equal(payload.title, title);
+    assert.deepEqual(payload.chapters, matched.chapters);
+    assert.equal(payload.manuscriptRevision, records[other].manuscriptRevision);
+    const savedFrame = dialog.locator('iframe');
+    await savedFrame.waitFor({state: 'visible'});
+    assert.equal(await savedFrame.getAttribute('sandbox'), '');
+    assert.equal(await savedFrame.getAttribute('srcdoc'), await oldResponse.text());
+    await page.keyboard.press('Escape');
+    await dialog.waitFor({state: 'hidden'});
+    assert.equal(await prose.textContent(), opening);
+    assert(await openButton(current).isEnabled());
+    assert(await openButton(other).isDisabled());
+    assert.equal(await history.locator('iframe').count(), 0);
+    assert.deepEqual(await savedState(), before);
+    await page.getByRole('button', {name: '版本记录', exact: true}).click();
+    await dialog.getByRole('heading', {name: nearMatch.label, exact: true}).waitFor();
+    await dialog.getByText('这份存稿暂无已登记的三路报告。', {exact: true}).waitFor();
+    await dialog.getByRole('button', {name: new RegExp(matched.label)}).click();
+    await dialog.getByRole('button', {name: '打开三路报告', exact: true}).waitFor();
+    await dialog.getByRole('button', {name: '关闭窗口'}).click();
+    await dialog.waitFor({state: 'hidden'});
+    assert.deepEqual(await savedState(), before);
+    console.log(`PASS ${current}: saved report opened with verified chapters, both version entrances preserve the current project`);
     const archive = path.join(runsDir, 'isolated-reports', records[current].htmlSHA256 + '.html');
     await rename(archive, archive + '.held');
     try {
@@ -236,6 +302,7 @@ async function exercise(origin, current) {
     await page.getByText('有未保存的修改', {exact: true}).waitFor();
     await report.waitFor({state: 'detached'});
     assert.equal(await rows.count(), 2);
+    assert((await savedCopy.count()) === 0 || await savedCopy.isDisabled(), 'unsaved edits must block snapshot navigation');
     for (const side of sides) {
       assert(await row(side).isVisible());
       assert(await openButton(side).isDisabled());
@@ -307,13 +374,37 @@ async function exercise(origin, current) {
     assert.equal(await rows.count(), 2);
     for (const side of sides) assert(await openButton(side).isDisabled());
     assert.equal(await history.locator('iframe').count(), 0);
-    assert.deepEqual(opens, Array(6).fill(url));
+    assert.deepEqual(opens, [oldUrl, ...Array(6).fill(url)]);
     await currentFilter.click();
     await history.getByText('当前版本暂无三路报告。', {exact: true}).waitFor();
     assert.equal(await rows.count(), 0);
     assert.equal(await currentFilter.getAttribute('aria-pressed'), 'true');
     await allFilter.click();
     assert.equal(await rows.count(), 2);
+    if (current === 'B') {
+      const createdAt = '2026-02-01T12:00:00.000Z';
+      const repeat = await registerWorkbenchReport({runsDir, projectId, version: other,
+        manuscript: {title, chapters: matched.chapters}, adapterInput: createDemoInput(), createdAt, synthetic: true});
+      assert.notEqual(repeat.id, records[other].id);
+      await refresh.click();
+      const repeatedRow = rows.filter({has: page.locator(`time[datetime="${createdAt}"]`)});
+      await repeatedRow.getByRole('button', {name: '查看对应存稿'}).click();
+      const target = dialog.getByRole('region', {name: '存稿评阅报告'});
+      assert.equal(await target.locator('article').count(), 1);
+      assert.equal(await target.locator('time').getAttribute('datetime'), createdAt);
+      const [repeatResponse] = await Promise.all([
+        page.waitForResponse(r => r.url() === `${origin}/api/isolated-reports/${repeat.id}/open`),
+        target.getByRole('button', {name: '打开三路报告'}).click(),
+      ]);
+      assert.equal(repeatResponse.status(), 200);
+      await target.locator('iframe').waitFor();
+      await dialog.getByRole('button', {name: '返回当前稿'}).click();
+      await page.getByRole('button', {name: '版本记录', exact: true}).click();
+      await dialog.getByRole('button', {name: new RegExp(matched.label)}).click();
+      assert.equal(await target.locator('article').count(), 2);
+      await dialog.getByRole('button', {name: '关闭窗口'}).click();
+      console.log('PASS repeated reviews of a snapshot open by receipt ID; version records retain both');
+    }
     assert.deepEqual(errors, []);
     assert.deepEqual(external, []);
     console.log(`PASS ${current}: missing archive reported and restored, both labels, matching report, stale disabled, draft closes report, undo restores access, saving a new version blocks both even with a delayed response`);

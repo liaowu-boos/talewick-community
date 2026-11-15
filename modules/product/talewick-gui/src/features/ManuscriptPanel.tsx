@@ -24,6 +24,8 @@ import { cx } from '@/utils/cx';
 import { useWorkspace } from '@/features/context';
 import { DialogShell, downloadText, EmptyState, formatDate, TextAreaField } from '@/features/shared';
 import { Full15ReviewPanel } from '@/features/Full15ReviewPanel';
+import {SavedVersionReports} from './SavedVersionReports';
+import {useIndependentReviewHistory} from './useIndependentReviewHistory';
 import { IndependentReviewPanel } from '@/features/IndependentReviewPanel';
 import { CandidateRecheckPanel } from '@/features/CandidateRecheckPanel';
 import { authorizeCandidateRecheck, candidateChapterSha256, type CandidateRecheckTask } from '@/model/candidate-recheck';
@@ -80,7 +82,8 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
   const key = draftKey(project.id, chapter.id);
   const [draft, setDraft] = useState<LocalDraft>(() => sessionDrafts.get(key) || makeDraft(project.id, chapter));
   const [selection, setSelection] = useState<SelectionAnchor | null>(null);
-  const [dialog, setDialog] = useState<'versions' | 'export' | 'unsaved' | 'conflict' | 'whole-request' | 'whole-candidate' | null>(null);
+  const history = useIndependentReviewHistory(project.id);
+  const [dialog, setDialog] = useState<'versions' | 'report-version' | 'export' | 'unsaved' | 'conflict' | 'whole-request' | 'whole-candidate' | null>(null);
   const [wholeInstruction, setWholeInstruction] = useState('');
   const [assessGoalIncrement, setAssessGoalIncrement] = useState(false);
   const [useWritingGoal, setUseWritingGoal] = useState(false);
@@ -88,6 +91,7 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
   const [writingGoalText, setWritingGoalText] = useState('');
   const [writingGoalBoundary, setWritingGoalBoundary] = useState('');
   const [deferred, setDeferred] = useState<DeferredAction | null>(null);
+  const [reportTarget, setReportTarget] = useState<{versionId: string; reportId: string} | null>(null);
   const [versionId, setVersionId] = useState<string | null>(null);
   const [versionCompare, setVersionCompare] = useState(false);
   const [acceptingIds, setAcceptingIds] = useState<string[] | null>(null);
@@ -104,7 +108,8 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
   const allPending = pendingEdits(project);
   const chapterPending = allPending.filter(edit => edit.chapterId === chapter.id);
   const chapterSuggestions = project.pendingEdits.filter(edit => edit.chapterId === chapter.id);
-  const selectedVersion = project.versions.find(version => version.id === versionId) || project.versions.at(-1);
+  const selectedVersion = versionId === null ? project.versions.at(-1) : project.versions.find(version => version.id === versionId);
+  const versionDialogOpen = dialog === 'versions' || dialog === 'report-version';
   const wholeMode = project.runtime?.request.revisionMode;
   const wholeTask = wholeMode === 'whole-manuscript-v1' || wholeMode === 'whole-manuscript-v2' ? project.runtime?.task : undefined;
   const wholeResult = wholeTask?.result?.wholeRevision ? wholeTask.result : undefined;
@@ -279,6 +284,14 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
     sessionDrafts.delete(key); setSelection(null); notify('已撤销本次编辑。');
   }
 
+  function locateReportVersion(id: string, reportId: string) {
+    if (hasUnsavedDraft || !project.versions.some(version => version.id === id)) return;
+    setReportTarget({versionId: id, reportId});
+    setVersionId(id);
+    setVersionCompare(false);
+    setDialog('report-version');
+  }
+
   function openVersions() {
     guard({ run: () => { setVersionId(null); setVersionCompare(false); setDialog('versions'); } });
   }
@@ -388,7 +401,7 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
       <div className="flex flex-wrap items-center gap-2 text-caption-1-regular text-text-tertiary"><span>{project.chapters.length} 章</span><span>·</span><span>{hanCharacterCount(project.chapters.map(item => item.body).join('')).toLocaleString()} 汉字</span><span>·</span><span aria-live="polite">{hasUnsavedDraft ? '有未保存的修改' : savedLabel}</span><span className="tw-manuscript-demo">{project.runtime ? '本机稿件' : '演示稿件'}</span></div>
     </div>
     {progress}
-    <IndependentReviewPanel project={project} hasUnsavedDraft={hasUnsavedDraft} onLocate={locateReviewEvidence} />
+    <IndependentReviewPanel project={project} hasUnsavedDraft={hasUnsavedDraft} onLocate={locateReviewEvidence} history={history} onLocateVersion={locateReportVersion} />
     <Full15ReviewPanel project={project} hasUnsavedDraft={hasUnsavedDraft} onLocate={locateReviewEvidence} />
     {project.runtime?.task?.result?.deepReference && <DeepReferenceDetails value={project.runtime.task.result.deepReference} />}
     {wholeResult && <section className="mx-5 mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border-button-default bg-tw-glass p-4" aria-label="整稿修订候选">
@@ -469,7 +482,7 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
       <div className="mb-6 flex items-center gap-4 rounded-3xl border border-border-button-default bg-tw-glass p-4"><RiFileTextLine className="size-8 text-tw-warm" /><div><p className="text-headline-medium">{project.title}</p><p className="text-body-2-regular text-text-secondary">{project.chapters.length} 章 · {hanCharacterCount(project.chapters.map(item => item.body).join('')).toLocaleString()} 汉字</p></div></div>
       <div className="grid grid-cols-2 gap-4">{(['txt', 'md'] as const).map(format => <Button key={format} variant="secondary" leadingIcon={RiDownload2Line} onClick={() => { downloadText(`${project.title}.${format}`, exportManuscript(project, format)); setDialog(null); notify('稿件已导出。'); }}>{format === 'txt' ? '纯文本 TXT' : 'Markdown'}</Button>)}</div>
     </DialogShell>
-    <DialogShell title="每一次落笔，都有迹可循。" description="恢复历史版本时，当前稿件也会保留一份副本。" open={dialog === 'versions'} onClose={() => setDialog(null)} className="tw-manuscript-version-dialog" footer={selectedVersion ? <><Button variant="ghost" leadingIcon={RiDownload2Line} onClick={() => { downloadText(`${selectedVersion.title || project.title}-${selectedVersion.label}.md`, exportManuscript({ ...project, title: selectedVersion.title || project.title }, 'md', selectedVersion.chapters)); notify('历史版本已导出。'); }}>导出此版本</Button><Button variant="primary" leadingIcon={RiHistoryLine} disabled={JSON.stringify(selectedVersion.chapters) === JSON.stringify(project.chapters) && (!selectedVersion.title || selectedVersion.title === project.title)} onClick={() => {
+    <DialogShell title={dialog === 'report-version' ? '查看对应存稿' : '每一次落笔，都有迹可循。'} description={dialog === 'report-version' ? '只读查看存稿及其评阅报告。' : '恢复历史版本时，当前稿件也会保留一份副本。'} open={versionDialogOpen} onClose={() => setDialog(null)} className="tw-manuscript-version-dialog" footer={dialog === 'report-version' ? <Button onClick={() => setDialog(null)}>返回当前稿</Button> : selectedVersion ? <><Button variant="ghost" leadingIcon={RiDownload2Line} onClick={() => { downloadText(`${selectedVersion.title || project.title}-${selectedVersion.label}.md`, exportManuscript({ ...project, title: selectedVersion.title || project.title }, 'md', selectedVersion.chapters)); notify('历史版本已导出。'); }}>导出此版本</Button><Button variant="primary" leadingIcon={RiHistoryLine} disabled={JSON.stringify(selectedVersion.chapters) === JSON.stringify(project.chapters) && (!selectedVersion.title || selectedVersion.title === project.title)} onClick={() => {
       mutate(item => { restoreVersion(item, selectedVersion.id); });
       for (const [cachedKey, cached] of sessionDrafts) if (cached.projectId === project.id) sessionDrafts.delete(cachedKey);
       const restored = selectedVersion.chapters[Math.min(project.selectedChapter, selectedVersion.chapters.length - 1)];
@@ -477,8 +490,11 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
       setDialog(null); notify('已恢复这个版本，恢复前的稿件也已保存。');
     }}>恢复此版本</Button></> : undefined}>
       {selectedVersion ? <div className="tw-manuscript-version-layout"><div className="tw-manuscript-version-list" aria-label="选择历史版本">{[...project.versions].reverse().map((version, index) => <Button key={version.id} variant="ghost" onClick={() => setVersionId(version.id)} aria-pressed={version.id === selectedVersion.id} className={cx('tw-manuscript-version-item', version.id === selectedVersion.id && 'is-selected')}><span className="tw-manuscript-version-node" /><span className="flex min-w-0 flex-col gap-1 text-left"><span className="text-body-medium">{version.label}</span><span className="text-caption-1-regular text-text-tertiary">{formatDate(version.date)}</span><span className="text-caption-2-regular text-text-secondary">{version.chapters.length} 章{index === 0 ? ' · 最近版本' : ''}</span></span></Button>)}</div>
-        <div className="tw-manuscript-version-preview"><div className="tw-manuscript-version-preview-header"><h3 className="text-headline-medium">{selectedVersion.label}</h3><Button variant="secondary" size="small" aria-pressed={versionCompare} onClick={() => setVersionCompare(value => !value)}>{versionCompare ? '查看全文' : '与当前稿件对比'}</Button></div><div className="tw-manuscript-version-body">{versionCompare ? <VersionComparison previous={selectedVersion} current={project.chapters} /> : <><h3 className="mb-6 font-story text-display-4-regular">{selectedVersion.title || project.title}</h3>{selectedVersion.chapters.map(item => <section key={item.id} className="mb-8"><h4 className="mb-4 font-story text-title-3-medium">{item.title}</h4><p className="whitespace-pre-wrap font-story text-headline-regular text-text-secondary">{item.body}</p></section>)}</>}</div></div>
-      </div> : <EmptyState icon={<RiHistoryLine className="size-8 text-tw-warm" />} title="这里会留下故事的变化" description="保存一次版本，就可以从这里回到它。"><Button variant="primary" onClick={() => mutate(item => { snapshotProject(item, '手动保存'); })}>保存当前版本</Button></EmptyState>}
+        <div className="tw-manuscript-version-preview"><div className="tw-manuscript-version-preview-header"><h3 className="text-headline-medium">{selectedVersion.label}</h3><Button variant="secondary" size="small" aria-pressed={versionCompare} onClick={() => setVersionCompare(value => !value)}>{versionCompare ? '查看全文' : '与当前稿件对比'}</Button></div><div className="tw-manuscript-version-body">
+          {versionDialogOpen && <SavedVersionReports key={selectedVersion.id} project={project} version={selectedVersion} history={history} hasUnsavedDraft={hasUnsavedDraft}
+            reportId={dialog === 'report-version' && reportTarget?.versionId === selectedVersion.id ? reportTarget.reportId : undefined}/>}
+          {versionCompare ? <VersionComparison previous={selectedVersion} current={project.chapters} /> : <><h3 className="mb-6 font-story text-display-4-regular">{selectedVersion.title ?? '存稿未记录书名'}</h3>{selectedVersion.chapters.map(item => <section key={item.id} className="mb-8"><h4 className="mb-4 font-story text-title-3-medium">{item.title}</h4><p className="whitespace-pre-wrap font-story text-headline-regular text-text-secondary">{item.body}</p></section>)}</>}</div></div>
+      </div> : dialog === 'report-version' ? <p role="status">对应存稿已移除。</p> : <EmptyState icon={<RiHistoryLine className="size-8 text-tw-warm" />} title="这里会留下故事的变化" description="保存一次版本，就可以从这里回到它。"><Button variant="primary" onClick={() => mutate(item => { snapshotProject(item, '手动保存'); })}>保存当前版本</Button></EmptyState>}
     </DialogShell>
   </section>;
 }
