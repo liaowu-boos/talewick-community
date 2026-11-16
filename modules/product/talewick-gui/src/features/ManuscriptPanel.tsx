@@ -24,6 +24,7 @@ import { cx } from '@/utils/cx';
 import { useWorkspace } from '@/features/context';
 import { DialogShell, downloadText, EmptyState, formatDate, TextAreaField } from '@/features/shared';
 import { Full15ReviewPanel } from '@/features/Full15ReviewPanel';
+import { VersionComparison } from './VersionComparison';
 import {SavedVersionReports} from './SavedVersionReports';
 import {useIndependentReviewHistory} from './useIndependentReviewHistory';
 import { IndependentReviewPanel } from '@/features/IndependentReviewPanel';
@@ -488,12 +489,12 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
       const restored = selectedVersion.chapters[Math.min(project.selectedChapter, selectedVersion.chapters.length - 1)];
       if (restored) setDraft(makeDraft(project.id, restored));
       setDialog(null); notify('已恢复这个版本，恢复前的稿件也已保存。');
-    }}>恢复此版本</Button></> : undefined}>
+    }}>{versionCompare ? `恢复来源版本「${selectedVersion.label}」` : '恢复此版本'}</Button></> : undefined}>
       {selectedVersion ? <div className="tw-manuscript-version-layout"><div className="tw-manuscript-version-list" aria-label="选择历史版本">{[...project.versions].reverse().map((version, index) => <Button key={version.id} variant="ghost" onClick={() => setVersionId(version.id)} aria-pressed={version.id === selectedVersion.id} className={cx('tw-manuscript-version-item', version.id === selectedVersion.id && 'is-selected')}><span className="tw-manuscript-version-node" /><span className="flex min-w-0 flex-col gap-1 text-left"><span className="text-body-medium">{version.label}</span><span className="text-caption-1-regular text-text-tertiary">{formatDate(version.date)}</span><span className="text-caption-2-regular text-text-secondary">{version.chapters.length} 章{index === 0 ? ' · 最近版本' : ''}</span></span></Button>)}</div>
-        <div className="tw-manuscript-version-preview"><div className="tw-manuscript-version-preview-header"><h3 className="text-headline-medium">{selectedVersion.label}</h3><Button variant="secondary" size="small" aria-pressed={versionCompare} onClick={() => setVersionCompare(value => !value)}>{versionCompare ? '查看全文' : '与当前稿件对比'}</Button></div><div className="tw-manuscript-version-body">
+        <div className="tw-manuscript-version-preview"><div className="tw-manuscript-version-preview-header"><h3 className="text-headline-medium">{selectedVersion.label}</h3><Button variant="secondary" size="small" aria-pressed={versionCompare} onClick={() => setVersionCompare(value => !value)}>{versionCompare ? '查看全文' : '对比版本'}</Button></div><div className="tw-manuscript-version-body">
           {versionDialogOpen && <SavedVersionReports key={selectedVersion.id} project={project} version={selectedVersion} history={history} hasUnsavedDraft={hasUnsavedDraft}
             reportId={dialog === 'report-version' && reportTarget?.versionId === selectedVersion.id ? reportTarget.reportId : undefined}/>}
-          {versionCompare ? <VersionComparison previous={selectedVersion} current={project.chapters} /> : <><h3 className="mb-6 font-story text-display-4-regular">{selectedVersion.title ?? '存稿未记录书名'}</h3>{selectedVersion.chapters.map(item => <section key={item.id} className="mb-8"><h4 className="mb-4 font-story text-title-3-medium">{item.title}</h4><p className="whitespace-pre-wrap font-story text-headline-regular text-text-secondary">{item.body}</p></section>)}</>}</div></div>
+          {versionCompare ? <SavedVersionComparison key={selectedVersion.id} source={selectedVersion} project={project} /> : <><h3 className="mb-6 font-story text-display-4-regular">{selectedVersion.title ?? '存稿未记录书名'}</h3>{selectedVersion.chapters.map(item => <section key={item.id} className="mb-8"><h4 className="mb-4 font-story text-title-3-medium">{item.title}</h4><p className="whitespace-pre-wrap font-story text-headline-regular text-text-secondary">{item.body}</p></section>)}</>}</div></div>
       </div> : dialog === 'report-version' ? <p role="status">对应存稿已移除。</p> : <EmptyState icon={<RiHistoryLine className="size-8 text-tw-warm" />} title="这里会留下故事的变化" description="保存一次版本，就可以从这里回到它。"><Button variant="primary" onClick={() => mutate(item => { snapshotProject(item, '手动保存'); })}>保存当前版本</Button></EmptyState>}
     </DialogShell>
   </section>;
@@ -761,15 +762,33 @@ function Suggestion({ edit, number, valid, onAccept, onReject }: { edit: Pending
   </section>;
 }
 
-function VersionComparison({ previous, current, beforeLabel = '历史版本', afterLabel = '当前稿件' }: { previous: Version; current: Chapter[]; beforeLabel?: string; afterLabel?: string }) {
-  const ids = [...new Set([...previous.chapters, ...current].map(chapter => chapter.id))];
-  const changed = ids.map(id => ({ before: previous.chapters.find(chapter => chapter.id === id), after: current.find(chapter => chapter.id === id) })).filter(pair => pair.before?.body !== pair.after?.body || pair.before?.title !== pair.after?.title);
-  if (!changed.length) return <EmptyState icon={<RiCheckLine className="size-8 text-tw-warm" />} title="与当前稿件一致" description="章节标题和正文均未变化。" />;
-  return <><div className="tw-manuscript-diff-legend text-caption-1-regular"><span>{beforeLabel}</span><span>{afterLabel}</span></div>{changed.map(({ before, after }) => {
-    const oldText = before?.body || '', newText = after?.body || '';
-    let start = 0, end = 0;
-    while (start < Math.min(oldText.length, newText.length) && oldText[start] === newText[start]) start += 1;
-    while (end < Math.min(oldText.length, newText.length) - start && oldText[oldText.length - 1 - end] === newText[newText.length - 1 - end]) end += 1;
-    return <section key={after?.id || before?.id} className="tw-manuscript-history-change"><h4 className="mb-4 font-story text-title-3-medium">{after?.title || before?.title}</h4>{before?.title !== after?.title && <p className="mb-4 text-body-regular"><del>{before?.title || '无章节'}</del><ins>{after?.title || '已删除'}</ins></p>}<p className="whitespace-pre-wrap font-story text-headline-regular text-text-secondary">{start > 72 ? '…' : ''}{oldText.slice(Math.max(0, start - 72), start)}<del>{oldText.slice(start, oldText.length - end)}</del><ins>{newText.slice(start, newText.length - end)}</ins>{oldText.slice(oldText.length - end, oldText.length - end + 72)}{end > 72 ? '…' : ''}</p></section>;
-  })}</>;
+function SavedVersionComparison({ source, project }: { source: Version; project: Project }) {
+  const [targetKey, setTargetKey] = useState('current');
+  const others = project.versions.filter(version => version.id !== source.id);
+  const target = others.find(version => `saved:${version.id}` === targetKey);
+  const labelCounts = new Map<string, number>();
+  for (const version of project.versions) labelCounts.set(version.label, (labelCounts.get(version.label) ?? 0) + 1);
+  // Autosaves often have the same label and timestamp. Their positions still distinguish them.
+  const labels = new Map(project.versions.map((version, index) => [
+    version.id, labelCounts.get(version.label) === 1 && version.label !== '当前稿件'
+      ? version.label : `${version.label}（存稿 ${index + 1}）`,
+  ]));
+  const isCurrent = targetKey === 'current';
+
+  return <section aria-label="存稿对比">
+    <label className="mb-4 flex flex-wrap items-center gap-2 text-body-2-medium">
+      对比目标
+      <select aria-label="对比目标" className="max-w-full rounded-lg border border-border-button-default bg-background-primary-default p-2"
+        value={targetKey} onChange={event => setTargetKey(event.target.value)}>
+        <option value="current">当前稿件</option>
+        {others.map(version => <option key={version.id} value={`saved:${version.id}`}>
+          {labels.get(version.id)}
+        </option>)}
+      </select>
+    </label>
+    {isCurrent || target ? <VersionComparison previous={source}
+      current={target ? target.chapters : project.chapters} currentTitle={target ? target.title : project.title}
+      compareTitles beforeLabel={labels.get(source.id)} afterLabel={target ? labels.get(target.id) : '当前稿件'} />
+      : <p role="status">所选对比目标已移除，请重新选择。</p>}
+  </section>;
 }
