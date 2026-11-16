@@ -209,6 +209,62 @@ export function restoreVersion(project: Project, versionId: string): boolean {
   return true;
 }
 
+export interface ChapterRestorePlan {
+  projectId: string;
+  versionId: string;
+  versionLabel: string;
+  source: Chapter;
+  current: Chapter;
+}
+
+function uniqueById<T extends { id: string }>(items: T[], id: string): T | undefined {
+  const matches = items.filter(item => item.id === id);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function sameChapterText(a: Chapter, b: Chapter): boolean {
+  return a.title === b.title && a.body === b.body;
+}
+
+function readChapterRestore(project: Project, versionId: string, chapterId: string): ChapterRestorePlan | null {
+  const version = uniqueById(project.versions, versionId);
+  if (!version) return null;
+  const source = uniqueById(version.chapters, chapterId);
+  const current = uniqueById(project.chapters, chapterId);
+  if (!source || !current || sameChapterText(source, current)) return null;
+  return { projectId: project.id, versionId, versionLabel: version.label, source, current };
+}
+
+export function prepareChapterRestore(project: Project, versionId: string, chapterId: string): ChapterRestorePlan | null {
+  const plan = readChapterRestore(project, versionId, chapterId);
+  return plan && clone(plan);
+}
+
+export function canApplyChapterRestore(project: Project, plan: ChapterRestorePlan): boolean {
+  if (project.id !== plan.projectId || plan.current.id !== plan.source.id) return false;
+  const live = readChapterRestore(project, plan.versionId, plan.current.id);
+  return live !== null && live.versionLabel === plan.versionLabel
+    && sameChapterText(live.source, plan.source) && sameChapterText(live.current, plan.current);
+}
+
+export function applyChapterRestore(project: Project, plan: ChapterRestorePlan): boolean {
+  if (!canApplyChapterRestore(project, plan)) return false;
+  const index = project.chapters.findIndex(chapter => chapter.id === plan.current.id);
+  const restored = { ...project.chapters[index], title: plan.source.title, body: plan.source.body };
+  snapshotProject(project, `恢复「${plan.current.title}」前的整稿`);
+  project.chapters = project.chapters.slice();
+  project.chapters[index] = restored;
+  if (project.editorBaseline) {
+    const baseline = project.editorBaseline.slice();
+    const baselineIndex = baseline.findIndex(chapter => chapter.id === restored.id);
+    if (baselineIndex >= 0) baseline[baselineIndex] = clone(restored);
+    else baseline.splice(index, 0, clone(restored));
+    project.editorBaseline = baseline;
+  }
+  snapshotProject(project, `已恢复「${plan.source.title}」`);
+  return true;
+}
+
 export function beginEditing(project: Project): void {
   project.editorBaseline ??= clone(project.chapters);
   project.docMode = 'edit';

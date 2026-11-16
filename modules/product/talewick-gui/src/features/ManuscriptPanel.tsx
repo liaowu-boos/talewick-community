@@ -1,5 +1,6 @@
 import { makeGoalImprovementPolicy } from '@/model/goal-improvement-policy';
 import type { GoalImprovementPolicy } from '@/model/types';
+import { flushSync } from 'react-dom';
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   RiArrowLeftLine, RiArrowRightLine, RiCheckLine, RiCloseLine, RiDownload2Line,
@@ -15,6 +16,7 @@ import { SegmentedControl, SegmentedControlItem } from '@/components/base/segmen
 import {
   acceptPendingEdits, acceptCheckedWholeCandidate, acceptWholeQualityGroups, acceptWholeRevisionCandidate, beginEditing, canAdoptWholeQualityGroups, canAdoptWholeRevisionCandidate, canApplyPendingEdit, characterCount,
   declineWholeQualityCandidate, declineWholeRevisionCandidate, hanCharacterCount, exportManuscript, linkedWholeQualityGroupIds, pendingEdits,
+  applyChapterRestore, canApplyChapterRestore, prepareChapterRestore, type ChapterRestorePlan,
   rejectPendingEdits, restoreVersion, saveEditorVersion, snapshotProject, undoEditing, updateChapter, wholeQualityAdoptionGroups,
 } from '@/model/store';
 import { manuscriptRevision, runtimeBusy, wholeRevisionDispositionLabel, wholeRevisionRereadPresentation, wholeRevisionRereadReport } from '@/model/runtime';
@@ -24,6 +26,7 @@ import { cx } from '@/utils/cx';
 import { useWorkspace } from '@/features/context';
 import { DialogShell, downloadText, EmptyState, formatDate, TextAreaField } from '@/features/shared';
 import { Full15ReviewPanel } from '@/features/Full15ReviewPanel';
+import { ChapterRestorePreview } from './ChapterRestorePreview';
 import { VersionComparison } from './VersionComparison';
 import {SavedVersionReports} from './SavedVersionReports';
 import {useIndependentReviewHistory} from './useIndependentReviewHistory';
@@ -94,6 +97,7 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
   const [deferred, setDeferred] = useState<DeferredAction | null>(null);
   const [reportTarget, setReportTarget] = useState<{versionId: string; reportId: string} | null>(null);
   const [versionId, setVersionId] = useState<string | null>(null);
+  const [restorePlan, setRestorePlan] = useState<ChapterRestorePlan | null>(null);
   const [versionCompare, setVersionCompare] = useState(false);
   const [acceptingIds, setAcceptingIds] = useState<string[] | null>(null);
   const [qualitySelectedGroupIds, setQualitySelectedGroupIds] = useState<string[]>([]);
@@ -111,6 +115,9 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
   const chapterSuggestions = project.pendingEdits.filter(edit => edit.chapterId === chapter.id);
   const selectedVersion = versionId === null ? project.versions.at(-1) : project.versions.find(version => version.id === versionId);
   const versionDialogOpen = dialog === 'versions' || dialog === 'report-version';
+  const preview = dialog === 'versions' ? restorePlan : null;
+  const restoreBlocked = preview !== null && (sessionDrafts.has(draftKey(project.id, preview.current.id)) ||
+    !canApplyChapterRestore(project, preview));
   const wholeMode = project.runtime?.request.revisionMode;
   const wholeTask = wholeMode === 'whole-manuscript-v1' || wholeMode === 'whole-manuscript-v2' ? project.runtime?.task : undefined;
   const wholeResult = wholeTask?.result?.wholeRevision ? wholeTask.result : undefined;
@@ -293,8 +300,33 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
     setDialog('report-version');
   }
 
+  function previewChapterRestore(chapterId: string) {
+    if (dialog !== 'versions' || !selectedVersion) return;
+    if (sessionDrafts.has(draftKey(project.id, chapterId))) {
+      notify('请先保存或撤回这一章的草稿。');
+      return;
+    }
+    const plan = prepareChapterRestore(project, selectedVersion.id, chapterId);
+    if (!plan) { notify('这一章当前无法恢复，请重新选择存稿。'); return; }
+    setVersionId(selectedVersion.id);
+    setRestorePlan(plan);
+  }
+
+  function confirmChapterRestore() {
+    if (!preview || restoreBlocked) return;
+    let applied = false;
+    // Check the state actually committed by React before closing the preview or reporting success.
+    flushSync(() => mutate(item => {
+      if (!sessionDrafts.has(draftKey(item.id, preview.current.id))) applied = applyChapterRestore(item, preview);
+    }));
+    if (!applied) { notify('稿件已更新，请重新核对这一章。'); return; }
+    setRestorePlan(null);
+    setDialog(null);
+    notify(`已恢复「${preview.source.title}」，恢复前的整稿已存入版本记录。`);
+  }
+
   function openVersions() {
-    guard({ run: () => { setVersionId(null); setVersionCompare(false); setDialog('versions'); } });
+    guard({ run: () => { setRestorePlan(null); setVersionId(null); setVersionCompare(false); setDialog('versions'); } });
   }
 
   function openWholeRevision() {
@@ -483,18 +515,22 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
       <div className="mb-6 flex items-center gap-4 rounded-3xl border border-border-button-default bg-tw-glass p-4"><RiFileTextLine className="size-8 text-tw-warm" /><div><p className="text-headline-medium">{project.title}</p><p className="text-body-2-regular text-text-secondary">{project.chapters.length} 章 · {hanCharacterCount(project.chapters.map(item => item.body).join('')).toLocaleString()} 汉字</p></div></div>
       <div className="grid grid-cols-2 gap-4">{(['txt', 'md'] as const).map(format => <Button key={format} variant="secondary" leadingIcon={RiDownload2Line} onClick={() => { downloadText(`${project.title}.${format}`, exportManuscript(project, format)); setDialog(null); notify('稿件已导出。'); }}>{format === 'txt' ? '纯文本 TXT' : 'Markdown'}</Button>)}</div>
     </DialogShell>
-    <DialogShell title={dialog === 'report-version' ? '查看对应存稿' : '每一次落笔，都有迹可循。'} description={dialog === 'report-version' ? '只读查看存稿及其评阅报告。' : '恢复历史版本时，当前稿件也会保留一份副本。'} open={versionDialogOpen} onClose={() => setDialog(null)} className="tw-manuscript-version-dialog" footer={dialog === 'report-version' ? <Button onClick={() => setDialog(null)}>返回当前稿</Button> : selectedVersion ? <><Button variant="ghost" leadingIcon={RiDownload2Line} onClick={() => { downloadText(`${selectedVersion.title || project.title}-${selectedVersion.label}.md`, exportManuscript({ ...project, title: selectedVersion.title || project.title }, 'md', selectedVersion.chapters)); notify('历史版本已导出。'); }}>导出此版本</Button><Button variant="primary" leadingIcon={RiHistoryLine} disabled={JSON.stringify(selectedVersion.chapters) === JSON.stringify(project.chapters) && (!selectedVersion.title || selectedVersion.title === project.title)} onClick={() => {
+    <DialogShell title={preview ? '恢复一个章节' : dialog === 'report-version' ? '查看对应存稿' : '每一次落笔，都有迹可循。'} description={preview ? undefined : dialog === 'report-version' ? '只读查看存稿及其评阅报告。' : '恢复历史版本时，当前稿件也会保留一份副本。'} open={versionDialogOpen} onClose={() => { setRestorePlan(null); setDialog(null); }} className="tw-manuscript-version-dialog" footer={preview ? undefined : dialog === 'report-version' ? <Button onClick={() => setDialog(null)}>返回当前稿</Button> : selectedVersion ? <><Button variant="ghost" leadingIcon={RiDownload2Line} onClick={() => { downloadText(`${selectedVersion.title || project.title}-${selectedVersion.label}.md`, exportManuscript({ ...project, title: selectedVersion.title || project.title }, 'md', selectedVersion.chapters)); notify('历史版本已导出。'); }}>导出此版本</Button><Button variant="primary" leadingIcon={RiHistoryLine} disabled={JSON.stringify(selectedVersion.chapters) === JSON.stringify(project.chapters) && (!selectedVersion.title || selectedVersion.title === project.title)} onClick={() => {
       mutate(item => { restoreVersion(item, selectedVersion.id); });
       for (const [cachedKey, cached] of sessionDrafts) if (cached.projectId === project.id) sessionDrafts.delete(cachedKey);
       const restored = selectedVersion.chapters[Math.min(project.selectedChapter, selectedVersion.chapters.length - 1)];
       if (restored) setDraft(makeDraft(project.id, restored));
       setDialog(null); notify('已恢复这个版本，恢复前的稿件也已保存。');
     }}>{versionCompare ? `恢复来源版本「${selectedVersion.label}」` : '恢复此版本'}</Button></> : undefined}>
-      {selectedVersion ? <div className="tw-manuscript-version-layout"><div className="tw-manuscript-version-list" aria-label="选择历史版本">{[...project.versions].reverse().map((version, index) => <Button key={version.id} variant="ghost" onClick={() => setVersionId(version.id)} aria-pressed={version.id === selectedVersion.id} className={cx('tw-manuscript-version-item', version.id === selectedVersion.id && 'is-selected')}><span className="tw-manuscript-version-node" /><span className="flex min-w-0 flex-col gap-1 text-left"><span className="text-body-medium">{version.label}</span><span className="text-caption-1-regular text-text-tertiary">{formatDate(version.date)}</span><span className="text-caption-2-regular text-text-secondary">{version.chapters.length} 章{index === 0 ? ' · 最近版本' : ''}</span></span></Button>)}</div>
+      {preview ? <ChapterRestorePreview plan={preview} blocked={restoreBlocked}
+        pendingCount={allPending.filter(edit => edit.chapterId === preview.current.id).length}
+        onCancel={() => setRestorePlan(null)} onConfirm={confirmChapterRestore} />
+        : selectedVersion ? <div className="tw-manuscript-version-layout"><div className="tw-manuscript-version-list" aria-label="选择历史版本">{[...project.versions].reverse().map((version, index) => <Button key={version.id} variant="ghost" onClick={() => setVersionId(version.id)} aria-pressed={version.id === selectedVersion.id} className={cx('tw-manuscript-version-item', version.id === selectedVersion.id && 'is-selected')}><span className="tw-manuscript-version-node" /><span className="flex min-w-0 flex-col gap-1 text-left"><span className="text-body-medium">{version.label}</span><span className="text-caption-1-regular text-text-tertiary">{formatDate(version.date)}</span><span className="text-caption-2-regular text-text-secondary">{version.chapters.length} 章{index === 0 ? ' · 最近版本' : ''}</span></span></Button>)}</div>
         <div className="tw-manuscript-version-preview"><div className="tw-manuscript-version-preview-header"><h3 className="text-headline-medium">{selectedVersion.label}</h3><Button variant="secondary" size="small" aria-pressed={versionCompare} onClick={() => setVersionCompare(value => !value)}>{versionCompare ? '查看全文' : '对比版本'}</Button></div><div className="tw-manuscript-version-body">
           {versionDialogOpen && <SavedVersionReports key={selectedVersion.id} project={project} version={selectedVersion} history={history} hasUnsavedDraft={hasUnsavedDraft}
             reportId={dialog === 'report-version' && reportTarget?.versionId === selectedVersion.id ? reportTarget.reportId : undefined}/>}
-          {versionCompare ? <SavedVersionComparison key={selectedVersion.id} source={selectedVersion} project={project} /> : <><h3 className="mb-6 font-story text-display-4-regular">{selectedVersion.title ?? '存稿未记录书名'}</h3>{selectedVersion.chapters.map(item => <section key={item.id} className="mb-8"><h4 className="mb-4 font-story text-title-3-medium">{item.title}</h4><p className="whitespace-pre-wrap font-story text-headline-regular text-text-secondary">{item.body}</p></section>)}</>}</div></div>
+          {versionCompare ? <SavedVersionComparison key={selectedVersion.id} source={selectedVersion} project={project}
+            onRestoreChapter={dialog === 'versions' ? previewChapterRestore : undefined} /> : <><h3 className="mb-6 font-story text-display-4-regular">{selectedVersion.title ?? '存稿未记录书名'}</h3>{selectedVersion.chapters.map(item => <section key={item.id} className="mb-8"><h4 className="mb-4 font-story text-title-3-medium">{item.title}</h4><p className="whitespace-pre-wrap font-story text-headline-regular text-text-secondary">{item.body}</p></section>)}</>}</div></div>
       </div> : dialog === 'report-version' ? <p role="status">对应存稿已移除。</p> : <EmptyState icon={<RiHistoryLine className="size-8 text-tw-warm" />} title="这里会留下故事的变化" description="保存一次版本，就可以从这里回到它。"><Button variant="primary" onClick={() => mutate(item => { snapshotProject(item, '手动保存'); })}>保存当前版本</Button></EmptyState>}
     </DialogShell>
   </section>;
@@ -762,7 +798,7 @@ function Suggestion({ edit, number, valid, onAccept, onReject }: { edit: Pending
   </section>;
 }
 
-function SavedVersionComparison({ source, project }: { source: Version; project: Project }) {
+function SavedVersionComparison({ source, project, onRestoreChapter }: { source: Version; project: Project; onRestoreChapter?: (chapterId: string) => void }) {
   const [targetKey, setTargetKey] = useState('current');
   const others = project.versions.filter(version => version.id !== source.id);
   const target = others.find(version => `saved:${version.id}` === targetKey);
@@ -788,6 +824,7 @@ function SavedVersionComparison({ source, project }: { source: Version; project:
     </label>
     {isCurrent || target ? <VersionComparison previous={source}
       current={target ? target.chapters : project.chapters} currentTitle={target ? target.title : project.title}
+      onRestoreChapter={isCurrent ? onRestoreChapter : undefined}
       compareTitles beforeLabel={labels.get(source.id)} afterLabel={target ? labels.get(target.id) : '当前稿件'} />
       : <p role="status">所选对比目标已移除，请重新选择。</p>}
   </section>;

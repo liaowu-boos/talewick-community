@@ -1,4 +1,5 @@
 import {Fragment, useMemo, useState} from 'react';
+import {Button} from '@/components/base/buttons/button';
 import {compareManuscripts} from '@/model/version-comparison';
 import {diffVersionText} from '@/model/version-text-diff';
 import type {Chapter, Version} from '@/model/types';
@@ -46,9 +47,10 @@ type Props = {
   compareTitles?: boolean;
   beforeLabel?: string;
   afterLabel?: string;
+  onRestoreChapter?: (chapterId: string) => void;
 };
 
-export function VersionComparison({previous, current, currentTitle, compareTitles = currentTitle !== undefined, beforeLabel = '历史版本', afterLabel = '当前稿件'}: Props) {
+export function VersionComparison({previous, current, currentTitle, compareTitles = currentTitle !== undefined, beforeLabel = '历史版本', afterLabel = '当前稿件', onRestoreChapter}: Props) {
   const {titleStatus, orderChanged, chapters} = compareManuscripts(
     {title: previous.title, chapters: previous.chapters}, {title: currentTitle, chapters: current},
   );
@@ -70,6 +72,8 @@ export function VersionComparison({previous, current, currentTitle, compareTitle
           ? `两个版本中均为第 ${afterIndex + 1} 章，与其他章节的相对顺序已变。`
           : <>章节移动：{beforeLabel}第 {beforeIndex + 1} 章 → {afterLabel}第 {afterIndex + 1} 章</>}</p>}
         {before?.body !== after?.body && <ChapterText before={before} after={after} beforeLabel={beforeLabel} afterLabel={afterLabel}/>}
+        {onRestoreChapter && before && after && (before.title !== after.title || before.body !== after.body) &&
+          <Button type="button" variant="secondary" size="small" className="self-start" onClick={() => onRestoreChapter(id)}>恢复本章</Button>}
       </section>;
     })}
   </section>;

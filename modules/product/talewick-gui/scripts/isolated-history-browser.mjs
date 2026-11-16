@@ -241,6 +241,10 @@ async function exercise(origin, current) {
     await dialog.getByRole('heading', {name: matched.label, exact: true}).waitFor();
     assert.equal(await dialog.getByRole('button', {name: '恢复此版本'}).count(), 0);
     if (current === 'B') await dialog.getByText('存稿未记录书名', {exact: true}).waitFor();
+    await dialog.getByRole('button', {name: '对比版本', exact: true}).click();
+    await dialog.getByRole('region', {name: '存稿对比', exact: true}).waitFor();
+    assert.equal(await dialog.getByRole('button', {name: '恢复本章', exact: true}).count(), 0);
+    await dialog.getByRole('button', {name: '查看全文', exact: true}).click();
     assert.deepEqual(opens, [], 'navigating to a snapshot must not open its report automatically');
     const [oldResponse] = await Promise.all([
       page.waitForResponse(r => r.url() === oldUrl && r.request().method() === 'POST'),
@@ -404,6 +408,38 @@ async function exercise(origin, current) {
       assert.equal(await target.locator('article').count(), 2);
       await dialog.getByRole('button', {name: '关闭窗口'}).click();
       console.log('PASS repeated reviews of a snapshot open by receipt ID; version records retain both');
+    }
+    if (current === 'A') {
+      // Mix one B chapter with A: neither registered full-manuscript report applies.
+      // A remains available from the automatically saved pre-restore manuscript.
+      await page.goto(origin);
+      await page.getByRole('button', {name: '版本记录', exact: true}).click();
+      await dialog.getByRole('button', {name: new RegExp(matched.label)}).click();
+      await dialog.getByRole('button', {name: '对比版本', exact: true}).click();
+      const changedChapter = dialog.locator('section.tw-manuscript-history-change')
+        .filter({has: page.getByRole('heading', {name: manuscripts.B[1].title, exact: true})});
+      await changedChapter.getByRole('button', {name: '恢复本章', exact: true}).click();
+      await dialog.getByRole('button', {name: '确认恢复本章', exact: true}).click();
+      await dialog.waitFor({state: 'hidden'});
+      await page.waitForFunction(({projectId, body}) => {
+        const state = JSON.parse(localStorage.getItem('talewick.boardui.gui.v1'));
+        return state.projects.find(item => item.id === projectId)?.chapters[1]?.body === body;
+      }, {projectId, body: manuscripts.B[1].body});
+      const mixed = await savedState();
+      assert.deepEqual(mixed.chapters, [manuscripts.A[0], manuscripts.B[1], manuscripts.A[2]]);
+      assert.deepEqual(mixed.versions.at(-2).chapters, manuscripts.A);
+      await panel.locator('summary').filter({hasText: '评阅历史'}).click();
+      for (const side of sides) assert(await openButton(side).isDisabled());
+      await row('A').getByRole('button', {name: '查看对应存稿', exact: true}).click();
+      await dialog.getByRole('heading', {name: mixed.versions.at(-2).label, exact: true}).waitFor();
+      const [backupReport] = await Promise.all([
+        page.waitForResponse(r => r.url() === url && r.request().method() === 'POST'),
+        dialog.getByRole('button', {name: '打开三路报告', exact: true}).click(),
+      ]);
+      assert.equal(backupReport.status(), 200);
+      assert.deepEqual(backupReport.request().postDataJSON().chapters, manuscripts.A);
+      await dialog.locator('iframe').waitFor();
+      console.log('PASS partial restore blocks both full-manuscript reports; pre-restore snapshot reopens its exact report');
     }
     assert.deepEqual(errors, []);
     assert.deepEqual(external, []);
