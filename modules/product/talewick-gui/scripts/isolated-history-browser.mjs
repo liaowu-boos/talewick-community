@@ -406,7 +406,23 @@ async function exercise(origin, current) {
       await page.getByRole('button', {name: '版本记录', exact: true}).click();
       await dialog.getByRole('button', {name: new RegExp(matched.label)}).click();
       assert.equal(await target.locator('article').count(), 2);
+      await dialog.getByRole('button', {name: '命名存稿', exact: true}).click();
+      await dialog.getByRole('textbox', {name: '存稿名称', exact: true}).fill('复核前的存稿');
+      await dialog.getByRole('button', {name: '保存名称', exact: true}).click();
+      await dialog.getByRole('heading', {name: '复核前的存稿', exact: true}).waitFor();
       await dialog.getByRole('button', {name: '关闭窗口'}).click();
+      await repeatedRow.getByRole('button', {name: '查看对应存稿', exact: true}).click();
+      await dialog.getByRole('heading', {name: '复核前的存稿', exact: true}).waitFor();
+      const [renamedResponse] = await Promise.all([
+        page.waitForResponse(r => r.url() === `${origin}/api/isolated-reports/${repeat.id}/open`),
+        target.getByRole('button', {name: '打开三路报告'}).click(),
+      ]);
+      assert.equal(renamedResponse.status(), 200);
+      assert.deepEqual(renamedResponse.request().postDataJSON(), repeatResponse.request().postDataJSON());
+      await target.locator('iframe').waitFor();
+      assert.equal(await target.locator('iframe').getAttribute('srcdoc'), await repeatResponse.text());
+      await dialog.getByRole('button', {name: '返回当前稿'}).click();
+      console.log('PASS renaming a titleless snapshot preserves its exact registered report and manuscript binding');
       console.log('PASS repeated reviews of a snapshot open by receipt ID; version records retain both');
     }
     if (current === 'A') {

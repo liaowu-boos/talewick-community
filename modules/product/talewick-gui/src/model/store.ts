@@ -193,6 +193,16 @@ export function snapshotProject(project: Project, label: string): Version | null
   return version;
 }
 
+export function renameVersion(project: Project, versionId: string, label: string, expectedLabel: string): boolean {
+  const trimmedLabel = label.trim();
+  const version = uniqueById(project.versions, versionId);
+  if (!trimmedLabel || !version || version.label !== expectedLabel) return false;
+  if (version.label === trimmedLabel) return true;
+  version.label = trimmedLabel;
+  project.updatedAt = now();
+  return true;
+}
+
 export function restoreVersion(project: Project, versionId: string): boolean {
   const selected = project.versions.find(version => version.id === versionId);
   if (!selected) return false;

@@ -17,7 +17,7 @@ import {
   acceptPendingEdits, acceptCheckedWholeCandidate, acceptWholeQualityGroups, acceptWholeRevisionCandidate, beginEditing, canAdoptWholeQualityGroups, canAdoptWholeRevisionCandidate, canApplyPendingEdit, characterCount,
   declineWholeQualityCandidate, declineWholeRevisionCandidate, hanCharacterCount, exportManuscript, linkedWholeQualityGroupIds, pendingEdits,
   applyChapterRestore, canApplyChapterRestore, prepareChapterRestore, type ChapterRestorePlan,
-  rejectPendingEdits, restoreVersion, saveEditorVersion, snapshotProject, undoEditing, updateChapter, wholeQualityAdoptionGroups,
+  renameVersion, rejectPendingEdits, restoreVersion, saveEditorVersion, snapshotProject, undoEditing, updateChapter, wholeQualityAdoptionGroups,
 } from '@/model/store';
 import { manuscriptRevision, runtimeBusy, wholeRevisionDispositionLabel, wholeRevisionRereadPresentation, wholeRevisionRereadReport } from '@/model/runtime';
 import type { Chapter, CompareMode, DocMode, PendingEdit, Project, QuoteSource, RuntimeBinding, RuntimeResult, Version } from '@/model/types';
@@ -26,6 +26,8 @@ import { cx } from '@/utils/cx';
 import { useWorkspace } from '@/features/context';
 import { DialogShell, downloadText, EmptyState, formatDate, TextAreaField } from '@/features/shared';
 import { Full15ReviewPanel } from '@/features/Full15ReviewPanel';
+import {VersionList} from './VersionList';
+import {VersionLabelEditor} from './VersionLabelEditor';
 import { ChapterRestorePreview } from './ChapterRestorePreview';
 import { VersionComparison } from './VersionComparison';
 import {SavedVersionReports} from './SavedVersionReports';
@@ -300,6 +302,13 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
     setDialog('report-version');
   }
 
+  function renameSavedVersion(id: string, label: string, expectedLabel: string): boolean {
+    let renamed = false;
+    flushSync(() => mutate(item => { renamed = renameVersion(item, id, label, expectedLabel); }));
+    if (renamed) notify('存稿名称已保存。');
+    return renamed;
+  }
+
   function previewChapterRestore(chapterId: string) {
     if (dialog !== 'versions' || !selectedVersion) return;
     if (sessionDrafts.has(draftKey(project.id, chapterId))) {
@@ -525,11 +534,12 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
       {preview ? <ChapterRestorePreview plan={preview} blocked={restoreBlocked}
         pendingCount={allPending.filter(edit => edit.chapterId === preview.current.id).length}
         onCancel={() => setRestorePlan(null)} onConfirm={confirmChapterRestore} />
-        : selectedVersion ? <div className="tw-manuscript-version-layout"><div className="tw-manuscript-version-list" aria-label="选择历史版本">{[...project.versions].reverse().map((version, index) => <Button key={version.id} variant="ghost" onClick={() => setVersionId(version.id)} aria-pressed={version.id === selectedVersion.id} className={cx('tw-manuscript-version-item', version.id === selectedVersion.id && 'is-selected')}><span className="tw-manuscript-version-node" /><span className="flex min-w-0 flex-col gap-1 text-left"><span className="text-body-medium">{version.label}</span><span className="text-caption-1-regular text-text-tertiary">{formatDate(version.date)}</span><span className="text-caption-2-regular text-text-secondary">{version.chapters.length} 章{index === 0 ? ' · 最近版本' : ''}</span></span></Button>)}</div>
-        <div className="tw-manuscript-version-preview"><div className="tw-manuscript-version-preview-header"><h3 className="text-headline-medium">{selectedVersion.label}</h3><Button variant="secondary" size="small" aria-pressed={versionCompare} onClick={() => setVersionCompare(value => !value)}>{versionCompare ? '查看全文' : '对比版本'}</Button></div><div className="tw-manuscript-version-body">
-          {versionDialogOpen && <SavedVersionReports key={selectedVersion.id} project={project} version={selectedVersion} history={history} hasUnsavedDraft={hasUnsavedDraft}
+        : selectedVersion ? <div className="tw-manuscript-version-layout"><VersionList versions={project.versions} selectedId={selectedVersion.id} onSelect={setVersionId} />
+        <div className="tw-manuscript-version-preview"><div className="tw-manuscript-version-preview-header"><h3 className="min-w-0 break-words text-headline-medium">{selectedVersion.label}</h3><Button variant="secondary" size="small" aria-pressed={versionCompare} onClick={() => setVersionCompare(value => !value)}>{versionCompare ? '查看全文' : '对比版本'}</Button></div><div className="tw-manuscript-version-body">
+          {dialog === 'versions' && <VersionLabelEditor key={`label:${selectedVersion.id}`} version={selectedVersion} onRename={renameSavedVersion} />}
+          {versionDialogOpen && <SavedVersionReports key={`reports:${selectedVersion.id}`} project={project} version={selectedVersion} history={history} hasUnsavedDraft={hasUnsavedDraft}
             reportId={dialog === 'report-version' && reportTarget?.versionId === selectedVersion.id ? reportTarget.reportId : undefined}/>}
-          {versionCompare ? <SavedVersionComparison key={selectedVersion.id} source={selectedVersion} project={project}
+          {versionCompare ? <SavedVersionComparison key={`comparison:${selectedVersion.id}`} source={selectedVersion} project={project}
             onRestoreChapter={dialog === 'versions' ? previewChapterRestore : undefined} /> : <><h3 className="mb-6 font-story text-display-4-regular">{selectedVersion.title ?? '存稿未记录书名'}</h3>{selectedVersion.chapters.map(item => <section key={item.id} className="mb-8"><h4 className="mb-4 font-story text-title-3-medium">{item.title}</h4><p className="whitespace-pre-wrap font-story text-headline-regular text-text-secondary">{item.body}</p></section>)}</>}</div></div>
       </div> : dialog === 'report-version' ? <p role="status">对应存稿已移除。</p> : <EmptyState icon={<RiHistoryLine className="size-8 text-tw-warm" />} title="这里会留下故事的变化" description="保存一次版本，就可以从这里回到它。"><Button variant="primary" onClick={() => mutate(item => { snapshotProject(item, '手动保存'); })}>保存当前版本</Button></EmptyState>}
     </DialogShell>
