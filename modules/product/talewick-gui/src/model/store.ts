@@ -219,6 +219,46 @@ export function restoreVersion(project: Project, versionId: string): boolean {
   return true;
 }
 
+export interface VersionRestorePlan {
+  projectId: string;
+  source: Version;
+  current: { title: string; chapters: Chapter[] };
+  pendingEdits: PendingEdit[];
+}
+
+function readVersionRestore(project: Project, versionId: string): VersionRestorePlan | null {
+  const source = uniqueById(project.versions, versionId);
+  if (!source || !Array.isArray(source.chapters) || !source.chapters.length ||
+      (source.title !== undefined && typeof source.title !== 'string')) return null;
+  const ids = new Set<string>();
+  for (const chapter of source.chapters) {
+    if (!chapter || typeof chapter.id !== 'string' || !chapter.id || ids.has(chapter.id) ||
+        typeof chapter.title !== 'string' || typeof chapter.body !== 'string') return null;
+    ids.add(chapter.id);
+  }
+  // Match restoreVersion's treatment of legacy snapshots and empty saved titles.
+  const restoredTitle = source.title || project.title;
+  if (restoredTitle === project.title && JSON.stringify(source.chapters) === JSON.stringify(project.chapters)) return null;
+  return { projectId: project.id, source,
+    current: { title: project.title, chapters: project.chapters }, pendingEdits: project.pendingEdits };
+}
+
+export function prepareVersionRestore(project: Project, versionId: string): VersionRestorePlan | null {
+  const plan = readVersionRestore(project, versionId);
+  return plan && clone(plan);
+}
+
+export function canApplyVersionRestore(project: Project, plan: VersionRestorePlan): boolean {
+  if (project.id !== plan.projectId) return false;
+  const live = readVersionRestore(project, plan.source.id);
+  return live !== null && JSON.stringify(live) === JSON.stringify(plan);
+}
+
+export function applyVersionRestore(project: Project, plan: VersionRestorePlan): boolean {
+  if (!canApplyVersionRestore(project, plan)) return false;
+  return restoreVersion(project, plan.source.id);
+}
+
 export interface ChapterRestorePlan {
   projectId: string;
   versionId: string;

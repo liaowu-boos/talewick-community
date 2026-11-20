@@ -17,7 +17,7 @@ import {
   acceptPendingEdits, acceptCheckedWholeCandidate, acceptWholeQualityGroups, acceptWholeRevisionCandidate, beginEditing, canAdoptWholeQualityGroups, canAdoptWholeRevisionCandidate, canApplyPendingEdit, characterCount,
   declineWholeQualityCandidate, declineWholeRevisionCandidate, hanCharacterCount, exportManuscript, linkedWholeQualityGroupIds, pendingEdits,
   applyChapterRestore, canApplyChapterRestore, prepareChapterRestore, type ChapterRestorePlan,
-  renameVersion, rejectPendingEdits, restoreVersion, saveEditorVersion, snapshotProject, undoEditing, updateChapter, wholeQualityAdoptionGroups,
+  renameVersion, rejectPendingEdits, prepareVersionRestore, canApplyVersionRestore, applyVersionRestore, type VersionRestorePlan, saveEditorVersion, snapshotProject, undoEditing, updateChapter, wholeQualityAdoptionGroups,
 } from '@/model/store';
 import { manuscriptRevision, runtimeBusy, wholeRevisionDispositionLabel, wholeRevisionRereadPresentation, wholeRevisionRereadReport } from '@/model/runtime';
 import type { Chapter, CompareMode, DocMode, PendingEdit, Project, QuoteSource, RuntimeBinding, RuntimeResult, Version } from '@/model/types';
@@ -28,6 +28,7 @@ import { DialogShell, downloadText, EmptyState, formatDate, TextAreaField } from
 import { Full15ReviewPanel } from '@/features/Full15ReviewPanel';
 import {VersionList} from './VersionList';
 import {VersionLabelEditor} from './VersionLabelEditor';
+import {VersionRestorePreview} from './VersionRestorePreview';
 import { ChapterRestorePreview } from './ChapterRestorePreview';
 import { VersionComparison } from './VersionComparison';
 import {SavedVersionReports} from './SavedVersionReports';
@@ -99,6 +100,7 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
   const [deferred, setDeferred] = useState<DeferredAction | null>(null);
   const [reportTarget, setReportTarget] = useState<{versionId: string; reportId: string} | null>(null);
   const [versionId, setVersionId] = useState<string | null>(null);
+  const [wholeRestorePlan, setWholeRestorePlan] = useState<VersionRestorePlan | null>(null);
   const [restorePlan, setRestorePlan] = useState<ChapterRestorePlan | null>(null);
   const [versionCompare, setVersionCompare] = useState(false);
   const [acceptingIds, setAcceptingIds] = useState<string[] | null>(null);
@@ -118,6 +120,7 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
   const selectedVersion = versionId === null ? project.versions.at(-1) : project.versions.find(version => version.id === versionId);
   const versionDialogOpen = dialog === 'versions' || dialog === 'report-version';
   const preview = dialog === 'versions' ? restorePlan : null;
+  const wholePreview = dialog === 'versions' ? wholeRestorePlan : null;
   const restoreBlocked = preview !== null && (sessionDrafts.has(draftKey(project.id, preview.current.id)) ||
     !canApplyChapterRestore(project, preview));
   const wholeMode = project.runtime?.request.revisionMode;
@@ -334,8 +337,33 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
     notify(`已恢复「${preview.source.title}」，恢复前的整稿已存入版本记录。`);
   }
 
+  function previewVersionRestore() {
+    if (dialog !== 'versions' || !selectedVersion) return;
+    const plan = prepareVersionRestore(project, selectedVersion.id);
+    if (!plan) { notify('这份存稿当前无法恢复，请重新选择。'); return; }
+    setVersionId(selectedVersion.id);
+    setWholeRestorePlan(plan);
+  }
+
+  function confirmVersionRestore() {
+    if (!wholePreview) return;
+    let applied = false;
+    flushSync(() => mutate(item => {
+      if (![...sessionDrafts.values()].some(draft => draft.projectId === item.id)) {
+        applied = applyVersionRestore(item, wholePreview);
+      }
+    }));
+    if (!applied) { notify('稿件或待审意见已更新，请重新核对。'); return; }
+    const restored = wholePreview.source.chapters[Math.max(0, Math.min(project.selectedChapter, wholePreview.source.chapters.length - 1))];
+    setDraft(makeDraft(project.id, restored));
+    setSelection(null);
+    setWholeRestorePlan(null);
+    setDialog(null);
+    notify('已恢复整稿，恢复前的正文已保存在版本记录。');
+  }
+
   function openVersions() {
-    guard({ run: () => { setRestorePlan(null); setVersionId(null); setVersionCompare(false); setDialog('versions'); } });
+    guard({ run: () => { setRestorePlan(null); setWholeRestorePlan(null); setVersionId(null); setVersionCompare(false); setDialog('versions'); } });
   }
 
   function openWholeRevision() {
@@ -524,14 +552,11 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
       <div className="mb-6 flex items-center gap-4 rounded-3xl border border-border-button-default bg-tw-glass p-4"><RiFileTextLine className="size-8 text-tw-warm" /><div><p className="text-headline-medium">{project.title}</p><p className="text-body-2-regular text-text-secondary">{project.chapters.length} 章 · {hanCharacterCount(project.chapters.map(item => item.body).join('')).toLocaleString()} 汉字</p></div></div>
       <div className="grid grid-cols-2 gap-4">{(['txt', 'md'] as const).map(format => <Button key={format} variant="secondary" leadingIcon={RiDownload2Line} onClick={() => { downloadText(`${project.title}.${format}`, exportManuscript(project, format)); setDialog(null); notify('稿件已导出。'); }}>{format === 'txt' ? '纯文本 TXT' : 'Markdown'}</Button>)}</div>
     </DialogShell>
-    <DialogShell title={preview ? '恢复一个章节' : dialog === 'report-version' ? '查看对应存稿' : '每一次落笔，都有迹可循。'} description={preview ? undefined : dialog === 'report-version' ? '只读查看存稿及其评阅报告。' : '恢复历史版本时，当前稿件也会保留一份副本。'} open={versionDialogOpen} onClose={() => { setRestorePlan(null); setDialog(null); }} className="tw-manuscript-version-dialog" footer={preview ? undefined : dialog === 'report-version' ? <Button onClick={() => setDialog(null)}>返回当前稿</Button> : selectedVersion ? <><Button variant="ghost" leadingIcon={RiDownload2Line} onClick={() => { downloadText(`${selectedVersion.title || project.title}-${selectedVersion.label}.md`, exportManuscript({ ...project, title: selectedVersion.title || project.title }, 'md', selectedVersion.chapters)); notify('历史版本已导出。'); }}>导出此版本</Button><Button variant="primary" leadingIcon={RiHistoryLine} disabled={JSON.stringify(selectedVersion.chapters) === JSON.stringify(project.chapters) && (!selectedVersion.title || selectedVersion.title === project.title)} onClick={() => {
-      mutate(item => { restoreVersion(item, selectedVersion.id); });
-      for (const [cachedKey, cached] of sessionDrafts) if (cached.projectId === project.id) sessionDrafts.delete(cachedKey);
-      const restored = selectedVersion.chapters[Math.min(project.selectedChapter, selectedVersion.chapters.length - 1)];
-      if (restored) setDraft(makeDraft(project.id, restored));
-      setDialog(null); notify('已恢复这个版本，恢复前的稿件也已保存。');
-    }}>{versionCompare ? `恢复来源版本「${selectedVersion.label}」` : '恢复此版本'}</Button></> : undefined}>
-      {preview ? <ChapterRestorePreview plan={preview} blocked={restoreBlocked}
+    <DialogShell title={wholePreview ? '恢复整稿' : preview ? '恢复一个章节' : dialog === 'report-version' ? '查看对应存稿' : '每一次落笔，都有迹可循。'} description={preview || wholePreview ? undefined : dialog === 'report-version' ? '只读查看存稿及其评阅报告。' : '恢复历史版本时，当前稿件也会保留一份副本。'} open={versionDialogOpen} onClose={() => { setRestorePlan(null); setWholeRestorePlan(null); setDialog(null); }} className="tw-manuscript-version-dialog" footer={preview || wholePreview ? undefined : dialog === 'report-version' ? <Button onClick={() => setDialog(null)}>返回当前稿</Button> : selectedVersion ? <><Button variant="ghost" leadingIcon={RiDownload2Line} onClick={() => { downloadText(`${selectedVersion.title || project.title}-${selectedVersion.label}.md`, exportManuscript({ ...project, title: selectedVersion.title || project.title }, 'md', selectedVersion.chapters)); notify('历史版本已导出。'); }}>导出此版本</Button><Button variant="primary" leadingIcon={RiHistoryLine} disabled={JSON.stringify(selectedVersion.chapters) === JSON.stringify(project.chapters) && (!selectedVersion.title || selectedVersion.title === project.title)} onClick={previewVersionRestore}>{versionCompare ? `恢复来源版本「${selectedVersion.label}」` : '恢复此版本'}</Button></> : undefined}>
+      {wholePreview ? <VersionRestorePreview plan={wholePreview}
+        blocked={!canApplyVersionRestore(project, wholePreview) || [...sessionDrafts.values()].some(draft => draft.projectId === project.id)}
+        onConfirm={confirmVersionRestore} onCancel={() => setWholeRestorePlan(null)} />
+        : preview ? <ChapterRestorePreview plan={preview} blocked={restoreBlocked}
         pendingCount={allPending.filter(edit => edit.chapterId === preview.current.id).length}
         onCancel={() => setRestorePlan(null)} onConfirm={confirmChapterRestore} />
         : selectedVersion ? <div className="tw-manuscript-version-layout"><VersionList versions={project.versions} selectedId={selectedVersion.id} onSelect={setVersionId} />
