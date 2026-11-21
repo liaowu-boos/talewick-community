@@ -29,6 +29,8 @@ import { Full15ReviewPanel } from '@/features/Full15ReviewPanel';
 import {VersionList} from './VersionList';
 import {VersionLabelEditor} from './VersionLabelEditor';
 import {VersionRestorePreview} from './VersionRestorePreview';
+import {VersionForkPreview} from './VersionForkPreview';
+import {prepareVersionFork, canApplyVersionFork, appendVersionFork, type VersionForkPlan} from '@/model/version-fork';
 import { ChapterRestorePreview } from './ChapterRestorePreview';
 import { VersionComparison } from './VersionComparison';
 import {SavedVersionReports} from './SavedVersionReports';
@@ -101,6 +103,7 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
   const [reportTarget, setReportTarget] = useState<{versionId: string; reportId: string} | null>(null);
   const [versionId, setVersionId] = useState<string | null>(null);
   const [wholeRestorePlan, setWholeRestorePlan] = useState<VersionRestorePlan | null>(null);
+  const [forkPlan, setForkPlan] = useState<VersionForkPlan | null>(null);
   const [restorePlan, setRestorePlan] = useState<ChapterRestorePlan | null>(null);
   const [versionCompare, setVersionCompare] = useState(false);
   const [acceptingIds, setAcceptingIds] = useState<string[] | null>(null);
@@ -121,6 +124,7 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
   const versionDialogOpen = dialog === 'versions' || dialog === 'report-version';
   const preview = dialog === 'versions' ? restorePlan : null;
   const wholePreview = dialog === 'versions' ? wholeRestorePlan : null;
+  const forkPreview = dialog === 'versions' ? forkPlan : null;
   const restoreBlocked = preview !== null && (sessionDrafts.has(draftKey(project.id, preview.current.id)) ||
     !canApplyChapterRestore(project, preview));
   const wholeMode = project.runtime?.request.revisionMode;
@@ -362,8 +366,25 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
     notify('已恢复整稿，恢复前的正文已保存在版本记录。');
   }
 
+  function previewVersionFork() {
+    if (dialog !== 'versions' || !selectedVersion) return;
+    const plan = prepareVersionFork(project, selectedVersion.id);
+    if (!plan) { notify('这份存稿无法用于新建作品，请重新选择。'); return; }
+    setVersionId(selectedVersion.id);
+    setForkPlan(plan);
+  }
+
+  function confirmVersionFork(title: string): boolean {
+    if (!forkPreview) return false;
+    let newId: string | null = null;
+    flushSync(() => update(next => { newId = appendVersionFork(next, forkPreview, title); }));
+    if (!newId) return false;
+    notify('已从所选存稿新建作品，原作品保持不变。');
+    return true;
+  }
+
   function openVersions() {
-    guard({ run: () => { setRestorePlan(null); setWholeRestorePlan(null); setVersionId(null); setVersionCompare(false); setDialog('versions'); } });
+    guard({ run: () => { setRestorePlan(null); setWholeRestorePlan(null); setForkPlan(null); setVersionId(null); setVersionCompare(false); setDialog('versions'); } });
   }
 
   function openWholeRevision() {
@@ -468,7 +489,7 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
       </details>
     </div>}
     <div className="tw-manuscript-book-heading"><h2 className="font-story text-display-4-regular text-text-primary">{project.title}</h2>
-      <div className="flex flex-wrap items-center gap-2 text-caption-1-regular text-text-tertiary"><span>{project.chapters.length} 章</span><span>·</span><span>{hanCharacterCount(project.chapters.map(item => item.body).join('')).toLocaleString()} 汉字</span><span>·</span><span aria-live="polite">{hasUnsavedDraft ? '有未保存的修改' : savedLabel}</span><span className="tw-manuscript-demo">{project.runtime ? '本机稿件' : '演示稿件'}</span></div>
+      <div className="flex flex-wrap items-center gap-2 text-caption-1-regular text-text-tertiary"><span>{project.chapters.length} 章</span><span>·</span><span>{hanCharacterCount(project.chapters.map(item => item.body).join('')).toLocaleString()} 汉字</span><span>·</span><span aria-live="polite">{hasUnsavedDraft ? '有未保存的修改' : savedLabel}</span><span className="tw-manuscript-demo">本机稿件</span></div>
     </div>
     {progress}
     <IndependentReviewPanel project={project} hasUnsavedDraft={hasUnsavedDraft} onLocate={locateReviewEvidence} history={history} onLocateVersion={locateReportVersion} />
@@ -552,8 +573,11 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
       <div className="mb-6 flex items-center gap-4 rounded-3xl border border-border-button-default bg-tw-glass p-4"><RiFileTextLine className="size-8 text-tw-warm" /><div><p className="text-headline-medium">{project.title}</p><p className="text-body-2-regular text-text-secondary">{project.chapters.length} 章 · {hanCharacterCount(project.chapters.map(item => item.body).join('')).toLocaleString()} 汉字</p></div></div>
       <div className="grid grid-cols-2 gap-4">{(['txt', 'md'] as const).map(format => <Button key={format} variant="secondary" leadingIcon={RiDownload2Line} onClick={() => { downloadText(`${project.title}.${format}`, exportManuscript(project, format)); setDialog(null); notify('稿件已导出。'); }}>{format === 'txt' ? '纯文本 TXT' : 'Markdown'}</Button>)}</div>
     </DialogShell>
-    <DialogShell title={wholePreview ? '恢复整稿' : preview ? '恢复一个章节' : dialog === 'report-version' ? '查看对应存稿' : '每一次落笔，都有迹可循。'} description={preview || wholePreview ? undefined : dialog === 'report-version' ? '只读查看存稿及其评阅报告。' : '恢复历史版本时，当前稿件也会保留一份副本。'} open={versionDialogOpen} onClose={() => { setRestorePlan(null); setWholeRestorePlan(null); setDialog(null); }} className="tw-manuscript-version-dialog" footer={preview || wholePreview ? undefined : dialog === 'report-version' ? <Button onClick={() => setDialog(null)}>返回当前稿</Button> : selectedVersion ? <><Button variant="ghost" leadingIcon={RiDownload2Line} onClick={() => { downloadText(`${selectedVersion.title || project.title}-${selectedVersion.label}.md`, exportManuscript({ ...project, title: selectedVersion.title || project.title }, 'md', selectedVersion.chapters)); notify('历史版本已导出。'); }}>导出此版本</Button><Button variant="primary" leadingIcon={RiHistoryLine} disabled={JSON.stringify(selectedVersion.chapters) === JSON.stringify(project.chapters) && (!selectedVersion.title || selectedVersion.title === project.title)} onClick={previewVersionRestore}>{versionCompare ? `恢复来源版本「${selectedVersion.label}」` : '恢复此版本'}</Button></> : undefined}>
-      {wholePreview ? <VersionRestorePreview plan={wholePreview}
+    <DialogShell title={forkPreview ? '从存稿新建作品' : wholePreview ? '恢复整稿' : preview ? '恢复一个章节' : dialog === 'report-version' ? '查看对应存稿' : '每一次落笔，都有迹可循。'} description={preview || wholePreview || forkPreview ? undefined : dialog === 'report-version' ? '只读查看存稿及其评阅报告。' : '恢复历史版本时，当前稿件也会保留一份副本。'} open={versionDialogOpen} onClose={() => { setRestorePlan(null); setWholeRestorePlan(null); setForkPlan(null); setDialog(null); }} className="tw-manuscript-version-dialog" footer={preview || wholePreview || forkPreview ? undefined : dialog === 'report-version' ? <Button onClick={() => setDialog(null)}>返回当前稿</Button> : selectedVersion ? <><Button variant="ghost" leadingIcon={RiDownload2Line} onClick={() => { downloadText(`${selectedVersion.title || project.title}-${selectedVersion.label}.md`, exportManuscript({ ...project, title: selectedVersion.title || project.title }, 'md', selectedVersion.chapters)); notify('历史版本已导出。'); }}>导出此版本</Button><Button variant="secondary" onClick={previewVersionFork}>以此存稿新建作品</Button><Button variant="primary" leadingIcon={RiHistoryLine} disabled={JSON.stringify(selectedVersion.chapters) === JSON.stringify(project.chapters) && (!selectedVersion.title || selectedVersion.title === project.title)} onClick={previewVersionRestore}>{versionCompare ? `恢复来源版本「${selectedVersion.label}」` : '恢复此版本'}</Button></> : undefined}>
+      {forkPreview ? <VersionForkPreview plan={forkPreview}
+        blocked={!canApplyVersionFork(project, forkPreview) || state.projects.some(item => item.id === forkPreview.newProjectId)}
+        onConfirm={confirmVersionFork} onCancel={() => setForkPlan(null)} />
+        : wholePreview ? <VersionRestorePreview plan={wholePreview}
         blocked={!canApplyVersionRestore(project, wholePreview) || [...sessionDrafts.values()].some(draft => draft.projectId === project.id)}
         onConfirm={confirmVersionRestore} onCancel={() => setWholeRestorePlan(null)} />
         : preview ? <ChapterRestorePreview plan={preview} blocked={restoreBlocked}
