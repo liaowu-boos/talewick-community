@@ -276,6 +276,33 @@ async function exercise(origin, current) {
     await dialog.waitFor({state: 'hidden'});
     assert.deepEqual(await savedState(), before);
     console.log(`PASS ${current}: saved report opened with verified chapters, both version entrances preserve the current project`);
+    // Naming an identical saved manuscript retains the original registered receipt.
+    await page.getByRole('button', {name: '版本记录', exact: true}).click();
+    await dialog.getByRole('button', {name: '保存当前稿件为新存稿', exact: true}).click();
+    await dialog.getByRole('textbox', {name: '存稿名称', exact: true}).fill('评阅后的命名存稿');
+    await dialog.getByRole('button', {name: '确认保存存稿', exact: true}).click();
+    await dialog.getByRole('heading', {name: '评阅后的命名存稿', exact: true}).waitFor();
+    await page.waitForFunction(({projectId,count})=>{
+      const state=JSON.parse(localStorage.getItem('talewick.boardui.gui.v1'));
+      return state.projects.find(p=>p.id===projectId)?.versions.length===count;
+    },{projectId,count:before.versions.length+1});
+    const checkpointState=await savedState();
+    assert.deepEqual(checkpointState.chapters,before.chapters);
+    assert.deepEqual(checkpointState.pendingEdits,before.pendingEdits);
+    assert.deepEqual(checkpointState.versions.slice(0,-1),before.versions);
+    assert.deepEqual(checkpointState.versions.at(-1).chapters,before.chapters);
+    const [checkpointResponse]=await Promise.all([
+      page.waitForResponse(r=>r.url()===url && r.request().method()==='POST'),
+      dialog.getByRole('button',{name:'打开三路报告',exact:true}).click(),
+    ]);
+    assert.equal(checkpointResponse.status(),200);
+    assert.deepEqual(checkpointResponse.request().postDataJSON().chapters,manuscripts[current]);
+    assert.equal(checkpointResponse.request().postDataJSON().manuscriptRevision,records[current].manuscriptRevision);
+    await dialog.locator('iframe').waitFor();
+    await dialog.getByRole('button',{name:'关闭窗口'}).click();
+    await dialog.waitFor({state:'hidden'});
+    assert(await openButton(current).isEnabled());
+    console.log('PASS named checkpoint retains exact registered report receipt and source manuscript');
     const archive = path.join(runsDir, 'isolated-reports', records[current].htmlSHA256 + '.html');
     await rename(archive, archive + '.held');
     try {
@@ -378,7 +405,7 @@ async function exercise(origin, current) {
     assert.equal(await rows.count(), 2);
     for (const side of sides) assert(await openButton(side).isDisabled());
     assert.equal(await history.locator('iframe').count(), 0);
-    assert.deepEqual(opens, [oldUrl, ...Array(6).fill(url)]);
+    assert.deepEqual(opens, [oldUrl, ...Array(7).fill(url)]);
     await currentFilter.click();
     await history.getByText('当前版本暂无三路报告。', {exact: true}).waitFor();
     assert.equal(await rows.count(), 0);
