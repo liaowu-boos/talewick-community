@@ -31,6 +31,8 @@ import {VersionLabelEditor} from './VersionLabelEditor';
 import {VersionRestorePreview} from './VersionRestorePreview';
 import {VersionForkPreview} from './VersionForkPreview';
 import {VersionCheckpointPreview} from './VersionCheckpointPreview';
+import {ProjectTitlePreview} from './ProjectTitlePreview';
+import {prepareProjectTitle, canApplyProjectTitle, applyProjectTitle, type ProjectTitlePlan} from '@/model/project-title';
 import {prepareCheckpoint, canApplyCheckpoint, applyCheckpoint, type CheckpointPlan} from '@/model/version-checkpoint';
 import {prepareVersionFork, canApplyVersionFork, appendVersionFork, type VersionForkPlan} from '@/model/version-fork';
 import { ChapterRestorePreview } from './ChapterRestorePreview';
@@ -94,7 +96,8 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
   const [draft, setDraft] = useState<LocalDraft>(() => sessionDrafts.get(key) || makeDraft(project.id, chapter));
   const [selection, setSelection] = useState<SelectionAnchor | null>(null);
   const history = useIndependentReviewHistory(project.id);
-  const [dialog, setDialog] = useState<'versions' | 'report-version' | 'export' | 'unsaved' | 'conflict' | 'whole-request' | 'whole-candidate' | null>(null);
+  const [dialog, setDialog] = useState<'versions' | 'report-version' | 'project-title' | 'export' | 'unsaved' | 'conflict' | 'whole-request' | 'whole-candidate' | null>(null);
+  const [titlePlan, setTitlePlan] = useState<ProjectTitlePlan | null>(null);
   const [wholeInstruction, setWholeInstruction] = useState('');
   const [assessGoalIncrement, setAssessGoalIncrement] = useState(false);
   const [useWritingGoal, setUseWritingGoal] = useState(false);
@@ -117,6 +120,7 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const activeDraft = draft.key === key ? draft : sessionDrafts.get(key) || makeDraft(project.id, chapter);
   const hasUnsavedDraft = differs(activeDraft, chapter);
+  const titleEditBlocked = hasUnsavedDraft || runtimeBusy(project) || [...sessionDrafts.values()].some(draft => draft.projectId === project.id);
   const draftChanged = activeDraft.title !== activeDraft.baseTitle || activeDraft.body !== activeDraft.baseBody;
   const baselineChapter = project.editorBaseline?.find(item => item.id === chapter.id);
   const canUndo = draftChanged || Boolean(baselineChapter && differs(baselineChapter, chapter));
@@ -135,6 +139,9 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
   const wholeTask = wholeMode === 'whole-manuscript-v1' || wholeMode === 'whole-manuscript-v2' ? project.runtime?.task : undefined;
   const wholeResult = wholeTask?.result?.wholeRevision ? wholeTask.result : undefined;
   const wholeRereadReport = wholeRevisionRereadReport(wholeResult?.wholeRevision);
+  const candidateSourceChanged = Boolean(project.runtime && (manuscriptRevision(project) !== project.runtime.request.baseRevision ||
+    JSON.stringify({title: project.title, chapters: project.chapters}) !== JSON.stringify(project.runtime.baseManuscript)));
+  const importedSourceChanged = Boolean(project.importedBaseline && project.importedBaseline.baseRevision !== manuscriptRevision(project));
   const wholeReady = wholeMode === 'whole-manuscript-v1' && project.runtime?.resultDisposition === 'whole-revision-candidate';
   const qualityReady = wholeMode === 'whole-manuscript-v2' && project.runtime?.resultDisposition === 'whole-quality-groups';
   const qualityGroups = wholeMode === 'whole-manuscript-v2' ? wholeQualityAdoptionGroups(wholeResult) : [];
@@ -387,6 +394,26 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
     return true;
   }
 
+  function openProjectTitle() {
+    if (titleEditBlocked) return;
+    const plan = prepareProjectTitle(project);
+    if (!plan) { notify('当前稿件暂不能改名，请先核对正文与任务状态。'); return; }
+    setTitlePlan(plan);
+    setDialog('project-title');
+  }
+
+  function confirmProjectTitle(title: string): boolean {
+    if (!titlePlan || dialog !== 'project-title') return false;
+    let applied = false;
+    flushSync(() => mutate(item => {
+      if (![...sessionDrafts.values()].some(draft => draft.projectId === item.id)) applied = applyProjectTitle(item, titlePlan, title);
+    }));
+    if (!applied) return false;
+    setTitlePlan(null); setDialog(null);
+    notify('书名已修改，改名前后的稿件已保存在版本记录。');
+    return true;
+  }
+
   function previewCheckpoint() {
     if (dialog !== 'versions') return;
     const plan = prepareCheckpoint(project);
@@ -510,13 +537,16 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
       </div>
     </header>
     {project.importedBaseline?.provenance === 'whole_revision_source' && <div className="mx-5 mt-3 rounded-xl border border-border-button-default bg-tw-glass p-3" role="status">
-      <p className="text-body-2-medium">原始全文 · 原稿检查未完成</p>
+      <p className="text-body-2-medium">{importedSourceChanged ? `来源存稿《${project.importedBaseline.title}》 · 原稿检查未完成` : '原始全文 · 原稿检查未完成'}</p>
       <p className="mt-1 text-caption-1-regular text-text-secondary">原始全文来自整稿修订保存的输入快照，已单独保存在版本记录中。原稿的检查未完成状态和失败任务仍保留；候选需要另行查看并明确选择。</p>
+      {importedSourceChanged && <p className="mt-1 text-caption-1-regular text-text-secondary">当前书名或正文已变化，以上信息仅对应来源存稿。请在版本记录中查看原始全文。</p>}
       <details className="mt-2 text-caption-1-regular text-text-tertiary"><summary className="cursor-pointer">原稿来源与校验信息</summary>
         <dl className="mt-2 break-all"><dt>来源类型</dt><dd>{project.importedBaseline.provenance}</dd><dt>来源任务</dt><dd>{project.importedBaseline.sourceTaskId}</dd><dt>原稿 SHA-256</dt><dd>{project.importedBaseline.sourceManuscriptSha256}</dd></dl>
       </details>
     </div>}
     <div className="tw-manuscript-book-heading"><h2 className="font-story text-display-4-regular text-text-primary">{project.title}</h2>
+      <div className="my-2 flex flex-wrap items-center gap-2"><Button variant="ghost" size="small" leadingIcon={RiEditLine} disabled={titleEditBlocked} onClick={openProjectTitle}>修改书名</Button>
+        {titleEditBlocked && <p className="text-caption-1-regular text-text-secondary">{runtimeBusy(project) ? '任务结束或取消后可修改书名。' : '请先保存或舍弃未保存的草稿，再修改书名。'}</p>}</div>
       <div className="flex flex-wrap items-center gap-2 text-caption-1-regular text-text-tertiary"><span>{project.chapters.length} 章</span><span>·</span><span>{hanCharacterCount(project.chapters.map(item => item.body).join('')).toLocaleString()} 汉字</span><span>·</span><span aria-live="polite">{hasUnsavedDraft ? '有未保存的修改' : savedLabel}</span><span className="tw-manuscript-demo">本机稿件</span></div>
     </div>
     {progress}
@@ -524,7 +554,7 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
     <Full15ReviewPanel project={project} hasUnsavedDraft={hasUnsavedDraft} onLocate={locateReviewEvidence} />
     {project.runtime?.task?.result?.deepReference && <DeepReferenceDetails value={project.runtime.task.result.deepReference} />}
     {wholeResult && <section className="mx-5 mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border-button-default bg-tw-glass p-4" aria-label="整稿修订候选">
-      <div className="min-w-0 flex-1"><p className="text-body-medium">{qualityReady ? `${qualityGroups.length} 个修订组待确认` : wholeReady ? '整稿修订候选待确认' : project.runtime?.resultDisposition === 'partially-applied' ? '已采纳部分修订组' : project.runtime?.resultDisposition === 'applied' ? '整稿候选已采纳' : project.runtime?.resultDisposition === 'declined' ? '已保留原稿' : '整稿修订结果已保留'}</p><p className="mt-1 text-caption-1-regular text-text-secondary">候选生成、检查和用户采纳分别记录；查看候选不会修改当前正文。</p>{wholeMode === 'whole-manuscript-v2' ? <p className="mt-1 text-caption-1-regular text-text-secondary">关联修订组必须一起选择；混合采纳后需重新复核所选组合。</p> : <p className="mt-1 text-caption-1-regular text-text-secondary">复读报告提出：新增疑问 {wholeRereadReport.introducedIssueCount} 项 · 未充分支持修改 {wholeRereadReport.unsupportedChangeCount} 项。</p>}</div>
+      <div className="min-w-0 flex-1"><p className="text-body-medium">{candidateSourceChanged && (qualityReady || wholeReady) ? '旧稿候选 · 当前稿件已变化' : qualityReady ? `${qualityGroups.length} 个修订组待确认` : wholeReady ? '整稿修订候选待确认' : project.runtime?.resultDisposition === 'partially-applied' ? '已采纳部分修订组' : project.runtime?.resultDisposition === 'applied' ? '整稿候选已采纳' : project.runtime?.resultDisposition === 'declined' ? '已保留原稿' : '整稿修订结果已保留'}</p><p className="mt-1 text-caption-1-regular text-text-secondary">候选生成、检查和用户采纳分别记录；查看候选不会修改当前正文。</p>{wholeMode === 'whole-manuscript-v2' ? <p className="mt-1 text-caption-1-regular text-text-secondary">关联修订组必须一起选择；混合采纳后需重新复核所选组合。</p> : <p className="mt-1 text-caption-1-regular text-text-secondary">复读报告提出：新增疑问 {wholeRereadReport.introducedIssueCount} 项 · 未充分支持修改 {wholeRereadReport.unsupportedChangeCount} 项。</p>}</div>
       <Button variant="secondary" size="small" onClick={() => setDialog('whole-candidate')}>查看候选与原稿</Button>
     </section>}
     <Tabs selectedKey={project.docMode} onSelectionChange={value => changeMode(String(value) as DocMode)} className="tw-manuscript-tabs gap-0">
@@ -595,7 +625,11 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
       </div>
     </DialogShell>
     <DialogShell title="整稿候选与原稿" description="先看主要问题和候选结果；证据、材料与未解决细节默认收起。文学判断仍需你审阅。" open={dialog === 'whole-candidate'} onClose={() => setDialog(null)} className="tw-manuscript-version-dialog" footer={qualityReady ? <><Button variant="secondary" onClick={keepWholeOriginal}>保留原稿</Button><Button variant="primary" leadingIcon={RiCheckLine} disabled={!qualityAdoptable} onClick={adoptQualityGroups}>采纳所选修订组</Button></> : wholeReady ? <><Button variant="secondary" onClick={keepWholeOriginal}>保留原稿</Button><Button variant="primary" leadingIcon={RiCheckLine} disabled={!wholeAdoptable} onClick={adoptWholeRevision}>整体采纳候选</Button></> : <Button onClick={() => setDialog(null)}>关闭</Button>}>
-      {wholeResult && project.runtime ? wholeMode === 'whole-manuscript-v2' ? <><CandidateRecheckPanel project={project} onSelect={adoptCheckedCandidate} /><WholeQualityDetails result={wholeResult} source={project.runtime.baseManuscript.chapters} disposition={project.runtime.resultDisposition} conflicted={project.runtime.resultDisposition === 'held'} groups={qualityGroups} selectedGroupIds={qualitySelectedGroupIds} onToggleGroup={toggleQualityGroup} /></> : <WholeRevisionDetails result={wholeResult} source={project.runtime.baseManuscript.chapters} disposition={project.runtime.resultDisposition} conflicted={project.runtime.resultDisposition === 'held'} /> : <p className="text-body-regular text-text-secondary">当前没有可查看的整稿候选。</p>}
+      {wholeResult && project.runtime ? wholeMode === 'whole-manuscript-v2' ? <><CandidateRecheckPanel project={project} onSelect={adoptCheckedCandidate} sourceChanged={candidateSourceChanged} /><WholeQualityDetails result={wholeResult} source={project.runtime.baseManuscript.chapters} disposition={project.runtime.resultDisposition} conflicted={project.runtime.resultDisposition === 'held' || candidateSourceChanged} groups={qualityGroups} selectedGroupIds={qualitySelectedGroupIds} onToggleGroup={toggleQualityGroup} /></> : <WholeRevisionDetails result={wholeResult} source={project.runtime.baseManuscript.chapters} disposition={project.runtime.resultDisposition} conflicted={project.runtime.resultDisposition === 'held' || candidateSourceChanged} /> : <p className="text-body-regular text-text-secondary">当前没有可查看的整稿候选。</p>}
+    </DialogShell>
+    <DialogShell title="修改作品书名" open={dialog === 'project-title'} onClose={() => { setTitlePlan(null); setDialog(null); }}>
+      {titlePlan && <ProjectTitlePreview plan={titlePlan} blocked={titleEditBlocked || !canApplyProjectTitle(project, titlePlan)}
+        onConfirm={confirmProjectTitle} onCancel={() => { setTitlePlan(null); setDialog(null); }} />}
     </DialogShell>
     <DialogShell title="把故事带走" description="只导出当前已保存、已采纳的稿件，待审建议不会写入文件。" open={dialog === 'export'} onClose={() => setDialog(null)}>
       <div className="mb-6 flex items-center gap-4 rounded-3xl border border-border-button-default bg-tw-glass p-4"><RiFileTextLine className="size-8 text-tw-warm" /><div><p className="text-headline-medium">{project.title}</p><p className="text-body-2-regular text-text-secondary">{project.chapters.length} 章 · {hanCharacterCount(project.chapters.map(item => item.body).join('')).toLocaleString()} 汉字</p></div></div>

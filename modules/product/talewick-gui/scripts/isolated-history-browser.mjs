@@ -303,6 +303,40 @@ async function exercise(origin, current) {
     await dialog.waitFor({state:'hidden'});
     assert(await openButton(current).isEnabled());
     console.log('PASS named checkpoint retains exact registered report receipt and source manuscript');
+    // A new book title changes the reviewed manuscript, even when every chapter stays identical.
+    await page.getByRole('button', {name: '修改书名', exact: true}).click();
+    await dialog.getByRole('textbox', {name: '新书名', exact: true}).fill(title + '（新书名）');
+    await dialog.getByRole('button', {name: '确认修改书名', exact: true}).click();
+    await dialog.waitFor({state: 'hidden'});
+    assert(await openButton(current).isDisabled(), 'old report must not open against a renamed current draft');
+    await page.waitForFunction(({projectId,title}) => JSON.parse(localStorage.getItem('talewick.boardui.gui.v1')).projects.find(p => p.id === projectId)?.title === title, {projectId, title: title + '（新书名）'});
+    const renamedState = await savedState();
+    assert.equal(renamedState.title, title + '（新书名）');
+    assert.deepEqual(renamedState.chapters, checkpointState.chapters);
+    assert.deepEqual(renamedState.pendingEdits, checkpointState.pendingEdits);
+    assert.deepEqual(renamedState.versions.slice(0,-2), checkpointState.versions);
+    await row(current).getByRole('button', {name: '查看对应存稿', exact: true}).click();
+    const [renamedReport] = await Promise.all([
+      page.waitForResponse(r => r.url() === url && r.request().method() === 'POST'),
+      dialog.getByRole('button', {name: '打开三路报告', exact: true}).click(),
+    ]);
+    assert.equal(renamedReport.status(), 200);
+    assert.equal(renamedReport.request().postDataJSON().title, title);
+    assert.deepEqual(renamedReport.request().postDataJSON().chapters, manuscripts[current]);
+    await dialog.locator('iframe').waitFor();
+    await dialog.getByRole('button', {name: '返回当前稿', exact: true}).click();
+    await dialog.waitFor({state: 'hidden'});
+    assert.deepEqual(await savedState(), renamedState, 'reading the old-title report leaves current draft untouched');
+    await page.getByRole('button', {name: '版本记录', exact: true}).click();
+    await dialog.locator('[aria-label="选择历史版本"] button[aria-pressed]')
+      .filter({has: page.getByText('改名前的稿件', {exact: true})}).click();
+    await dialog.getByRole('button', {name: '恢复此版本', exact: true}).click();
+    await dialog.getByRole('button', {name: '确认恢复整稿', exact: true}).click();
+    await dialog.waitFor({state: 'hidden'});
+    await page.waitForFunction(({projectId,title}) => JSON.parse(localStorage.getItem('talewick.boardui.gui.v1')).projects.find(p => p.id === projectId)?.title === title, {projectId,title});
+    assert.equal((await savedState()).title, title);
+    assert(await openButton(current).isEnabled(), 'restoring the exact old manuscript restores its report access');
+    console.log('PASS title change blocks old report, exact saved title opens it, and restore recovers report access');
     const archive = path.join(runsDir, 'isolated-reports', records[current].htmlSHA256 + '.html');
     await rename(archive, archive + '.held');
     try {
@@ -405,7 +439,7 @@ async function exercise(origin, current) {
     assert.equal(await rows.count(), 2);
     for (const side of sides) assert(await openButton(side).isDisabled());
     assert.equal(await history.locator('iframe').count(), 0);
-    assert.deepEqual(opens, [oldUrl, ...Array(7).fill(url)]);
+    assert.deepEqual(opens, [oldUrl, ...Array(8).fill(url)]);
     await currentFilter.click();
     await history.getByText('当前版本暂无三路报告。', {exact: true}).waitFor();
     assert.equal(await rows.count(), 0);

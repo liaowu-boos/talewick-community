@@ -8,7 +8,7 @@ const label: Record<CandidateRecheckTask['status'], string> = {
   failed: '事实复查失败或发现冲突', needs_attention: '仍有无法判定的事实', interrupted: '复查中断',
 };
 
-export function CandidateRecheckPanel({ project, onSelect }: { project: Project; onSelect: (task: CandidateRecheckTask) => Promise<void> }) {
+export function CandidateRecheckPanel({ project, onSelect, sourceChanged = false }: { project: Project; onSelect: (task: CandidateRecheckTask) => Promise<void>; sourceChanged?: boolean }) {
   const sourceTaskId = project.runtime?.task?.id;
   const [tasks, setTasks] = useState<CandidateRecheckTask[]>([]);
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
@@ -24,7 +24,7 @@ export function CandidateRecheckPanel({ project, onSelect }: { project: Project;
     return () => window.clearInterval(timer);
   }, [tasks, refresh]);
   async function start() {
-    if (!sourceTaskId) return;
+    if (!sourceTaskId || sourceChanged) return;
     setBusy(true); setError('');
     try { await startCandidateRecheck(project.id, sourceTaskId); await refresh(); }
     catch (cause) { setError(cause instanceof Error ? cause.message : '无法开始候选复查。'); }
@@ -33,14 +33,15 @@ export function CandidateRecheckPanel({ project, onSelect }: { project: Project;
   return <section className="rounded-2xl border border-border-button-default p-4" aria-label="候选独立事实复查">
     <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-body-medium">候选独立事实复查</h3>
       <p className="mt-1 text-caption-1-regular text-text-secondary">新任务绑定这次来源任务和完整候选。旧跨章核查失败记录继续保留；复查只判断事实，不代表文学质量通过。</p></div>
-      <Button size="small" variant="secondary" disabled={busy || tasks.some(task => ['queued','running'].includes(task.status))} onClick={() => void start()}>新建候选复查</Button></div>
+      <Button size="small" variant="secondary" disabled={sourceChanged || busy || tasks.some(task => ['queued','running'].includes(task.status))} onClick={() => void start()}>新建候选复查</Button></div>
+    {sourceChanged && <p role="status" className="mt-3 text-body-2-regular text-text-secondary">当前书名或正文已变化，此候选对应旧稿。可查看历史复查报告；如需继续修订，请基于当前稿件发起新任务。</p>}
     {error && <p className="mt-3 text-caption-1-regular text-text-error-primary" role="alert">{error}</p>}
     {!tasks.length && <p className="mt-3 text-caption-1-regular text-text-tertiary">当前候选还没有新复查记录。</p>}
     {tasks.map(task => <article key={task.id} className="mt-3 rounded-xl bg-tw-glass p-3">
       <div className="flex flex-wrap items-start justify-between gap-2"><div><p className="text-body-2-medium">{label[task.status]} · {new Date(task.createdAt).toLocaleString()}</p>
         <p className="mt-1 break-all text-caption-1-regular text-text-tertiary">来源任务 {task.sourceTaskId} · 候选 SHA {task.candidateSha256.slice(0, 16)}… · {task.checkerVersion}</p>
         {task.stage && ['queued','running'].includes(task.status) && <p className="mt-1 text-caption-1-regular text-text-secondary">进度：{task.stage}</p>}</div>
-        {canOfferCandidateSelection(task, project.id, sourceTaskId || '') && <Button size="small" variant="primary" disabled={busy} onClick={() => { setBusy(true); void onSelect(task).catch(cause => setError(cause instanceof Error ? cause.message : '选择失败。')).finally(() => setBusy(false)); }}>明确选择完整候选</Button>}</div>
+        {canOfferCandidateSelection(task, project.id, sourceTaskId || '') && <Button size="small" variant="primary" disabled={sourceChanged || busy} onClick={() => { if (sourceChanged) return; setBusy(true); void onSelect(task).catch(cause => setError(cause instanceof Error ? cause.message : '选择失败。')).finally(() => setBusy(false)); }}>明确选择完整候选</Button>}</div>
       {task.error && <p className="mt-2 text-caption-1-regular text-text-error-primary">{task.error.message}</p>}
       {task.gate.reason === 'revision_evidence_blocked' && <p className="mt-2 text-caption-1-regular text-text-error-primary">方案事实或场景核对仍有问题、缺失或未核实项，不能通过跨章复查解除采纳限制。</p>}
       {task.report && <details className="mt-3"><summary className="cursor-pointer text-body-2-medium">复查事实与分歧 · 冲突 {task.report.counts?.confirmed_conflict ?? '?'} / 未判定 {task.report.counts?.ambiguous ?? '?'}</summary>
