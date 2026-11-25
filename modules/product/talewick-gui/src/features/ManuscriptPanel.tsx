@@ -31,6 +31,8 @@ import {VersionLabelEditor} from './VersionLabelEditor';
 import {VersionRestorePreview} from './VersionRestorePreview';
 import {VersionForkPreview} from './VersionForkPreview';
 import {VersionCheckpointPreview} from './VersionCheckpointPreview';
+import {VersionExportPreview} from './VersionExportPreview';
+import {prepareVersionExport, canExportVersion, renderVersionExport, type VersionExportPlan} from '@/model/version-export';
 import {ProjectTitlePreview} from './ProjectTitlePreview';
 import {prepareProjectTitle, canApplyProjectTitle, applyProjectTitle, type ProjectTitlePlan} from '@/model/project-title';
 import {prepareCheckpoint, canApplyCheckpoint, applyCheckpoint, type CheckpointPlan} from '@/model/version-checkpoint';
@@ -110,6 +112,7 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
   const [wholeRestorePlan, setWholeRestorePlan] = useState<VersionRestorePlan | null>(null);
   const [forkPlan, setForkPlan] = useState<VersionForkPlan | null>(null);
   const [checkpointPlan, setCheckpointPlan] = useState<CheckpointPlan | null>(null);
+  const [versionExportPlan, setVersionExportPlan] = useState<VersionExportPlan | null>(null);
   const [restorePlan, setRestorePlan] = useState<ChapterRestorePlan | null>(null);
   const [versionCompare, setVersionCompare] = useState(false);
   const [acceptingIds, setAcceptingIds] = useState<string[] | null>(null);
@@ -129,6 +132,7 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
   const chapterSuggestions = project.pendingEdits.filter(edit => edit.chapterId === chapter.id);
   const selectedVersion = versionId === null ? project.versions.at(-1) : project.versions.find(version => version.id === versionId);
   const versionDialogOpen = dialog === 'versions' || dialog === 'report-version';
+  const versionExportPreview = versionDialogOpen ? versionExportPlan : null;
   const preview = dialog === 'versions' ? restorePlan : null;
   const wholePreview = dialog === 'versions' ? wholeRestorePlan : null;
   const forkPreview = dialog === 'versions' ? forkPlan : null;
@@ -317,6 +321,7 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
     setReportTarget({versionId: id, reportId});
     setVersionId(id);
     setVersionCompare(false);
+    setVersionExportPlan(null);
     setDialog('report-version');
   }
 
@@ -435,8 +440,26 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
     return true;
   }
 
+  function previewVersionExport() {
+    if (!selectedVersion || !versionDialogOpen) return;
+    const plan = prepareVersionExport(project, selectedVersion.id);
+    if (!plan) { notify('这份存稿信息不完整，暂不能导出。'); return; }
+    setVersionId(plan.version.id);
+    setVersionExportPlan(plan);
+  }
+
+  function downloadSavedVersion(format: 'txt' | 'md', missingTitle?: string): boolean {
+    if (!versionExportPreview || selectedVersion?.id !== versionExportPreview.version.id) return false;
+    const result = renderVersionExport(project, versionExportPreview, format, missingTitle);
+    if (!result) return false;
+    try { downloadText(result.filename, result.text); }
+    catch { return false; }
+    notify('已请求下载所选存稿。');
+    return true;
+  }
+
   function openVersions() {
-    const action = { run: () => { setRestorePlan(null); setWholeRestorePlan(null); setForkPlan(null); setCheckpointPlan(null); setVersionId(null); setVersionCompare(false); setDialog('versions'); } };
+    const action = { run: () => { setRestorePlan(null); setWholeRestorePlan(null); setForkPlan(null); setCheckpointPlan(null); setVersionExportPlan(null); setVersionId(null); setVersionCompare(false); setDialog('versions'); } };
     // Browsing saved text is read-only. Unsaved local drafts still require an explicit choice.
     if (hasUnsavedDraft) guard(action);
     else action.run();
@@ -635,10 +658,13 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
       <div className="mb-6 flex items-center gap-4 rounded-3xl border border-border-button-default bg-tw-glass p-4"><RiFileTextLine className="size-8 text-tw-warm" /><div><p className="text-headline-medium">{project.title}</p><p className="text-body-2-regular text-text-secondary">{project.chapters.length} 章 · {hanCharacterCount(project.chapters.map(item => item.body).join('')).toLocaleString()} 汉字</p></div></div>
       <div className="grid grid-cols-2 gap-4">{(['txt', 'md'] as const).map(format => <Button key={format} variant="secondary" leadingIcon={RiDownload2Line} onClick={() => { downloadText(`${project.title}.${format}`, exportManuscript(project, format)); setDialog(null); notify('稿件已导出。'); }}>{format === 'txt' ? '纯文本 TXT' : 'Markdown'}</Button>)}</div>
     </DialogShell>
-    <DialogShell title={checkpointPreview ? '保存命名存稿' : forkPreview ? '从存稿新建作品' : wholePreview ? '恢复整稿' : preview ? '恢复一个章节' : dialog === 'report-version' ? '查看对应存稿' : '每一次落笔，都有迹可循。'} description={preview || wholePreview || forkPreview || checkpointPreview ? undefined : dialog === 'report-version' ? '只读查看存稿及其评阅报告。' : '恢复历史版本时，当前稿件也会保留一份副本。'} open={versionDialogOpen} onClose={() => { setRestorePlan(null); setWholeRestorePlan(null); setForkPlan(null); setCheckpointPlan(null); setDialog(null); }} className="tw-manuscript-version-dialog" footer={preview || wholePreview || forkPreview || checkpointPreview ? undefined : dialog === 'report-version' ? <Button onClick={() => setDialog(null)}>返回当前稿</Button> : selectedVersion ? <><Button variant="ghost" leadingIcon={RiDownload2Line} onClick={() => { downloadText(`${selectedVersion.title || project.title}-${selectedVersion.label}.md`, exportManuscript({ ...project, title: selectedVersion.title || project.title }, 'md', selectedVersion.chapters)); notify('历史版本已导出。'); }}>导出此版本</Button><Button variant="secondary" onClick={previewVersionFork}>以此存稿新建作品</Button><Button variant="primary" leadingIcon={RiHistoryLine} disabled={JSON.stringify(selectedVersion.chapters) === JSON.stringify(project.chapters) && (!selectedVersion.title || selectedVersion.title === project.title)} onClick={previewVersionRestore}>{versionCompare ? `恢复来源版本「${selectedVersion.label}」` : '恢复此版本'}</Button></> : undefined}>
-      {dialog === 'versions' && !preview && !wholePreview && !forkPreview && !checkpointPreview &&
+    <DialogShell title={versionExportPreview ? '导出所选存稿' : checkpointPreview ? '保存命名存稿' : forkPreview ? '从存稿新建作品' : wholePreview ? '恢复整稿' : preview ? '恢复一个章节' : dialog === 'report-version' ? '查看对应存稿' : '每一次落笔，都有迹可循。'} description={preview || wholePreview || forkPreview || checkpointPreview || versionExportPreview ? undefined : dialog === 'report-version' ? '只读查看存稿及其评阅报告。' : '恢复历史版本时，当前稿件也会保留一份副本。'} open={versionDialogOpen} onClose={() => { setRestorePlan(null); setWholeRestorePlan(null); setForkPlan(null); setCheckpointPlan(null); setVersionExportPlan(null); setDialog(null); }} className="tw-manuscript-version-dialog" footer={preview || wholePreview || forkPreview || checkpointPreview || versionExportPreview ? undefined : dialog === 'report-version' ? <>{selectedVersion && <Button variant="secondary" leadingIcon={RiDownload2Line} onClick={previewVersionExport}>导出所选存稿</Button>}<Button onClick={() => setDialog(null)}>返回当前稿</Button></> : selectedVersion ? <><Button variant="ghost" leadingIcon={RiDownload2Line} onClick={previewVersionExport}>导出所选存稿</Button><Button variant="secondary" onClick={previewVersionFork}>以此存稿新建作品</Button><Button variant="primary" leadingIcon={RiHistoryLine} disabled={JSON.stringify(selectedVersion.chapters) === JSON.stringify(project.chapters) && (!selectedVersion.title || selectedVersion.title === project.title)} onClick={previewVersionRestore}>{versionCompare ? `恢复来源版本「${selectedVersion.label}」` : '恢复此版本'}</Button></> : undefined}>
+      {dialog === 'versions' && !preview && !wholePreview && !forkPreview && !checkpointPreview && !versionExportPreview &&
         <div className="mb-4 flex"><Button variant="secondary" leadingIcon={RiSaveLine} onClick={previewCheckpoint}>保存当前稿件为新存稿</Button></div>}
-      {checkpointPreview ? <VersionCheckpointPreview plan={checkpointPreview} pendingCount={allPending.length}
+      {versionExportPreview ? <VersionExportPreview key={versionExportPreview.version.id} plan={versionExportPreview}
+        blocked={selectedVersion?.id !== versionExportPreview.version.id || !canExportVersion(project, versionExportPreview)}
+        onDownload={downloadSavedVersion} onCancel={() => setVersionExportPlan(null)} />
+        : checkpointPreview ? <VersionCheckpointPreview plan={checkpointPreview} pendingCount={allPending.length}
         blocked={!canApplyCheckpoint(project, checkpointPreview) || [...sessionDrafts.values()].some(draft => draft.projectId === project.id)}
         onConfirm={confirmCheckpoint} onCancel={() => setCheckpointPlan(null)} />
         : forkPreview ? <VersionForkPreview plan={forkPreview}

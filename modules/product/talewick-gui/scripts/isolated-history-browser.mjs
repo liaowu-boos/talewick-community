@@ -3,7 +3,7 @@
  * plus optional TALEWICK_BROWSER_EXECUTABLE. Uses the production workbench and a temporary archive.
  */
 import assert from 'node:assert/strict';
-import {mkdtemp, rename, rm} from 'node:fs/promises';
+import {mkdtemp, readFile, rename, rm} from 'node:fs/promises';
 import {createServer} from 'node:net';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
@@ -245,6 +245,30 @@ async function exercise(origin, current) {
     await dialog.getByRole('region', {name: '存稿对比', exact: true}).waitFor();
     assert.equal(await dialog.getByRole('button', {name: '恢复本章', exact: true}).count(), 0);
     await dialog.getByRole('button', {name: '查看全文', exact: true}).click();
+    // Exporting the report's saved source must remain read-only and never infer a missing title.
+    await dialog.getByRole('button', {name: '导出所选存稿', exact: true}).click();
+    const exportPreview = dialog.getByRole('region', {name: '导出所选存稿', exact: true});
+    await exportPreview.waitFor();
+    if (matched.title === undefined) {
+      assert.equal(await exportPreview.getByRole('textbox', {name: '导出书名', exact: true}).inputValue(), '');
+      assert(await exportPreview.getByRole('button', {name: '下载 Markdown', exact: true}).isDisabled());
+      await exportPreview.getByRole('textbox', {name: '导出书名', exact: true}).fill('明确指定的导出书名');
+    }
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      exportPreview.getByRole('button', {name: '下载 Markdown', exact: true}).click(),
+    ]);
+    assert.equal(await download.failure(), null);
+    assert.match(download.suggestedFilename(), /\.md$/);
+    const expectedTitle = matched.title ?? '明确指定的导出书名';
+    const expectedText = '# ' + expectedTitle + '\n\n' + matched.chapters.map(chapter =>
+      '## ' + chapter.title + '\n\n' + chapter.body).join('\n\n---\n\n');
+    assert.equal(await readFile(await download.path(), 'utf8'), expectedText);
+    await exportPreview.getByRole('button', {name: '返回存稿', exact: true}).click();
+    await dialog.getByRole('heading', {name: matched.label, exact: true}).waitFor();
+    assert.equal(await dialog.getByRole('button', {name: '恢复此版本'}).count(), 0);
+    assert.deepEqual(await savedState(), before);
+    console.log('PASS report-linked snapshot download preserves exact old source and never substitutes current title');
     assert.deepEqual(opens, [], 'navigating to a snapshot must not open its report automatically');
     const [oldResponse] = await Promise.all([
       page.waitForResponse(r => r.url() === oldUrl && r.request().method() === 'POST'),
