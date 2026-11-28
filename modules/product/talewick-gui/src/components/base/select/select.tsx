@@ -54,6 +54,8 @@ export interface SelectProps<T extends object>
   triggerClassName?: string;
   /** Classes for the open popover (e.g. constrain its width). */
   popoverClassName?: string;
+  /** Use a modal popover within scrollable dialogs; defaults to the existing non-modal behavior. */
+  popoverIsNonModal?: boolean;
   /** `md` (default) or `sm` for compact/dense contexts (e.g. compact tables). */
   size?: SelectSize;
   children: ReactNode;
@@ -68,6 +70,7 @@ export function Select<T extends object>({
   className,
   triggerClassName,
   popoverClassName,
+  popoverIsNonModal = true,
   size = "md",
   children,
   items,
@@ -134,7 +137,7 @@ export function Select<T extends object>({
           </AriaButton>
           <AriaPopover
             ref={popoverRef}
-            isNonModal
+            isNonModal={popoverIsNonModal}
             offset={4}
             className={cx(
               MENU_POPOVER_WIDTH,

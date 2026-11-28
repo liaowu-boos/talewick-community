@@ -27,6 +27,7 @@ import { useWorkspace } from '@/features/context';
 import { DialogShell, downloadText, EmptyState, formatDate, TextAreaField } from '@/features/shared';
 import { Full15ReviewPanel } from '@/features/Full15ReviewPanel';
 import {VersionList} from './VersionList';
+import {SavedManuscriptPreview} from './SavedManuscriptPreview';
 import {VersionLabelEditor} from './VersionLabelEditor';
 import {VersionRestorePreview} from './VersionRestorePreview';
 import {VersionForkPreview} from './VersionForkPreview';
@@ -677,12 +678,12 @@ function ManuscriptContent({ project, onQuote, onWholeRevision, savedLabel, prog
         pendingCount={allPending.filter(edit => edit.chapterId === preview.current.id).length}
         onCancel={() => setRestorePlan(null)} onConfirm={confirmChapterRestore} />
         : selectedVersion ? <div className="tw-manuscript-version-layout"><VersionList versions={project.versions} selectedId={selectedVersion.id} onSelect={setVersionId} />
-        <div className="tw-manuscript-version-preview"><div className="tw-manuscript-version-preview-header"><h3 className="min-w-0 break-words text-headline-medium">{selectedVersion.label}</h3><Button variant="secondary" size="small" aria-pressed={versionCompare} onClick={() => setVersionCompare(value => !value)}>{versionCompare ? '查看全文' : '对比版本'}</Button></div><div className="tw-manuscript-version-body">
+        <div className="tw-manuscript-version-preview"><div className="tw-manuscript-version-preview-header"><h3 className="min-w-0 break-words text-headline-medium">{selectedVersion.label}</h3><Button variant="secondary" size="small" aria-pressed={versionCompare} onClick={() => setVersionCompare(value => !value)}>{versionCompare ? '查看全文' : '对比版本'}</Button></div><div key={`${selectedVersion.id}:${versionCompare}`} className="tw-manuscript-version-body">
           {dialog === 'versions' && <VersionLabelEditor key={`label:${selectedVersion.id}`} version={selectedVersion} onRename={renameSavedVersion} />}
           {versionDialogOpen && <SavedVersionReports key={`reports:${selectedVersion.id}`} project={project} version={selectedVersion} history={history} hasUnsavedDraft={hasUnsavedDraft}
             reportId={dialog === 'report-version' && reportTarget?.versionId === selectedVersion.id ? reportTarget.reportId : undefined}/>}
           {versionCompare ? <SavedVersionComparison key={`comparison:${selectedVersion.id}`} source={selectedVersion} project={project}
-            onRestoreChapter={dialog === 'versions' ? previewChapterRestore : undefined} /> : <><h3 className="mb-6 font-story text-display-4-regular">{selectedVersion.title ?? '存稿未记录书名'}</h3>{selectedVersion.chapters.map(item => <section key={item.id} className="mb-8"><h4 className="mb-4 font-story text-title-3-medium">{item.title}</h4><p className="whitespace-pre-wrap font-story text-headline-regular text-text-secondary">{item.body}</p></section>)}</>}</div></div>
+            onRestoreChapter={dialog === 'versions' ? previewChapterRestore : undefined} /> : <SavedManuscriptPreview key={selectedVersion.id} version={selectedVersion} />}</div></div>
       </div> : dialog === 'report-version' ? <p role="status">对应存稿已移除。</p> : <EmptyState icon={<RiHistoryLine className="size-8 text-tw-warm" />} title="这里会留下故事的变化" description="保存一次版本，就可以从这里回到它。"></EmptyState>}
     </DialogShell>
   </section>;
